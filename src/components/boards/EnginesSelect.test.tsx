@@ -70,6 +70,20 @@ test("an unhydrated engine store leaves the saved selection intact", () => {
   expect(getCurrent()?.id).toBe("a");
 });
 
+test("an engine list that becomes untrusted leaves the saved selection intact", () => {
+  const a = localEngine("a");
+  store.set(enginesAtom as never, [a] as never);
+  const { selections, draw, getCurrent } = render(a);
+
+  act(() => {
+    store.set(enginesAtom as never, undefined as never);
+  });
+  draw();
+
+  expect(selections).toEqual([]);
+  expect(getCurrent()?.id).toBe("a");
+});
+
 test("removing the selected engine falls back to a remaining engine", () => {
   const a = localEngine("a");
   const b = localEngine("b");

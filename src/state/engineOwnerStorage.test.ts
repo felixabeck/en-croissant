@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import "./atoms";
 import type { ErrorPayload } from "@/bindings";
 import { isErrorReported } from "@/platform/errors";
-import { engineSchema, type Engine } from "@/utils/engines";
+import { engineSchema, type Engine, type LocalEngine } from "@/utils/engines";
 import {
     opponentSettingsSchema,
     switchOpponentType,
@@ -20,6 +22,7 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
 vi.mock("./persistError", () => ({ reportPersistError: mocks.report }));
+vi.mock("@mantine/core", () => ({ Select: () => null }));
 vi.mock("@/i18n", () => ({
     default: {
         t: (key: string) =>
@@ -36,6 +39,7 @@ import {
     saveEngineOwnerValue,
     MAX_ENGINE_COMPLETION_RECEIPTS,
     pruneEngineCompletionReceipts,
+    type EngineOwnerSaveReceipt,
 } from "./engineOwnerStorage";
 
 const decodeOwnerValue = (raw: string) =>
@@ -53,13 +57,19 @@ const engine = {
     settings: [{ type: "resource" as const, name: "SyzygyPath", resources: [resource] }],
 };
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const mountedPickers: Array<() => void> = [];
+
 beforeEach(() => {
     localStorage.clear();
     mocks.reconcile.mockReset().mockResolvedValue(undefined);
     mocks.report.mockReset();
     resetEngineOwnerCoordinatorForTests();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+    mountedPickers.splice(0).forEach((unmount) => unmount());
+    vi.restoreAllMocks();
+});
 
 test("collects image and resource attachments without executable capabilities", () => {
     expect(collectAttachmentIds("engines", [engine])).toEqual(["image-a", "resource-a"]);
@@ -362,6 +372,33 @@ test("real overlapping atom writes preserve updates and return their own receipt
         expect.objectContaining({ key: "engines", saved: true, synchronized: true }),
     );
     expect((store.get(enginesAtom) ?? []).map(({ id }) => id)).toEqual(["engine-id"]);
+});
+
+test("a direct engines replacement waits for pending hydration before saving its full list", async () => {
+    localStorage.setItem("engines", serializeStorageValue([engine]));
+    let releaseHydration!: () => void;
+    mocks.reconcile.mockImplementationOnce(
+        () => new Promise<void>((resolve) => (releaseHydration = resolve)),
+    );
+    const run = await runtime();
+    const unsubscribe = run.store.sub(run.atoms.enginesAtom, () => undefined);
+    await vi.waitFor(() => expect(releaseHydration).toBeTypeOf("function"));
+    let settled = false;
+    const saving = run.store.set(run.atoms.enginesAtom, []).then((receipt) => {
+        settled = true;
+        return receipt;
+    });
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    const settledBeforeHydration = settled;
+    releaseHydration();
+    try {
+        expect((await saving).saved).toBe(true);
+        expect(settledBeforeHydration).toBe(false);
+        expect(run.store.get(run.atoms.enginesAtom)).toEqual([]);
+        expect(decodeOwnerValue(localStorage.getItem("engines")!)).toEqual([]);
+    } finally {
+        unsubscribe();
+    }
 });
 
 test("ordinary real-store saves publish only durable values and recover after refusal", async () => {
@@ -908,6 +945,307 @@ async function hydratePlayer(run: Runtime, second = false) {
         unsubscribe();
     }
 }
+
+async function mountPicker(run: Runtime) {
+    const { Provider, useAtomValue } = await import("jotai");
+    const { EnginesSelect } = await import("@/components/boards/EnginesSelect");
+    const selections = vi.fn((engine: LocalEngine | null) =>
+        run.store.set(run.atoms.gamePlayer1SettingsAtom, (previous) => {
+            const selected = previous.type === "engine" ? previous.engine : null;
+            const sameEngine = engine !== null && selected?.id === engine.id;
+            return {
+                ...previous,
+                engine,
+                engineSettings: sameEngine
+                    ? previous.type === "engine"
+                        ? previous.engineSettings
+                        : undefined
+                    : engine?.settings || undefined,
+            };
+        }),
+    );
+    function Picker() {
+        const player = useAtomValue(run.atoms.gamePlayer1SettingsAtom);
+        return player.type === "engine"
+            ? createElement(EnginesSelect, { engine: player.engine, setEngine: selections })
+            : null;
+    }
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    let mounted = true;
+    const unmount = () => {
+        if (!mounted) return;
+        act(() => root.unmount());
+        host.remove();
+        mounted = false;
+    };
+    mountedPickers.push(unmount);
+    await act(async () => {
+        root.render(createElement(Provider, { store: run.store }, createElement(Picker)));
+    });
+    return { selections, unmount };
+}
+
+type EnginesReadFailure = "read" | "decode" | "hydrate";
+function seedFailedEngines(mode: EnginesReadFailure) {
+    const trusted = { ...engine, legacyAssessment: null };
+    const goodRaw = serializeStorageValue([trusted]);
+    const receipts = { [crypto.randomUUID()]: "applied" as const };
+    const raw =
+        mode === "read"
+            ? goodRaw
+            : mode === "decode"
+              ? "{broken"
+              : serializeStorageValue({
+                    version: 1,
+                    value: [{ ...trusted, future: true }],
+                    receipts,
+                });
+    const player: OpponentSettings = {
+        type: "engine",
+        engine: trusted,
+        go: { t: "Depth", c: 18 },
+        engineSettings: [{ type: "string", name: "Threads", value: "7" }],
+    };
+    const playerRaw = serializeStorageValue(player);
+    localStorage.setItem("engines", raw);
+    localStorage.setItem("game-player1-settings", playerRaw);
+    const read = Storage.prototype.getItem;
+    const readRaw = (key: string) => read.call(localStorage, key);
+    const failure =
+        mode === "read"
+            ? vi
+                  .spyOn(Storage.prototype, "getItem")
+                  .mockImplementation(function (this: Storage, key) {
+                      if (key === "engines") throw new Error("unreadable");
+                      return read.call(this, key);
+                  })
+            : undefined;
+    return { goodRaw, raw, receipts, player, playerRaw, readRaw, failure };
+}
+
+test.each(["read", "decode", "hydrate"] as const)(
+    "failed engines preserve the mounted picker's saved player and refuse derived writes: %s",
+    async (mode) => {
+        const seeded = seedFailedEngines(mode);
+        const run = await runtime();
+        const { isErrorReported: wasReported } = await import("@/platform/errors");
+        const storage = run.owner.createEngineOwnerStorage("engines", run.atoms.enginesSchema, []);
+        await expect(storage.getItem("engines", [])).resolves.toEqual([]);
+        expect(seeded.readRaw("engines")).toBe(seeded.raw);
+        await hydratePlayer(run);
+        const picker = await mountPicker(run);
+        const writes = vi.spyOn(Storage.prototype, "setItem");
+        const assertPreserved = () => {
+            expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
+            expect(seeded.readRaw("engines")).toBe(seeded.raw);
+            expect(seeded.readRaw("game-player1-settings")).toBe(seeded.playerRaw);
+            expect(run.store.get(run.atoms.gamePlayer1SettingsAtom)).toEqual(seeded.player);
+            expect(picker.selections).not.toHaveBeenCalled();
+        };
+        assertPreserved();
+        const append = vi.fn((current: Engine[]) => [...current, engine]);
+        const asyncAppend = vi.fn(async (current: Engine[]) => [...current, engine]);
+        const apply = vi.fn((current: Engine[]) => ({
+            value: [...current, { ...engine, version: "upgraded" }],
+            disposition: "applied" as const,
+        }));
+        for (const update of [
+            append,
+            asyncAppend,
+            { removeLocalId: engine.id },
+            { completionId: crypto.randomUUID(), apply },
+        ]) {
+            mocks.report.mockClear();
+            let receipt!: EngineOwnerSaveReceipt;
+            await act(async () => {
+                receipt = await run.store.set(run.atoms.enginesAtom, update);
+            });
+            expect(receipt).toMatchObject({ saved: false, synchronized: false });
+            expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+            expect(receipt.error).toMatchObject({
+                message: expect.stringContaining("save failed"),
+            });
+            expect(wasReported(receipt.error)).toBe(true);
+            expect(writes).not.toHaveBeenCalled();
+            assertPreserved();
+        }
+        expect(append).not.toHaveBeenCalled();
+        expect(asyncAppend).not.toHaveBeenCalled();
+        expect(apply).not.toHaveBeenCalled();
+        picker.unmount();
+        seeded.failure?.mockRestore();
+        // A later launch can read the original engine record again.
+        localStorage.setItem("engines", seeded.goodRaw);
+        const restarted = await runtime(true);
+        const selected = await hydratePlayer(restarted);
+        expect(selected.id).toBe(engine.id);
+        expect((await hydrateList(restarted, 1))[0].id).toBe(selected.id);
+    },
+);
+
+test.each(["read", "decode", "hydrate"] as const)(
+    "a full engines replacement repairs invalid content but preserves unreadable storage: %s",
+    async (mode) => {
+        const seeded = seedFailedEngines(mode);
+        const run = await runtime();
+        await hydratePlayer(run);
+        const picker = await mountPicker(run);
+        picker.unmount();
+        const writes = vi.spyOn(Storage.prototype, "setItem");
+        const receipt = await run.store.set(run.atoms.enginesAtom, [
+            { ...engine, legacyAssessment: { identity: "untrusted", ambiguous: false } },
+        ]);
+        if (mode === "read") {
+            expect(receipt.saved).toBe(false);
+            expect(writes).not.toHaveBeenCalled();
+            expect(seeded.readRaw("engines")).toBe(seeded.raw);
+            expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
+            expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+        } else {
+            expect(receipt).toMatchObject({ saved: true, synchronized: true });
+            const saved = decodeEngineOwnerValue(
+                decodeCompressedOrJson(seeded.readRaw("engines")!),
+            );
+            expect(saved).toEqual({
+                value: [{ ...engine, legacyAssessment: null }],
+                receipts: mode === "hydrate" ? seeded.receipts : {},
+            });
+            expect(run.store.get(run.atoms.enginesAtom)).toEqual(saved?.value);
+            expect(mocks.report).not.toHaveBeenCalled();
+            const added = { ...engine, id: "added-after-repair" };
+            const append = vi.fn((current: Engine[]) => [...current, added]);
+            expect((await run.store.set(run.atoms.enginesAtom, append)).saved).toBe(true);
+            expect(append).toHaveBeenCalledExactlyOnceWith(saved?.value);
+            expect(run.store.get(run.atoms.enginesAtom)).toMatchObject([
+                { id: engine.id },
+                { id: added.id },
+            ]);
+        }
+        expect(seeded.readRaw("game-player1-settings")).toBe(seeded.playerRaw);
+    },
+);
+
+test.each(["read", "decode", "hydrate"] as const)(
+    "a deliberate real player save persists with untrusted engines: %s",
+    async (mode) => {
+        const seeded = seedFailedEngines(mode);
+        const run = await runtime();
+        await hydratePlayer(run);
+        const picker = await mountPicker(run);
+        const changed = { ...seeded.player, go: { t: "Depth" as const, c: 21 } };
+        let receipt;
+        await act(async () => {
+            receipt = await run.store.set(run.atoms.gamePlayer1SettingsAtom, changed);
+        });
+        expect(receipt).toMatchObject({ saved: true, synchronized: false });
+        expect(decodeOwnerValue(seeded.readRaw("game-player1-settings")!)).toEqual(changed);
+        expect(seeded.readRaw("game-player1-settings")).not.toBe(seeded.playerRaw);
+        expect(seeded.readRaw("engines")).toBe(seeded.raw);
+        expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
+        expect(picker.selections).not.toHaveBeenCalled();
+        expect(mocks.report).not.toHaveBeenCalled();
+    },
+);
+
+test.each([{ version: 2 }, { version: 1, future: true }])(
+    "full engines replacement clears valid receipts from a non-decoding envelope: %j",
+    async (envelope) => {
+        const value = {
+            ...envelope,
+            value: [engine],
+            receipts: { [crypto.randomUUID()]: "applied" },
+        };
+        expect(decodeEngineOwnerValue(value)).toBeNull();
+        localStorage.setItem("engines", serializeStorageValue(value));
+        const run = await runtime();
+        const receipt = await run.store.set(run.atoms.enginesAtom, [engine]);
+        expect(receipt).toMatchObject({ saved: true, synchronized: true });
+        expect(
+            decodeEngineOwnerValue(decodeCompressedOrJson(localStorage.getItem("engines")!)),
+        ).toEqual({ value: [{ ...engine, legacyAssessment: null }], receipts: {} });
+        expect(mocks.report).not.toHaveBeenCalled();
+    },
+);
+
+test("full engines replacement refuses malformed recovered completion receipts", async () => {
+    const raw = serializeStorageValue({
+        version: 1,
+        value: [{ invalid: true }],
+        receipts: { invalid: "applied" },
+    });
+    localStorage.setItem("engines", raw);
+    const run = await runtime();
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const receipt = await run.store.set(run.atoms.enginesAtom, [engine]);
+    expect(receipt.saved).toBe(false);
+    expect(writes).not.toHaveBeenCalled();
+    expect(localStorage.getItem("engines")).toBe(raw);
+    expect(run.store.get(run.atoms.enginesAtom)).toBeUndefined();
+    expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+});
+
+test("invalid player content still refuses a deliberate replacement", async () => {
+    const raw = "{broken";
+    localStorage.setItem("game-player1-settings", raw);
+    const run = await runtime();
+    const receipt = await run.store.set(run.atoms.gamePlayer1SettingsAtom, {
+        type: "human",
+        name: "New",
+    });
+    expect(receipt.saved).toBe(false);
+    expect(localStorage.getItem("game-player1-settings")).toBe(raw);
+    expect(mocks.report).toHaveBeenCalledExactlyOnceWith(receipt.error);
+});
+
+test("confirmed engines absence is ready empty and the mounted picker clears a saved selection", async () => {
+    const player = {
+        ...legacyPlayer(engine),
+        engineSettings: [{ type: "string" as const, name: "Threads", value: "7" }],
+    };
+    localStorage.setItem("game-player1-settings", serializeStorageValue(player));
+    const run = await runtime();
+    await hydratePlayer(run);
+    expect(await hydrateList(run, 0)).toEqual([]);
+    expect(localStorage.getItem("engines")).toBeNull();
+    const picker = await mountPicker(run);
+    await vi.waitFor(() =>
+        expect(run.store.get(run.atoms.gamePlayer1SettingsAtom)).toMatchObject({ engine: null }),
+    );
+    expect(picker.selections).toHaveBeenCalledExactlyOnceWith(null);
+    expect(decodeOwnerValue(localStorage.getItem("game-player1-settings")!)).toMatchObject({
+        engine: null,
+    });
+});
+
+test("a trusted ready list still lets the mounted picker adopt its first engine", async () => {
+    localStorage.setItem("engines", serializeStorageValue([{ ...engine, legacyAssessment: null }]));
+    localStorage.setItem(
+        "game-player1-settings",
+        serializeStorageValue({ ...legacyPlayer(engine), engine: null }),
+    );
+    const run = await runtime();
+    const unsubscribe = run.store.sub(run.atoms.gamePlayer1SettingsAtom, () => undefined);
+    try {
+        await vi.waitFor(() =>
+            expect(run.store.get(run.atoms.gamePlayer1SettingsAtom).type).toBe("engine"),
+        );
+        await hydrateList(run, 1);
+        const picker = await mountPicker(run);
+        await vi.waitFor(() =>
+            expect(run.store.get(run.atoms.gamePlayer1SettingsAtom)).toMatchObject({
+                engine: { id: engine.id },
+            }),
+        );
+        expect(picker.selections).toHaveBeenCalledOnce();
+        expect(decodeOwnerValue(localStorage.getItem("game-player1-settings")!)).toMatchObject({
+            engine: { id: engine.id },
+        });
+    } finally {
+        unsubscribe();
+    }
+});
 
 test.each(["players-first", "engines-first"])(
     "all three real owners agree across drift, order and restart: %s",

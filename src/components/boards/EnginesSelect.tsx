@@ -18,9 +18,8 @@ export function EnginesSelect({
   );
 
   useEffect(() => {
-    // `enginesAtom` unwraps an async store, so `undefined` means "not hydrated yet". That is
-    // not the same as "no engines left", and reconciling against it would drop a valid
-    // selection on every mount.
+    // `undefined` means the list is not a trusted ready value, either because its read is
+    // pending or because it failed. Reconciling against it would drop a valid selection.
     if (allEngines === undefined) return;
     if (engine === null) {
       if (engines.length > 0) {

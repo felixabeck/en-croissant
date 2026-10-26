@@ -46,12 +46,20 @@ export function engineOwnerCompletionReceipt(
     }
 }
 
-function readPersistedEngineOwner(key: EngineOwnerKey) {
+function readPersistedEngineOwner(key: EngineOwnerKey, repairInvalidEngines = false) {
     const raw = localStorage.getItem(key);
     if (raw === null) return null;
     const decoded = decodeCompressedOrJson(raw);
     const owner = decoded === null ? null : decodeEngineOwnerValue(decoded);
-    if (!owner || !parseHydratableOwner(key, owner.value)) throw new Error("invalid owner");
+    if (!owner || !parseHydratableOwner(key, owner.value)) {
+        if (key !== "engines" || !repairInvalidEngines) throw new Error("invalid owner");
+        // Only a decoded owner supplies receipts. Malformed recovered evidence still refuses
+        // repair, even when the surrounding bytes do not decode as an owner envelope.
+        if (!owner && isRecord(decoded) && "receipts" in decoded) {
+            completionReceiptsSchema.parse(decoded.receipts);
+        }
+        return { value: undefined, receipts: owner?.receipts ?? {} };
+    }
     return owner;
 }
 
@@ -205,6 +213,17 @@ function reportOwnerStorageError(cause: unknown) {
     return error;
 }
 
+export function refuseUntrustedEnginesUpdate(cause: unknown): EngineOwnerSaveReceipt {
+    const error = reportOwnerStorageError(ownerStorageError(cause));
+    return {
+        operationId: crypto.randomUUID(),
+        key: "engines",
+        saved: false,
+        synchronized: false,
+        error,
+    };
+}
+
 function enqueueEngineOwnerSave(
     key: EngineOwnerKey,
     encodedValue: string,
@@ -224,7 +243,7 @@ function enqueueEngineOwnerSave(
 
         let previous: ReturnType<typeof decodeEngineOwnerValue>;
         try {
-            previous = readPersistedEngineOwner(key);
+            previous = readPersistedEngineOwner(key, key === "engines");
         } catch (cause) {
             const error = ownerStorageError(cause);
             reportOwnerStorageError(error);
@@ -670,28 +689,33 @@ export function createEngineOwnerStorage<Value>(
     key: EngineOwnerKey,
     schema: z.ZodType<Value, z.ZodTypeDef, unknown>,
     initialValue: Value,
-): AsyncStorage<Value> {
-    const getItem = async (
+): AsyncStorage<Value> & {
+    readOutcome: (
+        storageKey: string,
+        initialValue: Value,
+    ) => Promise<{ value: Value } | { error: unknown }>;
+} {
+    const readOutcome = async (
         storageKey: string,
         initialValue: Value,
         allowMigrationRetry: boolean,
-    ): Promise<Value> => {
+    ): Promise<{ value: Value } | { error: unknown }> => {
         if (storageKey !== key) throw new Error("engine owner storage key mismatch");
         let raw: string | null;
         try {
             raw = localStorage.getItem(key);
-        } catch {
+        } catch (error) {
             warn(`Unable to read persisted value for ${key}`);
-            return initialValue;
+            return { error };
         }
-        if (raw === null) return initialValue;
+        if (raw === null) return { value: initialValue };
         const decoded = decodeCompressedOrJson(raw);
         const hydrated = decoded === null ? null : parseHydratableOwner(key, decoded, schema);
         if (!hydrated) {
             warn(`Invalid persisted value for ${key}`);
-            return initialValue;
+            return { error: new Error("invalid owner") };
         }
-        if (!hydrated.migrate || !allowMigrationRetry) return hydrated.value as Value;
+        if (!hydrated.migrate || !allowMigrationRetry) return { value: hydrated.value as Value };
 
         const migrated = await migrateEngineOwnerValue(
             key,
@@ -700,15 +724,19 @@ export function createEngineOwnerStorage<Value>(
         );
         if (!migrated.saved && migrated.error instanceof Error) {
             if (migrated.error.message === LEGACY_OWNER_CONFLICT) {
-                return getItem(storageKey, initialValue, false);
+                return readOutcome(storageKey, initialValue, false);
             }
-            return hydrated.value as Value;
+            return { value: hydrated.value as Value };
         }
-        return hydrated.value as Value;
+        return { value: hydrated.value as Value };
     };
     const storage = {
-        getItem(storageKey: string, initialValue: Value): Promise<Value> {
-            return getItem(storageKey, initialValue, true);
+        readOutcome(storageKey: string, initialValue: Value) {
+            return readOutcome(storageKey, initialValue, true);
+        },
+        async getItem(storageKey: string, initialValue: Value): Promise<Value> {
+            const outcome = await readOutcome(storageKey, initialValue, true);
+            return "value" in outcome ? outcome.value : initialValue;
         },
         async setItem(storageKey: string, value: Value) {
             if (storageKey !== key) throw new Error("engine owner storage key mismatch");
@@ -721,7 +749,7 @@ export function createEngineOwnerStorage<Value>(
     };
     // Jotai forwards the async storage result from atom writes. AsyncStorage narrows that result
     // to Promise<void>, while the dedicated owner atom recovers the runtime receipt.
-    return storage as unknown as AsyncStorage<Value>;
+    return storage as unknown as AsyncStorage<Value> & Pick<typeof storage, "readOutcome">;
 }
 
 export function resetEngineOwnerCoordinatorForTests() {

@@ -71,6 +71,7 @@ import {
     type EngineOwnerCompletionUpdate,
     type EngineOwnerKey,
     engineOwnerCompletionReceipt,
+    refuseUntrustedEnginesUpdate,
 } from "./engineOwnerStorage";
 import { serializeStorageValue } from "./store/debouncedStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
@@ -326,7 +327,24 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
             return ownerStorage.getItem(key, initialValue);
         },
     };
-    const stored = unwrap(atomWithStorage(key, initialValue, storage), () => fallback);
+    // The outcome and its promise belong to the reading Jotai store. The public storage
+    // fallback cannot distinguish confirmed absence from a failed engines read.
+    const enginesRead =
+        key === "engines"
+            ? atom(() => {
+                  initializeRendererState();
+                  return ownerStorage.readOutcome(key, initialValue);
+              })
+            : undefined;
+    const stored = enginesRead
+        ? unwrap(
+              atom(async (get) => {
+                  const outcome = await get(enginesRead);
+                  return "value" in outcome ? outcome.value : fallback;
+              }),
+              () => fallback,
+          )
+        : unwrap(atomWithStorage(key, initialValue, storage), () => fallback);
     // Once a write publishes, it takes precedence over asynchronous storage hydration.
     const published = atom<Value | undefined>(undefined);
     let updates = Promise.resolve();
@@ -338,7 +356,27 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
             update: Update | EngineOwnerCompletionUpdate<Value>,
         ): Promise<EngineOwnerSaveReceipt> => {
             const run = updates.then(async () => {
-                const current = get(published) ?? (await storage.getItem(key, initialValue));
+                let current = get(published);
+                if (current === undefined && enginesRead) {
+                    const outcome = await get(enginesRead);
+                    current = get(published);
+                    if (current === undefined) {
+                        if ("value" in outcome) {
+                            current = outcome.value;
+                        } else {
+                            const derived =
+                                typeof update === "function" ||
+                                isEngineRemoval(update) ||
+                                (typeof update === "object" &&
+                                    update !== null &&
+                                    "completionId" in update);
+                            if (derived) return refuseUntrustedEnginesUpdate(outcome.error);
+                            // A complete replacement has no trusted previous assessment base.
+                            current = initialValue;
+                        }
+                    }
+                }
+                current ??= await storage.getItem(key, initialValue);
                 const application = engineOwnerApplication(key, current, update);
                 let next: Value;
                 if (application) {
