@@ -10069,3 +10069,46 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex autonomously under Felix's unattended lane authorization,2026-10-26. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"6f83a2f73c0182ef97499632288f03984b4168124c3b0df7e9103df9846033d3","input_sha256":"da4f497a3ff0e5e7bf4a056e7adf7ee7ffba8d367e1dfe9a89e1fb90c2daa86f","kind":"mutation-receipt","operation":"a95ff93299572a85ab877ffa1d30e8cc27b1c7c50599caf6c6eadfe92bdca9b5","options":{"section":null},"request_id_sha256":null,"results":["d-20261026-07"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-26 — recorded through the decisions lock
+
+### d-20261026-01 — Should the Files page tell the user when a saved change's durability is uncertain?
+
+* **Question:** Should the Files page tell the user when a saved change's durability is uncertain, or keep the silent close?
+* **Governs:** f-20261006-07
+* **Chosen:** One shared sentence, `Common.DurabilityUncertain`: "The change was saved, but the save could not be fully confirmed. Do not retry." English in `en-US` and `en-GB`. Every other shipped catalogue keeps that catalogue's existing "do not retry" clause from `Home.Accounts.LinkDurabilityUncertain` and replaces only the subject so the sentence means the change was saved. The notice is `notifications.show` with `color: "orange"`, no title, and no interpolated diagnostic. It shows after the relist, including when the relist itself fails.
+* **Rejected:** Keeping the silent close. `d-20260906-03` already rejected treating uncertainty as success where a saved file is promised, and the account surfaces already say "Do not retry." Also rejected: a red error that says the operation failed or asks the user to try again, because that is the current `Files.OperationFailed` fallback and a retry can create a second file.
+* **Reason:** Create, rename, metadata, and move already land the change and then close as if the save were durable. The user is invited to submit again. The account durability notice is the existing non-blocking pattern for the same contract.
+* **Reversal path:** remove the notice and restore the silent close only with new evidence that a retry cannot duplicate a committed file.
+* **Decided by:** Grok, full auto, session 12100003-de22-488c-b30e-133be7529fc8, adopted reviewed plan tasks/plans/2026-10-26-files-durability-notice.md · **Superseded-by:** -
+
+### d-20261026-02 — Which owner shows the Files durability sentence?
+
+* **Question:** Which owner shows the Files durability sentence?
+* **Governs:** f-20261006-07
+* **Chosen:** `runFilesMutationWithRefresh` reports a durability outcome to `runMutation`, and `confirmationErrorMessage` selects the same sentence for confirms. `runAppliedMutationWithRefresh` and `runDestructiveWithRefresh` stay control-flow helpers with no notification import and no user-facing sentence.
+* **Rejected:** Putting the toast inside `runAppliedMutationWithRefresh`. Its only production caller is Files, and a UI import there would also fire for a swallowed partial removal. `d-20261025-16` keeps `runDestructiveWithRefresh` free of a new notice. Also rejected: a new IPC variant or a new renderer category. `d-20261025-16` and `d-20260904-06` already give the renderer `backendCategory: "durability"`.
+* **Reason:** The platform helpers are shared control flow. The sentence belongs to the Files form owner and the one confirm function every rejecting confirm already reads.
+* **Reversal path:** move the sentence into a platform helper only if a second production caller must show the same notice and the helper can still tell durability from partial removal.
+* **Decided by:** Grok, full auto, session 12100003-de22-488c-b30e-133be7529fc8, adopted reviewed plan tasks/plans/2026-10-26-files-durability-notice.md · **Superseded-by:** -
+
+### d-20261026-03 — Do trash, restore, and permanent delete stay on the confirm dialog for a durability rejection?
+
+* **Question:** Do trash, restore, and permanent delete stay on the confirm dialog for a durability rejection?
+* **Governs:** f-20261006-07
+* **Chosen:** They still reject, the dialog stays open, and only the durability sentence changes. The refresh that runs before that rejection does not clear `deleteTarget`, `restoreTarget`, or `purgeTarget`. Trash stops clearing `deleteTarget` inside that refresh. A durable success still closes through `ConfirmModal`'s `onClose`. A listing failure after that durable success is swallowed in the trash refresh, as `clearTrashAndRelist` already does. No toast on these three confirms.
+* **Rejected:** Routing them through `runAppliedMutationWithRefresh`. `d-20261025-16` rejected that because it treats applied-despite-error as success and closes the warning. Also rejected: changing only the sentence and leaving trash's refresh as it is, because that refresh unmounts the dialog before the alert can render.
+* **Reason:** `runDestructiveWithRefresh` awaits the trash refresh, and that refresh currently calls `setDeleteTarget(null)` before `mutate()`, so `ConfirmModal` unmounts before its catch can show the sentence. Restore and permanent delete already keep their targets through `clearTrashAndRelist`.
+* **Reversal path:** clear the confirmation target inside the rejecting refresh only with evidence that the alert still renders after that unmount.
+* **Decided by:** Grok, full auto, session 12100003-de22-488c-b30e-133be7529fc8, adopted reviewed plan tasks/plans/2026-10-26-files-durability-notice.md · **Superseded-by:** -
+
+### d-20261026-04 — Does database delete inherit the shared durability sentence?
+
+* **Question:** Does database delete inherit the shared durability sentence?
+* **Governs:** f-20261006-07
+* **Chosen:** No edit under `src/components/databases/`. Database delete already rejects into `ConfirmModal` through `runDestructiveWithRefresh`, and its refresh does not clear `deleteModal`. A durability rejection there shows the shared sentence and stays open. Puzzle delete and engine removal catch their own errors and do not change.
+* **Rejected:** A Files-only prop on `ConfirmModal`. It would fork the durability sentence the mandate asks to share, and database delete would keep the partial-removal sentence for a committed-but-unconfirmed delete.
+* **Reason:** `confirmationErrorMessage` is the one place a rejecting confirm reads its sentence. Database delete is the other production confirm that lets `runDestructiveWithRefresh` reject into that modal.
+* **Reversal path:** a Files-only sentence only if database delete must keep the partial-removal wording for a durability rejection, recorded as a new decision.
+* **Decided by:** Grok, full auto, session 12100003-de22-488c-b30e-133be7529fc8, adopted reviewed plan tasks/plans/2026-10-26-files-durability-notice.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":39,"effect_sha256":"1987abd0f3972d80c8cd528aa1cfaa57bd6878261bb47451e6a6b2d584f66781","input_sha256":"be6c1a471cd7501a452f6a2256a1a0eda7ac71619f74c9ccef4ed7d3b583b78d","kind":"mutation-receipt","operation":"825cebd413445784b9c089b618270761cb2177d49a22d6ca586e69d45ff0a871","options":{"section":null},"request_id_sha256":null,"results":["d-20261026-01","d-20261026-02","d-20261026-03","d-20261026-04"],"target":"decisions-ledger","v":1} -->
