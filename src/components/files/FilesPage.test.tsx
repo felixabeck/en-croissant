@@ -825,10 +825,11 @@ describe.each(Object.keys(mutationCommands) as MutationAction[])("%s typed refus
       expect((dialog.querySelector("select") as HTMLSelectElement | null)?.value).toBe(
         action === "metadata" ? "repertoire" : undefined,
       );
-      if (action === "move")
-        expect(
-          (dialog.querySelector('input[type="radio"]:checked') as HTMLInputElement).value,
-        ).toBe(fileWorkspaceKey(workspace));
+      const checkedDestination =
+        action === "move"
+          ? (dialog.querySelector('input[type="radio"]:checked') as HTMLInputElement).value
+          : undefined;
+      expect(checkedDestination).toBe(action === "move" ? fileWorkspaceKey(workspace) : undefined);
       expect(dialogButton(action === "move" ? "Move" : "Confirm").disabled).toBe(false);
     },
   );
