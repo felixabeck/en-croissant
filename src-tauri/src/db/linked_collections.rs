@@ -2263,7 +2263,7 @@ impl CollectionService {
     #[cfg(test)]
     pub(crate) fn insert_retired_database_for_test(&self, file: DatabaseHandle) {
         let source = FileWorkspaceHandle::new(file.path_ref().clone());
-        Self::state(&mut *self.lock(&CancellationToken::new()).unwrap())
+        Self::state(&mut self.lock(&CancellationToken::new()).unwrap())
             .unwrap()
             .records
             .push(Record {
