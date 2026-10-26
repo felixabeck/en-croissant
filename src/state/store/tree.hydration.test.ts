@@ -17,9 +17,48 @@ import {
     retryTreeStoreStorage,
     retargetTreeStore,
     prepareTreeStoreRetarget,
+    nextContinuation,
 } from "./tree";
 
 const ids: string[] = [];
+
+test.each([0, TREE_STORAGE_VERSION])(
+    "hydration derives legal EP identity without rewriting version %i FENs",
+    (version) => {
+        const id = crypto.randomUUID();
+        ids.push(id);
+        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        const memory = createTreeStore(undefined, defaultTree(fen));
+        const cycle = ["g8f6", "g1f3", "f6g8", "f3g1"];
+        expect(memory.getState().makeMoves({ payload: cycle }).success).toBe(true);
+        const saved = memory.getState();
+        const raw = serializeStorageValue({ version, state: saved });
+        sessionStorage.setItem(id, raw);
+
+        const store = createTreeStore(id);
+        const restored = store.getState();
+        expect(restored.root).toEqual(saved.root);
+        expect(restored.headers).toEqual(saved.headers);
+        expect(restored.position).toEqual([0, 0, 0, 0]);
+        expect(restored.currentNode()).toMatchObject({
+            fen: fen.replace("e3 0 1", "- 4 3"),
+            halfMoves: 5,
+        });
+        const map = getMemoizedBoardStateMap(restored.root);
+        expect(map[getBoardState(restored.currentNode().fen)].map(({ path }) => path)).toEqual([
+            [],
+            [0, 0, 0, 0],
+        ]);
+        expect(nextContinuation(restored)?.path).toEqual([]);
+        expect(tabStorage.read<TreeStoreSnapshot>(id)?.state.root).toEqual(saved.root);
+        expect(restored.headers.result).toBe("*");
+        expect(restored.makeMoves({ payload: cycle }).success).toBe(true);
+        expect(store.getState().headers.result).toBe("1/2-1/2");
+        expect(store.getState().root.fen).toBe(fen);
+        expect(store.getState().headers.fen).toBe(fen);
+        expect(store.getState().currentNode().fen).toBe(fen.replace("e3 0 1", "- 8 5"));
+    },
+);
 
 test.each(["omitted", "undefined", "provided"] as const)(
     "complete tree replacement normalizes %s provenance while ordinary partial updates retain it",

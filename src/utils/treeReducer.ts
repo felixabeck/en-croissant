@@ -3,6 +3,7 @@ import type { Move } from "chessops";
 import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Outcome, Score } from "@/bindings";
 import type { PuzzleSession } from "@/state/puzzleSession";
+import { positionFromFen } from "@/utils/chessops";
 
 export interface TreeState {
     root: TreeNode;
@@ -284,5 +285,11 @@ export interface ReportState {
 }
 
 export function getBoardState(fen: string): string {
-    return fen.split(" ").slice(0, 4).join(" ");
+    const fields = fen.split(" ").slice(0, 4);
+    if (fields[3] && fields[3] !== "-") {
+        const [position] = positionFromFen(fen);
+        // Only legal EP rights affect identity. Keep raw fields for incomplete editor positions.
+        if (position && position.toSetup().epSquare === undefined) fields[3] = "-";
+    }
+    return fields.join(" ");
 }

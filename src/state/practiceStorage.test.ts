@@ -56,6 +56,14 @@ import {
 
 const firstFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const sameBoardDifferentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 7 42";
+const identityRefreshes = [
+    { name: "clocks", raw: firstFen, refreshed: sameBoardDifferentFen },
+    {
+        name: "uncapturable EP",
+        raw: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        refreshed: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 7 42",
+    },
+];
 
 function position(fen = firstFen, card = { due: "2026-09-22T00:00:00.000Z", reps: 0 }): Position {
     return { fen, answer: "e4", card: card as unknown as Position["card"] };
@@ -608,32 +616,57 @@ describe("the real practice deck atom", () => {
         reopened.unsubscribe();
     });
 
-    test("merges a committed rating into a later debounced sync", async () => {
-        const source = position();
-        const syncPosition = position(sameBoardDifferentFen);
-        const rated = position(sameBoardDifferentFen, {
-            due: "2026-10-01T00:00:00.000Z",
-            reps: 1,
-        });
-        native.load.mockResolvedValue(snapshot([source], { revision: 4, generation: 2 }));
-        native.record.mockResolvedValueOnce(5);
-        native.sync.mockResolvedValueOnce(6);
+    test.each(identityRefreshes)(
+        "merges a committed rating into a later $name sync",
+        async ({ raw, refreshed }) => {
+            const source = position(raw);
+            const syncPosition = position(refreshed);
+            const rated = position(raw, {
+                due: "2026-10-01T00:00:00.000Z",
+                reps: 1,
+            });
+            native.load.mockResolvedValue(snapshot([source], { revision: 4, generation: 2 }));
+            native.record.mockResolvedValueOnce(5);
+            native.sync.mockResolvedValueOnce(6);
+            const { atom, store, unsubscribe } = mountDeck();
+            await waitForReady(store, atom);
+            vi.useFakeTimers();
+
+            const syncWrite = store.set(atom, { type: "sync", positions: [syncPosition] });
+            const ratingWrite = store.set(atom, {
+                ...ratingMutation([rated], source),
+                entryId: "before-sync",
+            });
+            await ratingWrite;
+            await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+            await syncWrite;
+
+            expect(native.sync).toHaveBeenCalledOnce();
+            expect(native.sync.mock.calls[0][3]).toBe(5);
+            expect(JSON.parse(native.sync.mock.calls[0][4]).positions).toEqual([
+                { ...rated, fen: refreshed },
+            ]);
+            expect(JSON.parse(native.record.mock.calls[0][6]).fen).toBe(raw);
+            expect(native.record.mock.calls[0][7]).toBe("before-sync");
+            unsubscribe();
+        },
+    );
+
+    test("debounced EP sync retains the last committed equivalent card without merging histories", async () => {
+        const { raw, refreshed } = identityRefreshes[1];
+        const first = position(raw, { due: "2026-10-01T00:00:00.000Z", reps: 4 });
+        const last = position(refreshed, { due: "2026-11-01T00:00:00.000Z", reps: 9 });
+        native.load.mockResolvedValue(snapshot([first, last]));
         const { atom, store, unsubscribe } = mountDeck();
         await waitForReady(store, atom);
         vi.useFakeTimers();
-
-        const syncWrite = store.set(atom, { type: "sync", positions: [syncPosition] });
-        const ratingWrite = store.set(atom, {
-            ...ratingMutation([rated], source),
-            entryId: "before-sync",
-        });
-        await ratingWrite;
+        const pending = store.set(atom, { type: "sync", positions: [position(raw)] });
         await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
-        await syncWrite;
-
-        expect(native.sync).toHaveBeenCalledOnce();
-        expect(native.sync.mock.calls[0][3]).toBe(5);
-        expect(JSON.parse(native.sync.mock.calls[0][4]).positions).toEqual([rated]);
+        await pending;
+        expect(JSON.parse(native.sync.mock.calls[0][4]).positions).toEqual([
+            { ...first, card: last.card },
+        ]);
+        expect(store.get(atom).positions).toEqual([{ ...first, card: last.card }]);
         unsubscribe();
     });
 
@@ -723,42 +756,45 @@ describe("the real practice deck atom", () => {
         unsubscribe();
     });
 
-    test("reports and adopts a rating whose conflicted card already changed", async () => {
-        const source = position();
-        const rated = position(firstFen, { due: "2026-10-01T00:00:00.000Z", reps: 1 });
-        const reloaded = position(firstFen, { due: "2026-10-02T00:00:00.000Z", reps: 2 });
-        native.load
-            .mockResolvedValueOnce(snapshot([source], { revision: 4, generation: 2 }))
-            .mockResolvedValueOnce(snapshot([reloaded], { revision: 5, generation: 2 }));
-        native.record.mockRejectedValueOnce({
-            tag: "backend-error",
-            category: "conflict",
-            message: "revision conflict",
-        });
-        const { atom, store, unsubscribe } = mountDeck();
-        await waitForReady(store, atom);
+    test.each(identityRefreshes)(
+        "reports and adopts a rating whose $name-equivalent conflicted card already changed",
+        async ({ raw, refreshed }) => {
+            const source = position(raw);
+            const rated = position(raw, { due: "2026-10-01T00:00:00.000Z", reps: 1 });
+            const reloaded = position(refreshed, { due: "2026-10-02T00:00:00.000Z", reps: 2 });
+            native.load
+                .mockResolvedValueOnce(snapshot([source], { revision: 4, generation: 2 }))
+                .mockResolvedValueOnce(snapshot([reloaded], { revision: 5, generation: 2 }));
+            native.record.mockRejectedValueOnce({
+                tag: "backend-error",
+                category: "conflict",
+                message: "revision conflict",
+            });
+            const { atom, store, unsubscribe } = mountDeck();
+            await waitForReady(store, atom);
 
-        await store.set(atom, {
-            ...ratingMutation([rated], source),
-            entryId: "dropped-rating",
-        });
+            await store.set(atom, {
+                ...ratingMutation([rated], source),
+                entryId: "dropped-rating",
+            });
 
-        expect(persistError.report).toHaveBeenCalledOnce();
-        expect(store.get(atom).status).toBe("ready");
-        expect(store.get(atom).positions).toEqual([reloaded]);
+            expect(persistError.report).toHaveBeenCalledOnce();
+            expect(store.get(atom).status).toBe("ready");
+            expect(store.get(atom).positions).toEqual([reloaded]);
 
-        native.record.mockResolvedValueOnce(6);
-        await store.set(atom, {
-            ...ratingMutation(
-                [position(firstFen, { due: "2026-12-01T00:00:00.000Z", reps: 3 })],
-                reloaded,
-            ),
-            entryId: "after-drop",
-        });
-        expect(native.record).toHaveBeenCalledTimes(2);
-        expect(persistError.report).toHaveBeenCalledOnce();
-        unsubscribe();
-    });
+            native.record.mockResolvedValueOnce(6);
+            await store.set(atom, {
+                ...ratingMutation(
+                    [position(refreshed, { due: "2026-12-01T00:00:00.000Z", reps: 3 })],
+                    reloaded,
+                ),
+                entryId: "after-drop",
+            });
+            expect(native.record).toHaveBeenCalledTimes(2);
+            expect(persistError.report).toHaveBeenCalledOnce();
+            unsubscribe();
+        },
+    );
 
     test("reports an already-queued rating as not saved after an earlier write fails", async () => {
         const source = position();
@@ -791,39 +827,45 @@ describe("the real practice deck atom", () => {
         unsubscribe();
     });
 
-    test("retries a conflict by canonical board identity with the same entry and base revision", async () => {
-        const source = position(firstFen);
-        const changed = position(firstFen, { due: "2026-10-01T00:00:00.000Z", reps: 1 });
-        native.load
-            .mockResolvedValueOnce(snapshot([source], { revision: 4, generation: 2 }))
-            .mockResolvedValueOnce(
-                snapshot([position(sameBoardDifferentFen)], { revision: 5, generation: 2 }),
-            );
-        native.record.mockRejectedValueOnce({
-            tag: "backend-error",
-            category: "conflict",
-            message: "revision conflict",
-        });
-        native.record.mockResolvedValueOnce(6);
-        const { atom, store, unsubscribe } = mountDeck();
-        await waitForReady(store, atom);
+    test.each(identityRefreshes)(
+        "retries a $name conflict by board identity with the same entry and base revision",
+        async ({ raw, refreshed }) => {
+            const source = position(raw);
+            const changed = position(raw, { due: "2026-10-01T00:00:00.000Z", reps: 1 });
+            const second = position(raw, { due: "2026-12-01T00:00:00.000Z", reps: 9 });
+            native.load
+                .mockResolvedValueOnce(snapshot([source], { revision: 4, generation: 2 }))
+                .mockResolvedValueOnce(
+                    snapshot([position(refreshed), second], { revision: 5, generation: 2 }),
+                );
+            native.record.mockRejectedValueOnce({
+                tag: "backend-error",
+                category: "conflict",
+                message: "revision conflict",
+            });
+            native.record.mockResolvedValueOnce(6);
+            const { atom, store, unsubscribe } = mountDeck();
+            await waitForReady(store, atom);
 
-        await store.set(atom, {
-            ...ratingMutation([changed], source),
-            positions: [changed],
-        });
+            await store.set(atom, {
+                ...ratingMutation([changed], source),
+                positions: [changed],
+            });
 
-        expect(native.record).toHaveBeenCalledTimes(2);
-        expect(native.record.mock.calls[0][4]).toBe(4);
-        expect(native.record.mock.calls[1][4]).toBe(4);
-        expect(native.record.mock.calls[0][7]).toBe("entry-fixed");
-        expect(native.record.mock.calls[1][7]).toBe("entry-fixed");
-        expect(JSON.parse(native.record.mock.calls[1][5]).positions[0].fen).toBe(
-            sameBoardDifferentFen,
-        );
-        expect(store.get(atom).status).toBe("ready");
-        unsubscribe();
-    });
+            expect(native.record).toHaveBeenCalledTimes(2);
+            expect(native.record.mock.calls[0][4]).toBe(4);
+            expect(native.record.mock.calls[1][4]).toBe(4);
+            expect(native.record.mock.calls[0][7]).toBe("entry-fixed");
+            expect(native.record.mock.calls[1][7]).toBe("entry-fixed");
+            expect(JSON.parse(native.record.mock.calls[1][5]).positions).toEqual([
+                { ...changed, fen: refreshed },
+                second,
+            ]);
+            expect(JSON.parse(native.record.mock.calls[1][6]).fen).toBe(raw);
+            expect(store.get(atom).status).toBe("ready");
+            unsubscribe();
+        },
+    );
 
     test("branches on backendCategory rather than the renderer validation category", async () => {
         const source = position();

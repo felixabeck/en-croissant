@@ -1,6 +1,6 @@
 import { parseUci } from "chessops";
 import { expect, test } from "vitest";
-import { buildFromTree, syncDeck } from "./opening";
+import { buildFromTree, syncDeck, updateCardPerformance } from "./opening";
 import { createNode, defaultTree, type TreeNode } from "@/utils/treeReducer";
 
 function practiceNode(fen: string, answer: string): TreeNode {
@@ -111,3 +111,37 @@ test("deck synchronization reports a reordering of the same cards", () => {
     expect(result.positions.map((card) => card.answer)).toEqual(["d5", "e5"]);
     expect(syncDeck(existing, originalTree, "white", []).reordered).toBe(false);
 });
+
+test.each([false, true])(
+    "EP-equivalent deck refresh retains scheduling with an admissible duplicate=%s",
+    (duplicate) => {
+        const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
+        const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
+        const original = defaultTree().root;
+        original.children.push(practiceNode(raw, "e4"));
+        const [first] = buildFromTree(original, "white", []);
+        first.card.reps = 4;
+        const last = { ...first, fen: canonical, card: { ...first.card, reps: 9 } };
+        const existing = duplicate ? [first, last] : [first];
+        const refreshed = defaultTree().root;
+        refreshed.children.push(practiceNode(canonical, "Kf2"), practiceNode(raw, "e4"));
+        expect(
+            buildFromTree(refreshed, "white", []).map(({ fen, answer }) => ({ fen, answer })),
+        ).toEqual([{ fen: canonical, answer: "Kf2" }]);
+
+        const result = syncDeck(existing, refreshed, "white", []);
+        expect(result).toMatchObject({ added: 0, removed: 0, updated: 1, reordered: false });
+        expect(result.positions).toHaveLength(1);
+        expect(result.positions[0]).toEqual({
+            ...first,
+            fen: canonical,
+            answer: "Kf2",
+            card: duplicate ? last.card : first.card,
+        });
+        expect(existing[0].fen).toBe(raw);
+        const review = updateCardPerformance([first], 0, first.card, 3)!;
+        expect(review.entry.fen).toBe(raw);
+        expect(review.entryId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(review.positions[0].fen).toBe(raw);
+    },
+);

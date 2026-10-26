@@ -11,7 +11,15 @@ import {
     parsePGN,
     parseStartHeader,
 } from "../chess";
-import { createNode, defaultTree, treeIteratorMainLine, type TreeNode } from "../treeReducer";
+import {
+    createNode,
+    defaultTree,
+    getBoardState,
+    getMemoizedBoardStateMap,
+    getNodeAtPath,
+    treeIteratorMainLine,
+    type TreeNode,
+} from "../treeReducer";
 
 const mocks = vi.hoisted(() => ({ lexPgn: vi.fn() }));
 
@@ -30,6 +38,33 @@ function tokens(fen: string, san: string): Token[] {
 beforeEach(() => {
     mocks.lexPgn.mockReset();
 });
+
+test.each(["header", "override"] as const)(
+    "PGN %s preserves raw EP while indexing its legal repetition",
+    async (source) => {
+        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        mocks.lexPgn.mockResolvedValueOnce([
+            {
+                type: "Header",
+                value: { tag: "FEN", value: source === "header" ? fen : INITIAL_FEN },
+            },
+            ...["Nf6", "Nf3", "Ng8", "Ng1"].map((value): Token => ({ type: "San", value })),
+        ] satisfies Token[]);
+        const tree = await parsePGN(
+            "ignored by mocked lexer",
+            source === "override" ? fen : undefined,
+        );
+        expect(tree.root.fen).toBe(fen);
+        expect(tree.headers.fen).toBe(fen);
+        const repeated = getNodeAtPath(tree.root, [0, 0, 0, 0]);
+        expect(repeated.fen).toBe(fen.replace("e3 0 1", "- 4 3"));
+        expect(
+            getMemoizedBoardStateMap(tree.root)[getBoardState(repeated.fen)].map(
+                ({ path }) => path,
+            ),
+        ).toEqual([[], [0, 0, 0, 0]]);
+    },
+);
 
 test.each([
     {

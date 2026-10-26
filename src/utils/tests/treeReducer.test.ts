@@ -1,5 +1,6 @@
 import { parseUci } from "chessops";
 import { describe, expect, test, vi } from "vitest";
+import * as chessops from "@/utils/chessops";
 import {
     boardStateMapBuilder,
     countMainPly,
@@ -218,6 +219,99 @@ test("the memoized map is keyed by the whole start path, not its concatenated di
     }
 });
 
-test("board-state identity uses exactly the first four FEN fields", () => {
+test("board-state identity excludes clocks even for incomplete positions", () => {
     expect(getBoardState("8/8/8/8/8/8/8/8 w - - 17 42")).toBe("8/8/8/8/8/8/8/8 w - -");
+});
+
+test("board-state identity needs no legal-position parse when EP is absent", () => {
+    const parse = vi.spyOn(chessops, "positionFromFen");
+    try {
+        for (const [fen, expectedKey] of [
+            [
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+            ],
+            [
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 17 42",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+            ],
+            ["4k3/8/8/8/8/8/8/4K3 b - - 0 1", "4k3/8/8/8/8/8/8/4K3 b - -"],
+            ["8/8/8/8/8/8/8/8 w - - 17 42", "8/8/8/8/8/8/8/8 w - -"],
+            ["synthetic w KQ - 0 1", "synthetic w KQ -"],
+            ["synthetic w KQ", "synthetic w KQ"],
+            ["not a FEN", "not a FEN"],
+            ["", ""],
+        ]) {
+            expect(getBoardState(fen)).toBe(expectedKey);
+        }
+        expect(parse).not.toHaveBeenCalled();
+
+        const legalEp = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2";
+        expect(getBoardState(legalEp)).toBe("4k3/8/8/3pP3/8/8/8/4K3 w - d6");
+        expect(parse).toHaveBeenCalledExactlyOnceWith(legalEp);
+    } finally {
+        parse.mockRestore();
+    }
+});
+
+test.each([
+    {
+        name: "absent capturer",
+        fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        captures: [],
+        rejected: [],
+    },
+    {
+        name: "legal capture",
+        fen: "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2",
+        captures: ["e5d6"],
+        rejected: [],
+    },
+    {
+        name: "file pin",
+        fen: "k3r3/8/8/3pP3/8/8/8/4K3 w - d6 0 2",
+        captures: [],
+        rejected: ["e5d6"],
+    },
+    {
+        name: "horizontal discovered check",
+        fen: "7k/8/8/r4pPK/8/8/8/8 w - f6 0 2",
+        captures: [],
+        rejected: ["g5f6"],
+    },
+    {
+        name: "one pinned and one legal capturer",
+        fen: "k3r3/8/8/2PpP3/8/8/8/4K3 w - d6 0 2",
+        captures: ["c5d6"],
+        rejected: ["e5d6"],
+    },
+])("board-state EP identity follows library legality for $name", ({ fen, captures, rejected }) => {
+    const [position, error] = chessops.positionFromFen(fen);
+    expect(error).toBeNull();
+    for (const uci of captures) expect(position!.isLegal(parseUci(uci)!)).toBe(true);
+    for (const uci of rejected) expect(position!.isLegal(parseUci(uci)!)).toBe(false);
+    const withoutEp = fen.replace(/ [a-h][36] /, " - ");
+    const expectedKey = (captures.length ? fen : withoutEp).split(" ").slice(0, 4).join(" ");
+    expect(getBoardState(fen) === getBoardState(withoutEp)).toBe(captures.length === 0);
+    expect(getBoardState(fen)).toBe(expectedKey);
+});
+
+test("EP correction preserves unrelated board, turn and castling representations", () => {
+    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha e3 17 42";
+    expect(chessops.positionFromFen(fen)[1]).toBeNull();
+    expect(getBoardState(fen)).toBe("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha -");
+    expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(" b ", " w ")));
+    expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(" HAha ", " KQkq ")));
+});
+
+test.each([
+    "8/8/8/8/8/8/8/8 w - e3 17 42",
+    "4k3/8/8/8/8/8/8/8 w - e3 0 1",
+    "4k3/8/8/8/8/8/8/4K3 w - invalid 0 1",
+    "synthetic w KQ e3 0 1",
+    "not a FEN",
+    "",
+])("board-state identity tolerates rejected positions without rewriting %s", (fen) => {
+    expect(chessops.positionFromFen(fen)[0]).toBeNull();
+    expect(getBoardState(fen)).toBe(fen.split(" ").slice(0, 4).join(" "));
 });

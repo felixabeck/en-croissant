@@ -493,6 +493,38 @@ test("receives the complete memoized board-state map for transposed nodes", asyn
   );
 });
 
+test("a legal repetition finds the raw EP root's prepared repertoire answer", async () => {
+  const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+  const builder = createTreeStore(undefined, defaultTree(fen));
+  expect(builder.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success).toBe(
+    true,
+  );
+  const initial = builder.getState();
+  let tree!: TreeStore;
+  await renderRepertoireInfo(
+    { ...initial, headers: { ...initial.headers, orientation: "black" } },
+    "repertoire-info-ep",
+    (value) => {
+      tree = value;
+    },
+  );
+  const stateMoves = mocks.computeTreeCoverage.mock.calls.at(-1)![5] as Map<
+    string,
+    Map<string, string>
+  >;
+  expect(stateMoves.get(getBoardState(tree.getState().currentNode().fen))?.get("Nf6")).toBe(
+    getBoardState(initial.root.children[0].fen),
+  );
+  const row = [...host.querySelectorAll("button")].find((button) =>
+    [...button.querySelectorAll("p")].some((label) => label.textContent === "1... Nf6"),
+  );
+  expect(row).toBeDefined();
+  await act(async () => row!.click());
+  expect(tree.getState().position).toEqual([0]);
+  expect(tree.getState().root.fen).toBe(fen);
+  expect(tree.getState().headers.fen).toBe(fen);
+});
+
 test("renders exact White and Black move labels", async () => {
   const initial = defaultTree();
   const whiteMove = createNode({

@@ -15,6 +15,7 @@ import {
 import type { ErrorPayload } from "../src/bindings/generated";
 import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
 import type { Page } from "@playwright/test";
+import type { TreeState } from "../src/utils/treeReducer";
 
 async function importAnalysisFen(page: Page, initialFen: string) {
     await page.goto("/");
@@ -52,6 +53,75 @@ async function expectEditorRoot(page: Page, expectedFen: string) {
             position: [],
         });
 }
+
+test("board-keyboard: imported EP root reaches threefold through real moves and survives reload", async ({
+    page,
+    capture,
+}) => {
+    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+    const grid = await importAnalysisFen(page, fen);
+    const tab = (await activeWorkspaceTab(page))!;
+    const board = page.locator("cg-board").first();
+    const result = page.getByLabel(/^result$/i);
+    await expect(result).toHaveValue("*");
+
+    async function expectSavedCycle(cycle: number) {
+        await expect
+            .poll(async () => {
+                const raw = await page.evaluate(
+                    (key) => sessionStorage.getItem(key),
+                    tab.treeKey ?? tab.value,
+                );
+                const state = raw
+                    ? deserializeStorageValue<{ state: TreeState }>(raw)?.state
+                    : null;
+                if (!state) return null;
+                let current = state.root;
+                for (const index of state.position) current = current.children[index];
+                return {
+                    rootFen: state.root.fen,
+                    headerFen: state.headers.fen,
+                    result: state.headers.result,
+                    position: state.position,
+                    currentFen: current.fen,
+                    halfMoves: current.halfMoves,
+                };
+            })
+            .toEqual({
+                rootFen: fen,
+                headerFen: fen,
+                result: cycle === 1 ? "*" : "1/2-1/2",
+                position: Array(cycle * 4).fill(0),
+                currentFen: fen.replace("e3 0 1", `- ${4 * cycle} ${2 * cycle + 1}`),
+                halfMoves: 4 * cycle + 1,
+            });
+    }
+
+    for (let cycle = 1; cycle <= 2; cycle++) {
+        for (const [from, to] of [
+            ["g8", "f6"],
+            ["g1", "f3"],
+            ["f6", "g8"],
+            ["f3", "g1"],
+        ]) {
+            await playBoardMove(page, board, from, to);
+        }
+        await expect(result).toHaveValue(cycle === 1 ? "*" : "1/2-1/2");
+        await expectSavedCycle(cycle);
+        await preserveStorageForReload(page);
+        await expect(grid).toBeVisible();
+        await expect(result).toHaveValue(cycle === 1 ? "*" : "1/2-1/2");
+        expect((await activeWorkspaceTab(page))!.value).toBe(tab.value);
+        await expectSavedCycle(cycle);
+    }
+    await expect(grid.getByRole("gridcell", { name: "g8, Black Knight", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(grid.getByRole("gridcell", { name: "g1, White Knight", exact: true })).toHaveCount(
+        1,
+    );
+    await capture("board-en-passant-repetition");
+});
 
 test("board-keyboard: editor castling rights follow a king dragged off its back rank", async ({
     page,
