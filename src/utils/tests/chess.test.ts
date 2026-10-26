@@ -41,13 +41,13 @@ beforeEach(() => {
 
 test.each(
     (["header", "override"] as const).flatMap((source) =>
-        ["KQkq e3", "HAha -"].map((rights) => ({ source, rights })),
+        ["KQkq e3", "HAha -"].map((rightsAndEp) => ({ source, rightsAndEp })),
     ),
 )(
-    "renderer PGN $source preserves raw $rights while indexing its legal repetition",
-    async ({ source, rights }) => {
+    "renderer PGN $source preserves raw $rightsAndEp while indexing its legal repetition",
+    async ({ source, rightsAndEp }) => {
         const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-        const fen = `${board} ${rights} 0 1`;
+        const fen = `${board} ${rightsAndEp} 0 1`;
         mocks.lexPgn.mockResolvedValueOnce([
             {
                 type: "Header",

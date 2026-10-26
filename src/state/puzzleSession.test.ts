@@ -163,9 +163,9 @@ test("selection derives from stable identity and unresolved selection never gues
 
 test.each(["KQkq e3", "HAha -"])(
     "%s-equivalent puzzle attempts retain their selected UUID and require the actual played path",
-    (rights) => {
+    (rightsAndEp) => {
         const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-        const fen = `${board} ${rights} 0 1`;
+        const fen = `${board} ${rightsAndEp} 0 1`;
         const puzzle = {
             ...attempt("unused").puzzle,
             fen: `${board} KQkq - 0 1`,
@@ -219,11 +219,11 @@ test.each(["KQkq e3", "HAha -"])(
 
 test.each(
     (["unique", "ambiguous"] as const).flatMap((ownership) =>
-        ["KQkq e3", "HAha -"].map((rights) => ({ ownership, rights })),
+        ["KQkq e3", "HAha -"].map((rightsAndEp) => ({ ownership, rightsAndEp })),
     ),
-)("legacy $rights ownership handles $ownership matches", ({ ownership, rights }) => {
+)("legacy $rightsAndEp ownership handles $ownership matches", ({ ownership, rightsAndEp }) => {
     const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-    const fen = `${board} ${rights} 0 1`;
+    const fen = `${board} ${rightsAndEp} 0 1`;
     const puzzle = {
         ...attempt("unused").puzzle,
         fen: `${board} KQkq - 0 1`,

@@ -167,9 +167,9 @@ describe("practiceSessionReducer", () => {
 
     it.each(["KQkq e3", "HAha -"])(
         "keeps exact currentFen authority when %s cards share a position key",
-        (rights) => {
+        (rightsAndEp) => {
             const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-            const fen = `${board} ${rights} 0 1`;
+            const fen = `${board} ${rightsAndEp} 0 1`;
             const canonical = `${board} KQkq - 0 1`;
             expect(getBoardState(fen)).toBe(getBoardState(canonical));
             const waiting = practiceSessionReducer(idlePracticeSession(), {

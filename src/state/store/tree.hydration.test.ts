@@ -24,15 +24,15 @@ const ids: string[] = [];
 
 test.each(
     [0, TREE_STORAGE_VERSION].flatMap((version) =>
-        ["KQkq e3", "HAha -"].map((rights) => ({ version, rights })),
+        ["KQkq e3", "HAha -"].map((rightsAndEp) => ({ version, rightsAndEp })),
     ),
 )(
-    "hydration derives $rights identity without rewriting version $version FENs",
-    ({ version, rights }) => {
+    "hydration derives $rightsAndEp identity without rewriting version $version FENs",
+    ({ version, rightsAndEp }) => {
         const id = crypto.randomUUID();
         ids.push(id);
         const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-        const fen = `${board} ${rights} 0 1`;
+        const fen = `${board} ${rightsAndEp} 0 1`;
         const memory = createTreeStore(undefined, defaultTree(fen));
         const cycle = ["g8f6", "g1f3", "f6g8", "f3g1"];
         expect(memory.getState().makeMoves({ payload: cycle }).success).toBe(true);

@@ -408,13 +408,13 @@ test("appendMove checks repetition along the mainline append path", () => {
 
 test.each(
     (["defaultTree", "setFen", "setHeaders"] as const).flatMap((creation) =>
-        ["KQkq e3", "HAha -", "KQkq -"].map((rights) => ({ creation, rights })),
+        ["KQkq e3", "HAha -", "KQkq -"].map((rightsAndEp) => ({ creation, rightsAndEp })),
     ),
 )(
-    "$creation preserves raw $rights while real moves count its third occurrence",
-    ({ creation, rights }) => {
+    "$creation preserves raw $rightsAndEp while real moves count its third occurrence",
+    ({ creation, rightsAndEp }) => {
         const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
-        const fen = `${board} ${rights} 0 1`;
+        const fen = `${board} ${rightsAndEp} 0 1`;
         const store = createTreeStore(
             undefined,
             creation === "defaultTree" ? defaultTree(fen) : undefined,
@@ -469,8 +469,8 @@ test.each(
 
 test.each(["KQkq e3", "HAha -"])(
     "%s repetition counts the selected batch path without borrowing sibling occurrences",
-    (rights) => {
-        const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rights} 0 1`;
+    (rightsAndEp) => {
+        const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rightsAndEp} 0 1`;
         const store = createTreeStore(undefined, defaultTree(fen));
         expect(
             store.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success,

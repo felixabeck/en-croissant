@@ -495,10 +495,10 @@ test("receives the complete memoized board-state map for transposed nodes", asyn
 
 test.each(["KQkq e3", "HAha -"])(
   "a legal repetition finds the raw %s root's prepared repertoire answer",
-  async (rights) => {
+  async (rightsAndEp) => {
     const id = crypto.randomUUID();
     onTestFinished(() => closeTreeStore(id));
-    const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rights} 0 1`;
+    const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rightsAndEp} 0 1`;
     const builder = createTreeStore(undefined, defaultTree(fen));
     expect(
       builder.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success,
