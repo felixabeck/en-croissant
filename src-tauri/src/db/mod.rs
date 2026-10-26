@@ -39,8 +39,8 @@ use crate::{
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
-            DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation,
-            RegularFileMetadata,
+            DatabaseDeleteRecovery, DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle,
+            PathOperation, RegularFileMetadata,
         },
     },
     opening::get_opening_from_setup,
@@ -3051,20 +3051,55 @@ fn delete_database_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
-    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    let _content_deletion =
-        content_validation::begin_delete(repository, target.path(), cancellation)?;
-    let identity = match repository.identity_from_probe(&target, cancellation, true) {
-        Ok(identity) => identity,
-        Err(error) if crate::error::is_sqlite_notadb(&error) => {
-            repository.identity_from_probe(&target, cancellation, false)?
+    let (target, absent) = match resolve_database(authority, &file, PathOperation::DatabaseMutate) {
+        Ok(target) => (target, false),
+        Err(error) if error.is_missing_entry() => {
+            match authority.with_mut(|authority| {
+                authority.recover_database_deletion(&file, error, cancellation)
+            })?? {
+                DatabaseDeleteRecovery::Absent(target) => (target, true),
+                DatabaseDeleteRecovery::Present => (
+                    resolve_database(authority, &file, PathOperation::DatabaseMutate)?,
+                    false,
+                ),
+            }
         }
         Err(error) => return Err(error),
     };
-    let expected_source = IndexSource::from_database_identity(&identity)?;
+    let _content_deletion =
+        content_validation::begin_delete(repository, target.path(), cancellation)?;
+    let expected_source = if absent {
+        IndexSource {
+            object: target.identity(),
+            revision: u64::MAX,
+            database_length: u64::MAX,
+            database_modified_nanos: u128::MAX,
+        }
+    } else {
+        let identity = match repository.identity_from_probe(&target, cancellation, true) {
+            Ok(identity) => identity,
+            Err(error) if crate::error::is_sqlite_notadb(&error) => {
+                repository.identity_from_probe(&target, cancellation, false)?
+            }
+            Err(error) => return Err(error),
+        };
+        IndexSource::from_database_identity(&identity)?
+    };
     let mut committed_removal: Option<CommittedRemoval> = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
-        guard_database_mutation(authority, &file, PathOperation::DatabaseMutate)?;
+        if absent {
+            if let Some(collections) = authority.collections()? {
+                #[cfg(test)]
+                ABSENT_PRIMARY_BEFORE_COLLECTION_GUARD.with(|slot| {
+                    if let Some(hook) = slot.borrow_mut().take() {
+                        hook();
+                    }
+                });
+                collections.guard_database(&file, PathOperation::DatabaseMutate)?;
+            }
+        } else {
+            guard_database_mutation(authority, &file, PathOperation::DatabaseMutate)?;
+        }
         search_cache.invalidate_database(&target);
         let result = unlink_database_files(&target, &expected_source);
         search_cache.invalidate_database(&target);
@@ -3087,6 +3122,8 @@ fn delete_database_blocking(
 
 #[cfg(test)]
 std::thread_local! {
+    static ABSENT_PRIMARY_BEFORE_COLLECTION_GUARD:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static UNLINK_PRIMARY_AFTER_IDENTITY_PROBE_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK:
@@ -12474,6 +12511,407 @@ mod content_validation_tests;
 #[cfg(test)]
 mod deletion_tests {
     use super::*;
+
+    struct AbsentPrimaryCase {
+        directory: tempfile::TempDir,
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: DatabaseHandle,
+        database: std::path::PathBuf,
+    }
+
+    impl AbsentPrimaryCase {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let parent = directory.path().join("parent");
+            std::fs::create_dir(&parent).unwrap();
+            let database = parent.join("games.db3");
+            std::fs::write(&database, b"").unwrap();
+            let (app, handle) = database_app_with_grant(
+                directory.path(),
+                &database,
+                "games",
+                full_database_operations(),
+            );
+            Self {
+                directory,
+                app,
+                handle,
+                database,
+            }
+        }
+
+        fn delete(&self, cancellation: &CancellationToken) -> Result<(), Error> {
+            let state = self.app.state::<AppState>();
+            delete_database_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                self.handle.clone(),
+                cancellation,
+            )
+        }
+
+        fn assert_registered(&self, expected: bool) {
+            let registry: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(self.directory.path().join("registry.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                registry["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["id"]["id"] == self.handle.path_ref().id),
+                expected
+            );
+            let state = self.app.state::<AppState>();
+            assert_eq!(
+                state
+                    .pgn_path_authority
+                    .with_mut(|authority| {
+                        authority.has_persistent_id(&self.handle.path_ref().id)
+                    })
+                    .unwrap(),
+                expected
+            );
+        }
+
+        fn preferred(&self) -> std::path::PathBuf {
+            let preferred = get_index_path(&self.database);
+            SearchIndexChunk::default()
+                .write_to_with_source(
+                    &preferred,
+                    IndexSource::from_database(&self.database, 0).unwrap(),
+                )
+                .unwrap()
+                .expect_durable();
+            preferred
+        }
+
+        fn recover(&self) -> Result<DatabaseDeleteRecovery, Error> {
+            let original: Error =
+                std::fs::metadata(self.directory.path().join("missing-error-source"))
+                    .unwrap_err()
+                    .into();
+            let state = self.app.state::<AppState>();
+            state
+                .pgn_path_authority
+                .with_mut(|authority| {
+                    authority.recover_database_deletion(
+                        &self.handle,
+                        original,
+                        &CancellationToken::new(),
+                    )
+                })
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn absent_primary_database_delete_prunes_without_sidecars() {
+        let case = AbsentPrimaryCase::new();
+        std::fs::remove_file(&case.database).unwrap();
+        case.delete(&CancellationToken::new()).unwrap();
+        case.assert_registered(false);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_preferred_sidecar_and_truthful_count() {
+        for fail_registry in [false, true] {
+            let case = AbsentPrimaryCase::new();
+            let preferred = case.preferred();
+            std::fs::remove_file(&case.database).unwrap();
+            let _fault = fail_registry.then(|| {
+                install_atomic_export_failure(
+                    crate::infra::fs::AtomicFileFaultPoint::TempfileCreate,
+                )
+            });
+            let result = case.delete(&CancellationToken::new());
+            if fail_registry {
+                assert!(
+                    matches!(result, Err(Error::PartialRemoval { removed_entries: 1, cause })
+                    if matches!(*cause, Error::Io(_)))
+                );
+            } else {
+                result.unwrap();
+            }
+            assert!(!preferred.exists());
+            case.assert_registered(fail_registry);
+        }
+    }
+
+    #[test]
+    fn absent_primary_database_delete_preserves_legacy_sidecar() {
+        let case = AbsentPrimaryCase::new();
+        let legacy = legacy_index_path(&case.database);
+        SearchIndexChunk::default()
+            .write_to_with_source(
+                &legacy,
+                IndexSource::from_database(&case.database, 0).unwrap(),
+            )
+            .unwrap()
+            .expect_durable();
+        let bytes = std::fs::read(&legacy).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        case.delete(&CancellationToken::new()).unwrap();
+        assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+        case.assert_registered(false);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_removes_stamp_and_sqlite_sidecars() {
+        let case = AbsentPrimaryCase::new();
+        let leaves = [
+            search_index::integrity_stamp_leaf(case.database.file_name().unwrap()),
+            std::ffi::OsString::from("games.db3-wal"),
+            std::ffi::OsString::from("games.db3-shm"),
+        ];
+        let paths = leaves.map(|leaf| case.database.with_file_name(leaf));
+        for path in &paths {
+            std::fs::write(path, b"sidecar").unwrap();
+        }
+        std::fs::remove_file(&case.database).unwrap();
+        case.delete(&CancellationToken::new()).unwrap();
+        for path in &paths {
+            assert!(!path.exists());
+        }
+        case.assert_registered(false);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_registry_failure_counts_zero() {
+        let case = AbsentPrimaryCase::new();
+        std::fs::remove_file(&case.database).unwrap();
+        let _fault =
+            install_atomic_export_failure(crate::infra::fs::AtomicFileFaultPoint::TempfileCreate);
+        assert!(matches!(case.delete(&CancellationToken::new()),
+            Err(Error::PartialRemoval { removed_entries: 0, cause })
+                if matches!(*cause, Error::Io(_))));
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_missing_parent_keeps_registration() {
+        let case = AbsentPrimaryCase::new();
+        std::fs::remove_file(&case.database).unwrap();
+        std::fs::remove_dir(case.database.parent().unwrap()).unwrap();
+        assert!(case
+            .delete(&CancellationToken::new())
+            .unwrap_err()
+            .is_missing_entry());
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_replaced_parent_keeps_old_files() {
+        let case = AbsentPrimaryCase::new();
+        let preferred = case.preferred();
+        let bytes = std::fs::read(&preferred).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        let old = case.directory.path().join("old-parent");
+        std::fs::rename(case.database.parent().unwrap(), &old).unwrap();
+        std::fs::create_dir(case.database.parent().unwrap()).unwrap();
+        std::fs::write(&preferred, b"keep replacement sidecar").unwrap();
+        assert!(
+            matches!(case.delete(&CancellationToken::new()), Err(Error::Conflict(text))
+            if text == "path authority is unavailable because its object changed")
+        );
+        assert_eq!(
+            std::fs::read(old.join(preferred.file_name().unwrap())).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(&preferred).unwrap(),
+            b"keep replacement sidecar"
+        );
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_unrecorded_parent_keeps_registration() {
+        let case = AbsentPrimaryCase::new();
+        let preferred = case.preferred();
+        let bytes = std::fs::read(&preferred).unwrap();
+        let registry_path = case.directory.path().join("registry.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        for entry in registry["entries"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("parent_identity");
+        }
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        let authority = PathAuthority::open(registry_path, vec![]).unwrap();
+        case.app
+            .state::<AppState>()
+            .pgn_path_authority
+            .install(authority)
+            .unwrap();
+        assert!(case
+            .app
+            .state::<AppState>()
+            .pgn_path_authority
+            .with_mut(|authority| { authority.parent_identity_for_test(case.handle.path_ref()) })
+            .unwrap()
+            .is_none());
+        assert!(case
+            .delete(&CancellationToken::new())
+            .unwrap_err()
+            .is_missing_entry());
+        assert!(case.database.parent().unwrap().is_dir());
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+        case.assert_registered(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_primary_database_delete_parent_permission_denied() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let case = AbsentPrimaryCase::new();
+        let preferred = case.preferred();
+        let bytes = std::fs::read(&preferred).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        let permissions = crate::infra::path_authority::TestRootPermissionGuard::restrict(
+            case.database.parent().unwrap(),
+            0o000,
+        );
+        let _fault = crate::infra::path_authority::install_acquire_target_missing_once();
+        let result = case.delete(&CancellationToken::new());
+        drop(permissions);
+        assert!(matches!(result, Err(Error::Io(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied));
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_recovery_refuses_changed_leaf() {
+        let case = AbsentPrimaryCase::new();
+        // Retain the old inode so the replacement cannot reuse its identity.
+        std::fs::rename(&case.database, case.database.with_extension("old")).unwrap();
+        std::fs::write(&case.database, b"replacement").unwrap();
+        assert!(matches!(case.recover(), Err(Error::Conflict(text))
+            if text == "workspace entry is unavailable because its object changed"));
+        assert_eq!(std::fs::read(&case.database).unwrap(), b"replacement");
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_recovery_refuses_symlink() {
+        let case = AbsentPrimaryCase::new();
+        let original = case.database.with_extension("old");
+        std::fs::rename(&case.database, &original).unwrap();
+        symlink(&original, &case.database, false).unwrap();
+        assert!(matches!(case.recover(), Err(Error::InvalidInput(_))));
+        assert!(case
+            .database
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&original).unwrap(), b"");
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_recovery_reports_present() {
+        let case = AbsentPrimaryCase::new();
+        assert!(matches!(
+            case.recover(),
+            Ok(DatabaseDeleteRecovery::Present)
+        ));
+        assert_eq!(std::fs::read(&case.database).unwrap(), b"");
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_present_falls_through_once() {
+        let (directory, app, handle, database) = blocking_database_case();
+        let _fault = crate::infra::path_authority::install_acquire_target_missing_once();
+        RESOLVE_DATABASE_OPERATIONS.with(|operations| operations.borrow_mut().clear());
+        let state = app.state::<AppState>();
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        RESOLVE_DATABASE_OPERATIONS.with(|operations| {
+            assert_eq!(*operations.borrow(), vec![PathOperation::DatabaseMutate; 2],)
+        });
+        assert!(!database.exists());
+        assert_database_registry_entry_removed(directory.path(), &handle);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_cancelled_keeps_registration_and_sidecar() {
+        let case = AbsentPrimaryCase::new();
+        let preferred = case.preferred();
+        let bytes = std::fs::read(&preferred).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            case.delete(&cancellation),
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+        case.assert_registered(true);
+    }
+
+    #[test]
+    fn absent_primary_database_delete_rechecks_collection_guard_after_absence() {
+        use crate::infra::path_authority::{
+            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
+        };
+        struct HookReset;
+        impl Drop for HookReset {
+            fn drop(&mut self) {
+                ABSENT_PRIMARY_BEFORE_COLLECTION_GUARD.with(|slot| slot.borrow_mut().take());
+            }
+        }
+        let case = AbsentPrimaryCase::new();
+        let preferred = case.preferred();
+        let bytes = std::fs::read(&preferred).unwrap();
+        std::fs::remove_file(&case.database).unwrap();
+        let state = case.app.state::<AppState>();
+        let root = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(&case.directory.path().join("app")),
+            AppOwnedDefaultRoot::Collections,
+        )
+        .unwrap();
+        state
+            .pgn_path_authority
+            .install_collections(linked_collections::CollectionService::open(
+                root,
+                Arc::clone(&state.workspace_mutation),
+                Arc::clone(&state.database_repository),
+                Arc::clone(&state.search_cache),
+                state.pgn_repository.clone(),
+            ))
+            .unwrap();
+        let collections = state.pgn_path_authority.collections().unwrap().unwrap();
+        let handle = case.handle.clone();
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let ran_hook = ran.clone();
+        let _reset = HookReset;
+        ABSENT_PRIMARY_BEFORE_COLLECTION_GUARD.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                ran_hook.set(true);
+                collections.insert_retired_database_for_test(handle);
+            }));
+        });
+        assert!(
+            matches!(case.delete(&CancellationToken::new()), Err(Error::Conflict(text))
+            if text == "database is an index or a retired independent copy")
+        );
+        assert!(ran.get());
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+        case.assert_registered(true);
+    }
     use std::path::Path;
     use tauri::Manager;
 

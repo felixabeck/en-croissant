@@ -1204,6 +1204,11 @@ pub(crate) struct DatabaseFileTarget {
     validation: DatabaseTargetValidation,
 }
 
+pub(crate) enum DatabaseDeleteRecovery {
+    Absent(DatabaseFileTarget),
+    Present,
+}
+
 enum DatabaseTargetValidation {
     Pathname,
     RetainedParent,
@@ -1518,6 +1523,7 @@ std::thread_local! {
     static PGN_EXPORT_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static ACQUIRE_TARGET_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ACQUIRE_TARGET_MISSING_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PUZZLE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static DATABASE_CHILD_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -1538,6 +1544,22 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static REFRESH_ENTRY_HOOK: std::cell::RefCell<Option<RefreshEntryHook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct AcquireTargetMissingReset;
+
+#[cfg(test)]
+impl Drop for AcquireTargetMissingReset {
+    fn drop(&mut self) {
+        ACQUIRE_TARGET_MISSING_ONCE.with(|slot| slot.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_acquire_target_missing_once() -> AcquireTargetMissingReset {
+    ACQUIRE_TARGET_MISSING_ONCE.with(|slot| slot.set(true));
+    AcquireTargetMissingReset
 }
 
 fn reject_disagreeing_expected_identity(
@@ -4432,6 +4454,14 @@ fn class_is_root(class: PathClass) -> bool {
     )
 }
 fn validate_target(path: &Path, class: PathClass) -> Result<Identity, Error> {
+    #[cfg(test)]
+    if ACQUIRE_TARGET_MISSING_ONCE.with(|slot| slot.replace(false)) {
+        #[cfg(unix)]
+        let code = libc::ENOENT;
+        #[cfg(windows)]
+        let code = windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND as i32;
+        return Err(std::io::Error::from_raw_os_error(code).into());
+    }
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() {
         return Err(Error::InvalidInput(
@@ -8005,6 +8035,56 @@ impl PathAuthority {
             expected,
             acquired.path,
         ))
+    }
+
+    /// Recovers deletion authority only for an absent leaf in its recorded parent.
+    /// A present leaf must pass ordinary database resolution again before deletion.
+    pub(crate) fn recover_database_deletion(
+        &mut self,
+        handle: &DatabaseHandle,
+        original: Error,
+        cancellation: &CancellationToken,
+    ) -> Result<DatabaseDeleteRecovery, Error> {
+        let workspace_handle = FileWorkspaceHandle::new(handle.path_ref().clone());
+        let entry = self.persistent_entry_for(&workspace_handle, PathOperation::DatabaseMutate)?;
+        if entry.stored.target_is_dir {
+            return Err(Error::InvalidInput(
+                "database handle must identify a regular file".into(),
+            ));
+        }
+        let stored = entry.stored;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        if stored.parent_identity.is_none() {
+            return Err(original);
+        }
+        let path = stored.path.to_path()?;
+        let parent = match crate::infra::fs::open_parent_no_follow(&path) {
+            Ok(parent) => parent,
+            Err(error) if error.is_missing_entry() => return Err(original),
+            Err(error) => return Err(error),
+        };
+        verify_parent_identity(&parent, stored.parent_identity.as_ref())?;
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?
+            .to_os_string();
+        let expected = (stored.identity.a, stored.identity.b);
+        match crate::infra::fs::entry_identity_at(&parent, &leaf, false) {
+            Err(error) if error.is_missing_entry() => {
+                self.session_protected_ids
+                    .insert(handle.path_ref().id.clone());
+                Ok(DatabaseDeleteRecovery::Absent(
+                    DatabaseFileTarget::assemble(parent, leaf, expected, path),
+                ))
+            }
+            Ok(identity) if identity == expected => Ok(DatabaseDeleteRecovery::Present),
+            Ok(_) => Err(Error::Conflict(
+                "workspace entry is unavailable because its object changed".into(),
+            )),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {

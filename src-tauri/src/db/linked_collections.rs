@@ -2260,6 +2260,28 @@ impl CollectionService {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_retired_database_for_test(&self, file: DatabaseHandle) {
+        let source = FileWorkspaceHandle::new(file.path_ref().clone());
+        Self::state(&mut *self.lock(&CancellationToken::new()).unwrap())
+            .unwrap()
+            .records
+            .push(Record {
+                id: Uuid::new_v4(),
+                workspace: source.clone(),
+                locator: vec![OsString::from("retired.pgn")],
+                file: source,
+                identity: (0, 0),
+                source_epoch: 0,
+                purpose: WorkspaceFileType::Game,
+                account: None,
+                database: None,
+                retired_database: Some(file),
+                pending: None,
+                coverage_cursor_ms: None,
+            });
+    }
+
     pub(crate) fn is_linked(&self, file: &DatabaseHandle) -> Result<bool, Error> {
         Ok(Self::state(&mut *self.lock(&CancellationToken::new())?)?
             .records
