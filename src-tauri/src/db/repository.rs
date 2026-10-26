@@ -9005,6 +9005,7 @@ mod bound_sqlite_witnesses {
         let token = bound.token();
         let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
         let connections = Arc::new(DrainGate::default());
+        let owners = Arc::new(DrainGate::default());
         let pool = Pool::builder()
             .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .min_idle(Some(0))
@@ -9015,7 +9016,7 @@ mod bound_sqlite_witnesses {
                 uri,
                 connections: Arc::clone(&connections),
                 barrier: None,
-                _owner: Arc::new(Arc::new(DrainGate::default()).enter().unwrap()),
+                _owner: Arc::new(owners.enter().unwrap()),
             })
             .unwrap();
         let mut pooled = pool.get().unwrap();
@@ -9033,7 +9034,18 @@ mod bound_sqlite_witnesses {
             sidecar_listing(path.parent().unwrap(), "binding-lifetime.db3")
                 .contains("binding-lifetime.db3-wal")
         );
+        // Refuse late worker admission before observing either drain.
+        connections.close();
+        owners.close();
         drop(pooled);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // Managers can outlive checkout, and idle connections can outlive their manager.
+        owners
+            .wait_drained_until(deadline, None, "pool owners did not release the binding")
+            .unwrap();
+        connections
+            .wait_drained_until(deadline, None, "pooled SQLite connections did not close")
+            .unwrap();
         let name = std::ffi::CString::new(format!("chessfable-bound-{token}")).unwrap();
         assert!(unsafe { rusqlite::ffi::sqlite3_vfs_find(name.as_ptr()) }.is_null());
         assert!(sidecar_listing(path.parent().unwrap(), "binding-lifetime.db3").is_empty());
