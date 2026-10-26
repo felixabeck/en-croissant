@@ -55,16 +55,18 @@ export function filesMutationErrorMessage(error: unknown, fallback: string, t: T
 }
 
 /** Preserve the original refusal, including when the captured listing cannot be reconciled. */
-export function runFilesMutationWithRefresh<T>(
+export async function runFilesMutationWithRefresh<T>(
     run: () => Promise<T>,
     refresh: (cleanupFailure?: unknown) => unknown | Promise<unknown>,
     reconcile: () => unknown | Promise<unknown>,
-): Promise<T | undefined> {
-    return runAppliedMutationWithRefresh(async () => {
+): Promise<{ kind: "committed"; value: T | undefined } | { kind: "durability-uncertain" }> {
+    let durabilityUncertain = false;
+    const value = await runAppliedMutationWithRefresh(async () => {
         try {
             return await run();
         } catch (cause) {
             const failure = normalizeError(cause);
+            durabilityUncertain = failure.backendCategory === "durability";
             if (
                 failure.nameTaken !== true &&
                 (failure.backendCategory === "conflict" || failure.category === "not-found")
@@ -78,4 +80,5 @@ export function runFilesMutationWithRefresh<T>(
             throw cause;
         }
     }, refresh);
+    return durabilityUncertain ? { kind: "durability-uncertain" } : { kind: "committed", value };
 }

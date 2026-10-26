@@ -4,11 +4,20 @@ import { useTranslation } from "react-i18next";
 import { normalizeError } from "@/platform/errors";
 import AppModal from "./AppModal";
 
+export function durabilityUncertainMessage(
+  t: (key: string, options?: { defaultValue: string }) => string,
+) {
+  return t("Common.DurabilityUncertain", {
+    defaultValue: "The change was saved, but the save could not be fully confirmed. Do not retry.",
+  });
+}
+
 export function confirmationErrorMessage(
   cause: unknown,
   t: (key: string, options?: { defaultValue: string }) => string,
 ) {
-  const { category } = normalizeError(cause);
+  const { category, backendCategory } = normalizeError(cause);
+  if (backendCategory === "durability") return durabilityUncertainMessage(t);
   if (category === "applied-despite-error") {
     return t("Common.ConfirmationError.applied-despite-error", {
       defaultValue: "Part of the operation was completed, and what is shown may no longer match.",

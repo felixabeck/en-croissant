@@ -2,9 +2,14 @@ import { libraryButtonProps } from "@/components/library/presentation";
 import { tauri } from "@/platform/tauri";
 import { listingFailure, rootFailureMessage } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
-import { isOperationAndCleanup, runDestructiveWithRefresh } from "@/platform/errors";
+import {
+  isOperationAndCleanup,
+  normalizeError,
+  runDestructiveWithRefresh,
+} from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import { Box, Button, Center, Group, Select, Stack, Text, TextInput } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -15,7 +20,7 @@ import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
 import { formatNumber } from "@/utils/format";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import FileCard from "./FileCard";
-import ConfirmModal from "../common/ConfirmModal";
+import ConfirmModal, { durabilityUncertainMessage } from "../common/ConfirmModal";
 import AppModal from "../common/AppModal";
 import type { Entry, UsableEntry, FileType } from "./file";
 import { FILE_TYPES, workspaceListingToEntries } from "./file";
@@ -241,20 +246,27 @@ export function useFileWorkspace(
     setPending(true);
     setActionError("");
     const reconcile = () => reconcileWorkspaceListing(owner.workspace, owner.cache);
+    let durabilityUncertain = false;
     try {
-      await runFilesMutationWithRefresh(
+      const outcome = await runFilesMutationWithRefresh(
         run,
         (cleanupFailure) =>
           cleanupFailure ? reconcile() : owner.cache.mutate(workspaceListingKey(owner.workspace)),
         reconcile,
       );
+      durabilityUncertain = outcome.kind === "durability-uncertain";
       if (owns(owner)) onSuccess();
     } catch (cause) {
-      if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
+      if (normalizeError(cause).backendCategory === "durability") {
+        durabilityUncertain = true;
+        if (owns(owner)) onSuccess();
+      } else if (owns(owner)) setActionError(filesMutationErrorMessage(cause, operationFailed, t));
     } finally {
       owner.pending = false;
       if (owns(owner)) setPending(false);
     }
+    if (durabilityUncertain)
+      notifications.show({ color: "orange", message: durabilityUncertainMessage(t) });
   }
   const directories = (
     entries: Entry[],
@@ -682,8 +694,9 @@ export function useFileWorkspace(
                 async () => {
                   setTrashed(deleteTarget);
                   setSelectedEntry(null);
-                  setDeleteTarget(null);
-                  await mutate();
+                  // A landed trash still closes when the listing fails. ConfirmModal
+                  // calls onClose only after this refresh resolves.
+                  await mutate().catch(() => {});
                 },
                 mutate,
               );

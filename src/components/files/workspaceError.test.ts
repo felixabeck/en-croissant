@@ -220,3 +220,75 @@ test.each([
     expect(refresh).not.toHaveBeenCalled();
     expect(reconcile).not.toHaveBeenCalled();
 });
+
+test("Files durable commit preserves the command value after refresh", async () => {
+    const value = { id: "created file" };
+    const refresh = vi.fn();
+    const reconcile = vi.fn();
+    await expect(
+        runFilesMutationWithRefresh(async () => value, refresh, reconcile),
+    ).resolves.toEqual({ kind: "committed", value });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(reconcile).not.toHaveBeenCalled();
+});
+
+test.each([false, true])(
+    "Files durability outcome awaits refresh and retains the original cause on failure=%s",
+    async (fails) => {
+        const cause = new TauriCommandError({
+            tag: "backend-error",
+            category: "durability",
+            message: "private diagnostic",
+        });
+        let finish!: () => void;
+        const refresh = vi.fn(
+            () =>
+                new Promise<void>((resolve, reject) => {
+                    finish = () => (fails ? reject(new Error("list failed")) : resolve());
+                }),
+        );
+        const reconcile = vi.fn();
+        let settled = false;
+        const outcome = runFilesMutationWithRefresh(
+            async () => {
+                throw cause;
+            },
+            refresh,
+            reconcile,
+        );
+        const assertion = fails
+            ? expect(outcome).rejects.toBe(cause)
+            : expect(outcome).resolves.toEqual({ kind: "durability-uncertain" });
+        void outcome.then(
+            () => {
+                settled = true;
+            },
+            () => {
+                settled = true;
+            },
+        );
+        await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+        expect(settled).toBe(false);
+        finish();
+        await assertion;
+        expect(reconcile).not.toHaveBeenCalled();
+    },
+);
+
+test.each([
+    { category: "applied-despite-error", message: "private diagnostic" },
+    { tag: "backend-error", category: "partial-removal", message: "private diagnostic" },
+    new Error("Committed but durability uncertain: fallback diagnostic"),
+])("a swallowed applied error without typed durability remains a commit", async (cause) => {
+    const refresh = vi.fn();
+    await expect(
+        runFilesMutationWithRefresh(
+            async () => {
+                throw cause;
+            },
+            refresh,
+            vi.fn(),
+        ),
+    ).resolves.toEqual({ kind: "committed", value: undefined });
+    expect(refresh).toHaveBeenCalledOnce();
+});

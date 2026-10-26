@@ -335,6 +335,7 @@
     "Common.Download": "下載",
     "Common.Downloading": "下載中",
     "Common.Duplicate": "复制",
+    "Common.DurabilityUncertain": "變更已儲存，但無法完全確認儲存。請勿重試。",
     "Common.EndDate": "结束日期",
     "Common.Engine": "引擎",
     "Common.EnterFileName": "輸入檔案名稱",

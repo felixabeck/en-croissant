@@ -624,6 +624,16 @@ const mutationCommands = {
 };
 type MutationAction = keyof typeof mutationCommands;
 const refusalCopy = englishCatalogue.translation;
+const durabilityCopy = englishCatalogue.translation["Common.DurabilityUncertain"];
+
+function expectDurabilityNotice() {
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "orange",
+    message: durabilityCopy,
+  });
+  expect(container.textContent).not.toContain(refusalCopy["Files.OperationFailed"]);
+  expect(container.textContent).not.toContain("private diagnostic");
+}
 
 async function openMutation(action: MutationAction) {
   if (action === "file" || action === "folder")
@@ -635,6 +645,97 @@ async function openMutation(action: MutationAction) {
   if (action !== "move") await setDialogName(action === "metadata" ? entry.name : "Retained draft");
   if (action === "metadata") setDialogType("repertoire");
 }
+
+describe.each(Object.keys(mutationCommands) as MutationAction[])("%s durability", (action) => {
+  test.each([false, true])(
+    "closes and notifies once after the relist finishes, listing failure=%s",
+    async (fails) => {
+      const listing = deferred<unknown[]>();
+      mocks.listFileWorkspace
+        .mockReset()
+        .mockResolvedValueOnce({ entries: [nativeFile, nativeDestination], unread: [] })
+        .mockReturnValueOnce(listing.promise.then((entries) => ({ entries, unread: [] })));
+      mutationCommands[action].mockRejectedValueOnce(
+        commandError("durability", "private diagnostic"),
+      );
+      await realWorkspace();
+      await openMutation(action);
+      await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+      expect(mocks.listFileWorkspace).toHaveBeenCalledTimes(2);
+      expect(mocks.notify).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+      await act(async () => {
+        if (fails) listing.reject(new Error("private listing diagnostic"));
+        else listing.resolve([nativeFile, nativeDestination, nativeLeftover]);
+      });
+      expect(mutationCommands[action]).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expectDurabilityNotice();
+      expect(container.textContent).not.toContain("private listing diagnostic");
+    },
+  );
+
+  test("durable success closes without a notice", async () => {
+    await openMutation(action);
+    await act(async () => dialogButton(action === "move" ? "Move" : "Confirm").click());
+    expect(mutationCommands[action]).toHaveBeenCalledOnce();
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+});
+
+test.each([false, true])(
+  "late durability preserves a replacement dialog's draft, alert and open state, relist failure=%s",
+  async (fails) => {
+    const old = deferred<void>();
+    mocks.createWorkspaceDirectory
+      .mockReturnValueOnce(old.promise)
+      .mockRejectedValueOnce(commandError("permission", "replacement diagnostic"));
+    await openMutation("folder");
+    await act(async () => dialogButton("Confirm").click());
+    click("Close dialog");
+    await openMutation("folder");
+    await setDialogName("Replacement draft");
+    await act(async () => dialogButton("Confirm").click());
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(
+      refusalCopy["Files.Refusal.Permission"],
+    );
+    const before = dialog.outerHTML;
+    if (fails) mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    await act(async () => old.reject(commandError("durability", "private diagnostic")));
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(dialog.outerHTML).toBe(before);
+    expect((dialog.querySelector("input") as HTMLInputElement).value).toBe("Replacement draft");
+    expectDurabilityNotice();
+  },
+);
+
+test.each(["workspace", "provider", "unmount"] as const)(
+  "late durability still notifies after %s retires the page presentation",
+  async (replacement) => {
+    const pending = deferred<void>();
+    mocks.listFileWorkspace.mockReset().mockResolvedValue({ entries: [], unread: [] });
+    mocks.createWorkspaceDirectory.mockReturnValueOnce(pending.promise);
+    const { cache, render } = await realWorkspace();
+    await openMutation("folder");
+    await act(async () => dialogButton("Confirm").click());
+    if (replacement === "workspace")
+      mocks.workspace = { id: { id: "durability-B" }, kind: "fileWorkspace" };
+    if (replacement === "unmount") await act(async () => root.render(<div>Unmounted</div>));
+    else await render(replacement === "provider" ? new Map() : cache);
+    if (replacement !== "unmount") {
+      await openMutation("folder");
+      await setDialogName("Replacement draft");
+    }
+    const before = container.innerHTML;
+    await act(async () => pending.reject(commandError("durability", "private diagnostic")));
+    expect(container.innerHTML).toBe(before);
+    expectDurabilityNotice();
+  },
+);
 
 const refusalCases = [
   ["invalid-input", "Files.Refusal.Invalid", false],
@@ -1118,6 +1219,8 @@ describe("trash confirmations", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Part of the operation was completed, and what is shown may no longer match.",
     );
+    expect(container.textContent).not.toContain(durabilityCopy);
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   test("successful permanent-delete is not reported as failed when relisting fails", async () => {
@@ -1151,8 +1254,14 @@ describe("trash confirmations", () => {
       expect(mocks.mutate).toHaveBeenCalledTimes(1);
       expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "Part of the operation was completed, and what is shown may no longer match.",
+        category === "durability"
+          ? durabilityCopy
+          : "Part of the operation was completed, and what is shown may no longer match.",
       );
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+      if (category === "partial-removal")
+        expect(container.textContent).not.toContain(durabilityCopy);
+      expect(mocks.notify).not.toHaveBeenCalled();
       expect(container.textContent).not.toContain("list unavailable");
     },
   );
@@ -1219,8 +1328,9 @@ describe("trash confirmations", () => {
     expect(mocks.mutate).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
     expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain(
-      "Part of the operation was completed, and what is shown may no longer match.",
+      durabilityCopy,
     );
+    expect(mocks.notify).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Files could not be loaded. Please try again.");
     expect(container.textContent).not.toContain("The action could not be completed");
     expect(container.textContent).not.toContain("list unavailable");
@@ -1273,7 +1383,7 @@ test("cancelled collection selection stays silent", async () => {
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
-test("applied-despite-error create refreshes and closes without operationFailed", async () => {
+test("durability create refreshes, closes and shows one orange notice", async () => {
   mocks.createWorkspaceFile.mockRejectedValueOnce(
     commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
@@ -1294,9 +1404,11 @@ test("applied-despite-error create refreshes and closes without operationFailed"
   );
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.textContent).not.toContain("registry replacement");
   expect(container.textContent).not.toContain(
     "The file operation could not be completed. Please try again.",
   );
+  expectDurabilityNotice();
 });
 
 test.each([
@@ -1332,7 +1444,7 @@ test.each([
   expect(mocks.mutate).toHaveBeenCalledTimes(failure.nameTaken ? 0 : 2);
 });
 
-test("applied-despite-error move refreshes and clears the move", async () => {
+test("durability drag move refreshes, clears the move and shows one orange notice", async () => {
   mocks.moveWorkspaceEntry.mockRejectedValueOnce(
     commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
@@ -1340,12 +1452,15 @@ test("applied-despite-error move refreshes and clears the move", async () => {
   await settle();
 
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce();
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expectDurabilityNotice();
   expect(container.textContent).not.toContain(
     "The file operation could not be completed. Please try again.",
   );
 });
 
-test("trash and restore refresh after applied-despite-error", async () => {
+test("trash and restore durability relist and keep their confirmation with the shared sentence", async () => {
   mocks.trashWorkspaceEntry.mockRejectedValueOnce(
     commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
@@ -1353,6 +1468,16 @@ test("trash and restore refresh after applied-despite-error", async () => {
   click("Trash");
   await act(async () => button("Common.Delete").click());
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(
+    "Move to trash",
+  );
+  expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+    durabilityCopy,
+  );
+  expect(container.textContent).toContain("Moved sample.pgn to trash.");
+  expect(container.querySelector("output")?.textContent).toBe("No selection");
+  expect(mocks.notify).not.toHaveBeenCalled();
+  click("Common.Cancel");
 
   mocks.mutate.mockClear();
   mocks.restoreWorkspaceEntry.mockRejectedValueOnce(
@@ -1361,6 +1486,74 @@ test("trash and restore refresh after applied-despite-error", async () => {
   click("Undo");
   await act(async () => button("Restore").click());
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(
+    "Restore file",
+  );
+  expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+    durabilityCopy,
+  );
+  expect(container.textContent).not.toContain("registry replacement");
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test.each([false, true])(
+  "durable trash closes through confirmation, listing failure=%s",
+  async (fails) => {
+    if (fails) mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    await completeTrash();
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).not.toContain("The action could not be completed");
+    expect(container.textContent).not.toContain("list unavailable");
+    expect(mocks.notify).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["trash", "restore", "purge"] as const)(
+  "%s durability keeps the confirm open and relists even when listing fails",
+  async (action) => {
+    if (action === "trash") {
+      click("Select sample file");
+      click("Trash");
+    } else {
+      await completeTrash();
+      click(action === "restore" ? "Undo" : "Delete permanently");
+    }
+    const command = {
+      trash: mocks.trashWorkspaceEntry,
+      restore: mocks.restoreWorkspaceEntry,
+      purge: mocks.permanentlyDeleteWorkspaceEntry,
+    }[action];
+    command.mockRejectedValueOnce(commandError("durability", "private diagnostic"));
+    mocks.mutate.mockClear();
+    mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    await act(async () => dialogButton(action === "restore" ? "Restore" : "Common.Delete").click());
+    expect(command).toHaveBeenCalledOnce();
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+    expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+      durabilityCopy,
+    );
+    expect(container.textContent).not.toContain("private diagnostic");
+    expect(container.textContent).not.toContain("list unavailable");
+    expect(mocks.notify).not.toHaveBeenCalled();
+  },
+);
+
+test("permanent delete durability keeps its confirmation after a successful relist", async () => {
+  await completeTrash();
+  mocks.mutate.mockClear();
+  mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
+    commandError("durability", "private diagnostic"),
+  );
+  click("Delete permanently");
+  await act(async () => dialogButton("Common.Delete").click());
+  expect(mocks.mutate).toHaveBeenCalledOnce();
+  expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+    durabilityCopy,
+  );
+  expect(container.textContent).not.toContain("private diagnostic");
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test.each(["trash", "restore"] as const)(
@@ -1385,7 +1578,7 @@ test.each(["trash", "restore"] as const)(
     );
     expect(container.textContent).not.toContain("list unavailable");
 
-    // Assert the handlers' rejection even when the trash refresh unmounts its confirmation.
+    // The handlers preserve the original rejection even when relisting fails.
     const confirmation = (
       controller.dialogs.props.children as Array<
         { props: { title: string; onConfirm: () => Promise<void> } } | null | false

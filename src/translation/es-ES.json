@@ -345,6 +345,7 @@
     "Common.Download": "Descargar",
     "Common.Downloading": "Descargando",
     "Common.Duplicate": "Duplicar",
+    "Common.DurabilityUncertain": "El cambio se guardó, pero no se pudo confirmar por completo el guardado. No vuelva a intentarlo.",
     "Common.EndDate": "Fecha final",
     "Common.Engine": "Motor",
     "Common.EnterFileName": "Inserte el nombre del archivo",

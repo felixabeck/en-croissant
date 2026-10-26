@@ -345,6 +345,7 @@
     "Common.Download": "Télécharger",
     "Common.Downloading": "En téléchargement",
     "Common.Duplicate": "Dupliquer",
+    "Common.DurabilityUncertain": "La modification a été enregistrée, mais l’enregistrement n’a pas pu être entièrement confirmé. Ne réessayez pas.",
     "Common.EndDate": "Date de fin",
     "Common.Engine": "Moteur",
     "Common.EnterFileName": "Saisissez le nom du fichier",

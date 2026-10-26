@@ -345,6 +345,7 @@
     "Common.Download": "Scarica",
     "Common.Downloading": "Scaricamento in corso",
     "Common.Duplicate": "Duplica",
+    "Common.DurabilityUncertain": "La modifica è stata salvata, ma non è stato possibile confermare completamente il salvataggio. Non riprovare.",
     "Common.EndDate": "Data di fine",
     "Common.Engine": "Motore",
     "Common.EnterFileName": "Inserire il nome del file",

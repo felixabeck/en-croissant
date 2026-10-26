@@ -350,6 +350,7 @@
     "Common.Download": "Завантажити",
     "Common.Downloading": "Завантаження",
     "Common.Duplicate": "Дублювати",
+    "Common.DurabilityUncertain": "Зміну збережено, але збереження не вдалося повністю підтвердити. Не повторюйте спробу.",
     "Common.EndDate": "Дата завершення",
     "Common.Engine": "Рушій",
     "Common.EnterFileName": "Введіть ім'я файлу",

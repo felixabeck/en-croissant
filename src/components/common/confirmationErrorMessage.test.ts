@@ -52,6 +52,31 @@ test("an unknown native failure uses the localized generic message", async () =>
     ).toBe("Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.");
 });
 
+test.each(shippedCatalogues())(
+    "$locale uses its durability sentence only for the normalized backend category",
+    async ({ locale, translation }) => {
+        const instance = await catalogueI18n(locale as SupportedLocale);
+        const message = confirmationErrorMessage(
+            { tag: "backend-error", category: "durability", message: "private native diagnostic" },
+            instance.t.bind(instance),
+        );
+        expect(message).toBe(translation["Common.DurabilityUncertain"]);
+        expect(message).toBeTruthy();
+        expect(message).not.toContain("private native diagnostic");
+        const english = (await catalogueI18n("en-US")).t("Common.DurabilityUncertain");
+        expect(message === english).toBe(locale.startsWith("en-"));
+        for (const cause of [
+            { category: "applied-despite-error", message: "private diagnostic" },
+            { tag: "backend-error", category: "partial-removal", message: "private diagnostic" },
+            new Error("Committed but durability uncertain: private diagnostic"),
+        ]) {
+            expect(confirmationErrorMessage(cause, instance.t.bind(instance))).toBe(
+                translation["Common.ConfirmationError.applied-despite-error"],
+            );
+        }
+    },
+);
+
 test("every shipped catalogue has localized file-child unreadable sentences", () => {
     const catalogues = shippedCatalogues();
     const english = catalogues.find(({ locale }) => locale === "en-US")!.translation;

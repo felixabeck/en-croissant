@@ -345,6 +345,7 @@
     "Common.Download": "Transferir",
     "Common.Downloading": "A transferir",
     "Common.Duplicate": "Duplicar",
+    "Common.DurabilityUncertain": "A alteração foi guardada, mas não foi possível confirmar completamente a gravação. Não volte a tentar.",
     "Common.EndDate": "Data final",
     "Common.Engine": "Motor",
     "Common.EnterFileName": "Insira o nome do ficheiro",

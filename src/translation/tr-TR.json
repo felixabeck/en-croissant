@@ -340,6 +340,7 @@
     "Common.Download": "İndir",
     "Common.Downloading": "İndiriliyor",
     "Common.Duplicate": "Çoğalt",
+    "Common.DurabilityUncertain": "Değişiklik kaydedildi, ancak kaydetme tam olarak doğrulanamadı. Yeniden denemeyin.",
     "Common.EndDate": "Bitiş tarihi",
     "Common.Engine": "Motor",
     "Common.EnterFileName": "Dosya adını girin",

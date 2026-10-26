@@ -340,6 +340,7 @@
     "Common.Download": "Herunterladen",
     "Common.Downloading": "Herunterladen",
     "Common.Duplicate": "Duplizieren",
+    "Common.DurabilityUncertain": "Die Änderung wurde gespeichert, aber das Speichern konnte nicht vollständig bestätigt werden. Nicht erneut versuchen.",
     "Common.EndDate": "Enddatum",
     "Common.Engine": "Engine",
     "Common.EnterFileName": "Dateinamen eingeben",

@@ -340,6 +340,7 @@
     "Common.Download": "Download",
     "Common.Downloading": "Downloading",
     "Common.Duplicate": "Duplicate",
+    "Common.DurabilityUncertain": "The change was saved, but the save could not be fully confirmed. Do not retry.",
     "Common.EndDate": "End date",
     "Common.Engine": "Engine",
     "Common.EnterFileName": "Enter your filename",

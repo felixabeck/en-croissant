@@ -350,6 +350,7 @@
     "Common.Download": "Запампаваць",
     "Common.Downloading": "Запампоўка",
     "Common.Duplicate": "Дублікат",
+    "Common.DurabilityUncertain": "Змена захавана, але захаванне не ўдалося цалкам пацвердзіць. Не паўтарайце спробу.",
     "Common.EndDate": "Дата заканчэння",
     "Common.Engine": "Рухавік",
     "Common.EnterFileName": "Увядзіце імя файла",

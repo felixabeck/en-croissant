@@ -340,6 +340,7 @@
     "Common.Download": "Last ned",
     "Common.Downloading": "Laster ned",
     "Common.Duplicate": "Dupliser",
+    "Common.DurabilityUncertain": "Endringen ble lagret, men lagringen kunne ikke bekreftes fullt ut. Ikke prøv på nytt.",
     "Common.EndDate": "Sluttdato",
     "Common.Engine": "Computer",
     "Common.EnterFileName": "Fyll inn filnavnet",

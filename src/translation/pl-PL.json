@@ -350,6 +350,7 @@
     "Common.Download": "Pobierz",
     "Common.Downloading": "Pobieranie",
     "Common.Duplicate": "Duplikuj",
+    "Common.DurabilityUncertain": "Zmiana została zapisana, ale nie udało się w pełni potwierdzić zapisu. Nie próbuj ponownie.",
     "Common.EndDate": "Data końcowa",
     "Common.Engine": "Silnik",
     "Common.EnterFileName": "Wprowadź nazwę pliku",

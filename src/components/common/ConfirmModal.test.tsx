@@ -96,30 +96,39 @@ test("successful confirmation closes once after the native action resolves", asy
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
-test("partially applied failures retain a distinct translated warning", async () => {
-  host = document.createElement("div");
-  document.body.append(host);
-  root = createRoot(host);
-  const onClose = vi.fn();
-  await act(async () =>
-    root.render(
-      <ConfirmModal
-        title="Delete"
-        description="x"
-        opened
-        onClose={onClose}
-        onConfirm={async () => {
-          throw { category: "applied-despite-error", message: "private native diagnostic" };
-        }}
-      />,
-    ),
-  );
-  await act(async () =>
-    [...host.querySelectorAll("button")].find((item) => item.textContent === "Löschen")!.click(),
-  );
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-    "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.",
-  );
-  expect(host.textContent).not.toContain("private native diagnostic");
-  expect(onClose).not.toHaveBeenCalled();
-});
+test.each(["durability", "partial-removal", "applied-despite-error"] as const)(
+  "%s rejection stays open with its translated warning",
+  async (category) => {
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    const onClose = vi.fn();
+    await act(async () =>
+      root.render(
+        <ConfirmModal
+          title="Delete"
+          description="x"
+          opened
+          onClose={onClose}
+          onConfirm={async () => {
+            throw {
+              ...(category === "applied-despite-error" ? {} : { tag: "backend-error" }),
+              category,
+              message: "private native diagnostic",
+            };
+          }}
+        />,
+      ),
+    );
+    await act(async () =>
+      [...host.querySelectorAll("button")].find((item) => item.textContent === "Löschen")!.click(),
+    );
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      category === "durability"
+        ? "Die Änderung wurde gespeichert, aber das Speichern konnte nicht vollständig bestätigt werden. Nicht erneut versuchen."
+        : "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.",
+    );
+    expect(host.textContent).not.toContain("private native diagnostic");
+    expect(onClose).not.toHaveBeenCalled();
+  },
+);
