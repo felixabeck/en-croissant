@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { createStore } from "jotai";
+import { RESET } from "jotai/utils";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 
 const warn = vi.hoisted(() => vi.fn());
@@ -16,11 +18,63 @@ vi.mock("@/i18n", () => ({
     },
 }));
 
-import { createAsyncZodStorage, createZodStorage } from "./utils";
+import { createAsyncZodStorage, createDocumentStorageAtoms, createZodStorage } from "./utils";
 
 beforeEach(() => {
     warn.mockClear();
     reportPersistError.mockClear();
+});
+
+test("document storage atoms retain Jotai mount rereads, subscriptions, functional writes and RESET", () => {
+    let persisted = 4;
+    let publish!: (value: number) => void;
+    const unsubscribe = vi.fn();
+    const storage = {
+        getItem: vi.fn(() => persisted),
+        setItem: vi.fn((_key: string, value: number) => {
+            persisted = value;
+        }),
+        removeItem: vi.fn(),
+        subscribe: vi.fn((_key: string, callback: (value: number) => void) => {
+            publish = callback;
+            return unsubscribe;
+        }),
+    };
+    const document = createDocumentStorageAtoms(() => {
+        document.initialize();
+    });
+    const preference = document.atomWithStorage("preference", 1, storage);
+    expect(storage.getItem).not.toHaveBeenCalled();
+    const first = createStore();
+    expect(first.get(preference)).toBe(4);
+    expect(storage.getItem).toHaveBeenCalledExactlyOnceWith("preference", 1);
+    persisted = 6;
+    const listener = vi.fn();
+    const unmount = first.sub(preference, listener);
+    expect(first.get(preference)).toBe(6);
+    expect(storage.getItem).toHaveBeenCalledTimes(2);
+    expect(storage.subscribe).toHaveBeenCalledExactlyOnceWith(
+        "preference",
+        expect.any(Function),
+        1,
+    );
+    publish(8);
+    expect(first.get(preference)).toBe(8);
+    first.set(preference, (value) => value + 1);
+    expect(storage.setItem).toHaveBeenCalledExactlyOnceWith("preference", 9);
+    expect(first.get(preference)).toBe(9);
+    expect(createStore().get(preference)).toBe(4);
+    first.set(preference, (value) => (value === 9 ? RESET : value));
+    expect(first.get(preference)).toBe(1);
+    expect(storage.removeItem).toHaveBeenCalledExactlyOnceWith("preference");
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    const notifications = listener.mock.calls.length;
+    const remount = first.sub(preference, listener);
+    expect(first.get(preference)).toBe(9);
+    expect(listener.mock.calls.length).toBeGreaterThan(notifications);
+    remount();
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
 });
 
 describe("validated storage diagnostics", () => {

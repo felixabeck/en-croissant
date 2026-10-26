@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
+import "./atoms";
 import type { ErrorPayload } from "@/bindings";
 import { isErrorReported } from "@/platform/errors";
 import { engineSchema, type Engine } from "@/utils/engines";

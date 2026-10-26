@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import "./atoms";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import {
     EXPANDED_DIRECTORIES_STORAGE_KEY,
@@ -62,7 +63,7 @@ beforeEach(() => {
 });
 
 describe("collectOriginalPathOwners", () => {
-    test("module snapshot captures raw owners before persisted atoms hydrate", async () => {
+    test("document snapshot captures raw owners before persisted atoms hydrate", async () => {
         vi.resetModules();
         const originalGetItem = Storage.prototype.getItem;
         let ownerReads = 0;
@@ -77,8 +78,10 @@ describe("collectOriginalPathOwners", () => {
             return originalGetItem.call(this, key);
         });
 
-        await import("./atoms");
-        const { originalPathOwnersSnapshot } = await import("./pathOwners");
+        const { initializeRendererState } = await import("./atoms");
+        initializeRendererState();
+        const { initializeOriginalPathOwners } = await import("./pathOwners");
+        const { pathOwners: originalPathOwnersSnapshot } = initializeOriginalPathOwners();
         getItem.mockRestore();
 
         expect(ownerReads).toBeGreaterThan(1);
@@ -102,7 +105,8 @@ describe("collectOriginalPathOwners", () => {
             return originalGetItem.call(this, key);
         });
 
-        await import("./pathOwners");
+        const { initializeOriginalPathOwners } = await import("./pathOwners");
+        initializeOriginalPathOwners();
         getItem.mockRestore();
 
         expect(reads).toEqual(
@@ -291,7 +295,8 @@ describe("collectOriginalPathOwners", () => {
             serializeStorageValue({ version: 1, workspaceId: "inactive-workspace", ids }),
         );
         vi.resetModules();
-        await import("./pathOwners");
+        const { initializeOriginalPathOwners } = await import("./pathOwners");
+        initializeOriginalPathOwners();
         const repaired = deserializeStorageValue<{ workspaceId: string; ids: string[] }>(
             sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)!,
         );
@@ -309,7 +314,8 @@ describe("collectOriginalPathOwners", () => {
             JSON.stringify(["unknown-directory"]),
         );
         vi.resetModules();
-        const { originalPathOwnersSnapshot } = await import("./pathOwners");
+        const { initializeOriginalPathOwners } = await import("./pathOwners");
+        const { pathOwners: originalPathOwnersSnapshot } = initializeOriginalPathOwners();
         expect(originalPathOwnersSnapshot.retainedIds).not.toContainEqual(
             path("unknown-directory"),
         );

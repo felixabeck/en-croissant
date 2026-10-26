@@ -227,13 +227,19 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
     };
 }
 
-const originalSnapshots = collectOriginalSnapshots();
-export const originalPathOwnersSnapshot = originalSnapshots.pathOwners;
-export const originalEngineAttachmentIds = originalSnapshots.engineAttachmentIds;
-try {
-    repairExpandedDirectoriesAtStartup(globalThis.sessionStorage);
-} catch (cause) {
-    reportPreferenceStorageFailure("read", cause);
+let originalSnapshots: OriginalOwnerSnapshots | undefined;
+
+/** Capture original authority once, before any repair can replace its evidence. */
+export function initializeOriginalPathOwners(): OriginalOwnerSnapshots {
+    if (!originalSnapshots) {
+        originalSnapshots = collectOriginalSnapshots();
+        try {
+            repairExpandedDirectoriesAtStartup(globalThis.sessionStorage);
+        } catch (cause) {
+            reportPreferenceStorageFailure("read", cause);
+        }
+    }
+    return originalSnapshots;
 }
 
 let initialization: Promise<void> | undefined;
@@ -244,6 +250,10 @@ export function startupLegacyDeckScanComplete(): boolean {
 }
 
 export function initializePathOwners(): Promise<void> {
+    const {
+        pathOwners: originalPathOwnersSnapshot,
+        engineAttachmentIds: originalEngineAttachmentIds,
+    } = initializeOriginalPathOwners();
     if (!initialization) {
         initialization = (async () => {
             const migration = await ensurePracticeMigration();

@@ -5,23 +5,27 @@ import type { Config } from "@lichess-org/chessground/config";
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { afterEach, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { Chessground } from "./Chessground";
 
-const api = {
-  destroy: vi.fn(),
-  set: vi.fn(),
-  setAutoShapes: vi.fn(),
-  setShapes: vi.fn(),
-  playPremove: vi.fn(() => false),
-  cancelPremove: vi.fn(),
-  selectSquare: vi.fn(),
-  state: {
-    drawable: { current: undefined as object | undefined },
-    premovable: { current: undefined as string[] | undefined },
-    dom: { bounds: { clear: vi.fn() } },
-  },
-  getFen: vi.fn(() => "start"),
-};
-const createChessground = vi.fn((_element: HTMLElement, _config: Config) => api);
+const { api, createChessground } = vi.hoisted(() => {
+  const api = {
+    destroy: vi.fn(),
+    set: vi.fn(),
+    setAutoShapes: vi.fn(),
+    setShapes: vi.fn(),
+    playPremove: vi.fn(() => false),
+    cancelPremove: vi.fn(),
+    selectSquare: vi.fn(),
+    state: {
+      drawable: { current: undefined as object | undefined },
+      premovable: { current: undefined as string[] | undefined },
+      dom: { bounds: { clear: vi.fn() } },
+    },
+    getFen: vi.fn(() => "start"),
+  };
+  const createChessground = vi.fn((_element: HTMLElement, _config: Config) => api);
+  return { api, createChessground };
+});
 const mountedRoots = new Set<ReturnType<typeof createRoot>>();
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -72,7 +76,6 @@ async function renderDrawable(drawable: Config["drawable"]) {
   );
   const root = createRoot(document.createElement("div"));
   mountedRoots.add(root);
-  const { Chessground } = await import("./Chessground");
   await act(async () => {
     root.render(
       <MantineProvider>
@@ -154,7 +157,6 @@ test("constructs Chessground once, updates it, and destroys it on unmount", asyn
   const host = document.createElement("div");
   const root = createRoot(host);
   const chessgroundRef = createRef<import("./Chessground").ChessgroundRef>();
-  const { Chessground } = await import("./Chessground");
 
   await act(async () => {
     root.render(
@@ -189,7 +191,6 @@ test("constructs Chessground once, updates it, and destroys it on unmount", asyn
 test("defers saved shapes until the observed board has positive bounds", async () => {
   const host = document.createElement("div");
   const root = createRoot(host);
-  const { Chessground } = await import("./Chessground");
   const savedShape = { orig: "h5", dest: "h5", brush: "cyan" } as const;
   const automaticShape = { orig: "e2", dest: "e4", brush: "blue" } as const;
 

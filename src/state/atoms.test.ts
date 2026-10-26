@@ -1,7 +1,8 @@
-import { createStore } from "jotai";
+import { createStore, type Atom } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
+import "./atoms";
 
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
 const sessionNative = vi.hoisted(() => ({
@@ -29,6 +30,64 @@ async function importAtoms() {
     const atoms = await import("./atoms");
     return { atoms, load };
 }
+
+test("the eight eager preferences share declaration-ordered synchronous document initial values", async () => {
+    const values = [
+        ["download-destination-capability", { id: "download" }],
+        ["file-workspace", { id: { id: "workspace" }, kind: "fileWorkspace" }],
+        ["show-coordinates-v2", "all"],
+        ["sound-collection", "custom"],
+        ["sound-volume", 0.25],
+        ["telemetry-enabled", true],
+        ["lichess-all-options", { color: "black", speeds: ["rapid"], ratings: [1800] }],
+        ["lichess-master-options", { moves: 12 }],
+    ] as const;
+    for (const [key, value] of values) localStorage.setItem(key, JSON.stringify(value));
+    const { atoms } = await importAtoms();
+    const keys = values.map(([key]) => key);
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    atoms.initializeRendererState();
+    const preferenceReads = read.mock.calls
+        .map(([key]) => key)
+        .filter((key) => keys.includes(key as (typeof keys)[number]));
+    // The first two reads are original owner evidence. Eager hydration follows in declaration order.
+    expect(preferenceReads).toEqual([keys[0], keys[1], ...keys]);
+    read.mockClear();
+    const preferences: Atom<unknown>[] = [
+        atoms.downloadDestinationAtom,
+        atoms.fileWorkspaceAtom,
+        atoms.showCoordinatesAtom,
+        atoms.soundCollectionAtom,
+        atoms.soundVolumeAtom,
+        atoms.telemetryEnabledAtom,
+        atoms.lichessOptionsAtom,
+        atoms.masterOptionsAtom,
+    ];
+    const first = createStore();
+    expect(preferences.map((preference) => first.get(preference))).toEqual(
+        values.map(([, value]) => value),
+    );
+    localStorage.setItem("sound-collection", JSON.stringify("changed after initialization"));
+    localStorage.setItem("sound-volume", "0.9");
+    first.set(atoms.soundVolumeAtom, (volume) => volume / 2);
+    atoms.initializeRendererState();
+    const second = createStore();
+    expect(second.get(atoms.soundCollectionAtom)).toBe("custom");
+    expect(second.get(atoms.soundVolumeAtom)).toBe(0.25);
+    expect(first.get(atoms.soundVolumeAtom)).toBe(0.125);
+    expect(read).not.toHaveBeenCalled();
+});
+
+test("first eager preference access snapshots every eager initial value before later unrelated reads", async () => {
+    localStorage.setItem("sound-volume", "0.3");
+    localStorage.setItem("telemetry-enabled", "true");
+    const { atoms } = await importAtoms();
+    const first = createStore();
+    expect(first.get(atoms.soundVolumeAtom)).toBe(0.3);
+    localStorage.setItem("telemetry-enabled", "false");
+    expect(first.get(atoms.telemetryEnabledAtom)).toBe(true);
+    expect(createStore().get(atoms.telemetryEnabledAtom)).toBe(true);
+});
 
 test.each([
     [null, true],
@@ -183,12 +242,12 @@ test("original path owners are captured before direct atom access repairs legacy
     sessionStorage.setItem("tabs", legacyBytes);
     sessionStorage.setItem("activeTab", serializeStorageValue(fileTab.value));
     const { atoms, load } = await importAtoms();
-    const { originalPathOwnersSnapshot } = await import("./pathOwners");
     expect(load).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("tabs")).toBe(legacyBytes);
-    expect(originalPathOwnersSnapshot.retainedIds).toContainEqual({ id: "original-file-owner" });
 
     const tabs = createStore().get(atoms.tabsAtom);
+    const { initializeOriginalPathOwners } = await import("./pathOwners");
+    const { pathOwners: originalPathOwnersSnapshot } = initializeOriginalPathOwners();
 
     expect(tabs[0]!.value).not.toBe(fileTab.value);
     expect(tabs[0]!.gameOrigin).toEqual(fileTab.gameOrigin);

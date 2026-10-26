@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { resolveSupportedLocale } from "./i18n";
 
-const init = vi.fn().mockResolvedValue(undefined);
-const changeLanguage = vi.fn().mockResolvedValue(undefined);
-const addResourceBundle = vi.fn();
-const hasResourceBundle = vi.fn().mockReturnValue(false);
+const { init, changeLanguage, addResourceBundle, hasResourceBundle } = vi.hoisted(() => ({
+    init: vi.fn().mockResolvedValue(undefined),
+    changeLanguage: vi.fn().mockResolvedValue(undefined),
+    addResourceBundle: vi.fn(),
+    hasResourceBundle: vi.fn().mockReturnValue(false),
+}));
 
 vi.mock("i18next", () => ({
     default: {
@@ -42,8 +45,6 @@ describe("i18n catalogue loading", () => {
     });
 
     test("normalizes aliases and falls back deterministically", async () => {
-        const { resolveSupportedLocale } = await import("./i18n");
-
         expect(resolveSupportedLocale("de_DE")).toBe("de-DE");
         expect(resolveSupportedLocale("fr-CA")).toBe("fr-FR");
         expect(resolveSupportedLocale("unsupported")).toBe("en-US");

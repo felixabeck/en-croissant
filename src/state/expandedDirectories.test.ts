@@ -1,7 +1,7 @@
 import { createStore } from "jotai";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { expandedDirectoriesAtom, fileWorkspaceAtom } from "./atoms";
+import { expandedDirectoriesAtom, fileWorkspaceAtom, initializeRendererState } from "./atoms";
 import {
     EXPANDED_DIRECTORIES_STORAGE_KEY,
     MAX_EXPANDED_DIRECTORY_IDS,
@@ -49,6 +49,8 @@ function refuseExpansionWrite(message: string) {
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    // These cases exercise standalone hydration after document startup.
+    initializeRendererState();
     persistError.report.mockReset();
 });
 

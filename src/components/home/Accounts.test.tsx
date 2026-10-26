@@ -1,6 +1,7 @@
 import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import "./Accounts";
 
 const mocks = vi.hoisted(() => ({
   authenticate: vi.fn(),

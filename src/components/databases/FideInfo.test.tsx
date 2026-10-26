@@ -3,6 +3,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MantineProvider } from "@mantine/core";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import "./FideInfo";
+import "swr";
 
 const mocks = vi.hoisted(() => ({
   getFidePlayer: vi.fn(),

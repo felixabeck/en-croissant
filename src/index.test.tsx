@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
 import i18n from "./i18n";
+import "./bootstrap";
 
 const {
   render,
@@ -14,6 +15,7 @@ const {
   initializeWorkspace,
   initializeDownloadFailures,
   initializeEngineCompletions,
+  initializePathOwners,
 } = vi.hoisted(() => {
   const render = vi.fn();
   return {
@@ -26,13 +28,14 @@ const {
     initializeWorkspace: vi.fn(),
     initializeDownloadFailures: vi.fn().mockResolvedValue(undefined),
     initializeEngineCompletions: vi.fn().mockResolvedValue(undefined),
+    initializePathOwners: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 vi.mock("react-dom/client", () => ({ createRoot }));
 vi.mock("./App", () => ({ default: () => null }));
 vi.mock("./state/pathOwners", () => ({
-  initializePathOwners: vi.fn().mockResolvedValue(undefined),
+  initializePathOwners,
 }));
 vi.mock("./state/engineCompletions", () => ({
   initializeEngineCompletions,
@@ -69,8 +72,60 @@ beforeEach(() => {
   initializeWorkspace.mockReset();
   initializeDownloadFailures.mockReset().mockResolvedValue(undefined);
   initializeEngineCompletions.mockReset().mockResolvedValue(undefined);
+  initializePathOwners.mockReset().mockResolvedValue(undefined);
   localStorage.clear();
   vi.resetModules();
+});
+
+test("importing bootstrap leaves document startup untouched", async () => {
+  await import("./bootstrap");
+  expect(initializeWorkspace).not.toHaveBeenCalled();
+  expect(createRoot).not.toHaveBeenCalled();
+  expect(releasePreviousDocumentOperations).not.toHaveBeenCalled();
+  expect(initializeI18n).not.toHaveBeenCalled();
+  expect(initializeDownloadFailures).not.toHaveBeenCalled();
+  expect(initializePathOwners).not.toHaveBeenCalled();
+  expect(initializeEngineCompletions).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+});
+
+test("awaits path owners before engines and mount and starts each document only once", async () => {
+  let finishPaths!: () => void;
+  initializePathOwners.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      finishPaths = resolve;
+    }),
+  );
+  const { startApplication } = await import("./bootstrap");
+  const startup = startApplication();
+  expect(startApplication()).toBe(startup);
+  await vi.waitFor(() => expect(initializePathOwners).toHaveBeenCalledOnce());
+  expect(initializeEngineCompletions).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+  finishPaths();
+  await startup;
+  expect(startApplication()).toBe(startup);
+  expect(createRoot).toHaveBeenCalledOnce();
+  expect(releasePreviousDocumentOperations).toHaveBeenCalledOnce();
+  expect(initializeDownloadFailures).toHaveBeenCalledOnce();
+  expect(initializePathOwners).toHaveBeenCalledOnce();
+  expect(initializeEngineCompletions).toHaveBeenCalledOnce();
+  expect(render).toHaveBeenCalledOnce();
+  expect(initializePathOwners.mock.invocationCallOrder[0]).toBeLessThan(
+    initializeEngineCompletions.mock.invocationCallOrder[0]!,
+  );
+  expect(initializeEngineCompletions.mock.invocationCallOrder[0]).toBeLessThan(
+    render.mock.invocationCallOrder[0]!,
+  );
+});
+
+test("a rejected path initialization skips engines and still mounts App", async () => {
+  initializePathOwners.mockRejectedValueOnce(new Error("path initialization failed"));
+  const { startApplication } = await import("./bootstrap");
+  await startApplication();
+  expect(initializeEngineCompletions).not.toHaveBeenCalled();
+  expect(renderedChild().type).toBe(App);
+  expect(logFailureSafely).toHaveBeenCalledOnce();
 });
 
 test("awaits the previous-document sweep before sessions, i18n and rendering", async () => {
@@ -82,7 +137,8 @@ test("awaits the previous-document sweep before sessions, i18n and rendering", a
       finishSweep = resolve;
     }),
   );
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   expect(initializeWorkspace).toHaveBeenCalledExactlyOnceWith();
   expect(initializeWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
     releasePreviousDocumentOperations.mock.invocationCallOrder[0] ?? 0,
@@ -106,13 +162,16 @@ test("a refused synchronous workspace initialization prevents bootstrap and rend
   const sessions = await import("./utils/session");
   vi.mocked(sessions.initializePersistedSessions).mockClear();
 
-  await expect(import("./index")).rejects.toBe(failure);
+  const { startApplication } = await import("./bootstrap");
+  expect(() => startApplication()).toThrow(failure);
 
   expect(releasePreviousDocumentOperations).not.toHaveBeenCalled();
   expect(sessions.initializePersistedSessions).not.toHaveBeenCalled();
   expect(initializeI18n).not.toHaveBeenCalled();
   expect(createRoot).not.toHaveBeenCalled();
   expect(render).not.toHaveBeenCalled();
+  await startApplication();
+  expect(createRoot).toHaveBeenCalledOnce();
 });
 
 test("logs a rejected previous-document sweep and still renders the application", async () => {
@@ -121,7 +180,8 @@ test("logs a rejected previous-document sweep and still renders the application"
     category: "network",
     message: "native registry request failed at /home/private/registry token=secret-registry-token",
   });
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await expect(applicationStartup).resolves.toBeUndefined();
   expect(logFailureSafely).toHaveBeenCalledExactlyOnceWith(
     "StartupReservationReleaseError: network: native registry request failed at [path] token=[redacted]",
@@ -140,7 +200,8 @@ test("logs a rejected previous-document sweep and still renders the application"
 });
 
 test("initialises the browser application root", async () => {
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await applicationStartup;
 
   expect(createRoot).toHaveBeenCalledWith(document.getElementById("app"));
@@ -163,7 +224,8 @@ test.each(["observer", "engine"])("isolates %s recovery failure", async (failure
     ? initializeDownloadFailures
     : initializeEngineCompletions
   ).mockRejectedValueOnce(new Error("recovery failed"));
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await applicationStartup;
   expect(initializeDownloadFailures).toHaveBeenCalledExactlyOnceWith();
   expect(initializeEngineCompletions).toHaveBeenCalledExactlyOnceWith();
@@ -205,7 +267,8 @@ test.each([
     error.message = `${token} ${username}`;
     vi.mocked(sessions.initializePersistedSessions).mockRejectedValueOnce(error);
 
-    const { applicationStartup } = await import("./index");
+    const { startApplication } = await import("./bootstrap");
+    const applicationStartup = startApplication();
 
     await expect(applicationStartup).resolves.toBeUndefined();
     expect(initializeI18n).toHaveBeenCalledTimes(1);
@@ -213,6 +276,9 @@ test.each([
     expect(renderedChild().type).toBe(StartupStorageFailure);
     expect(renderedChild().type).not.toBe(App);
     expect(renderedChild().props).toEqual({ legacySignInFound, allRevoked, unresolvedReasons });
+    expect(initializeDownloadFailures).not.toHaveBeenCalled();
+    expect(initializePathOwners).not.toHaveBeenCalled();
+    expect(initializeEngineCompletions).not.toHaveBeenCalled();
     expect(closeSplashscreen).toHaveBeenCalledExactlyOnceWith();
     expect(logFailureSafely).toHaveBeenCalledTimes(1);
     const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}, unresolvedReasons=${unresolvedReasons.join(",")}`;
@@ -244,7 +310,8 @@ test("renders and reveals the terminal view even when i18n initialization reject
     new sessions.SessionSanitizationError(true, false),
   );
   initializeI18n.mockRejectedValueOnce(new Error("locale load failed"));
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await expect(applicationStartup).resolves.toBeUndefined();
   expect(initializeI18n).toHaveBeenCalledTimes(1);
   expect(render).toHaveBeenCalledTimes(1);
@@ -264,7 +331,8 @@ test("logs a sanitized reveal failure and resolves startup", async () => {
     new sessions.SessionSanitizationError(),
   );
   closeSplashscreen.mockRejectedValueOnce(new Error("token=secret username=private"));
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await expect(applicationStartup).resolves.toBeUndefined();
   expect(render).toHaveBeenCalledTimes(1);
   expect(renderedChild().type).toBe(StartupStorageFailure);
@@ -301,7 +369,8 @@ test("mounts after a non-sensitive reconciliation failure", async () => {
     new Error("native account lookup failed"),
   );
 
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await applicationStartup;
 
   expect(initializeI18n).toHaveBeenCalledTimes(1);
@@ -317,7 +386,8 @@ test("mounts App after a recoverable public save outcome", async () => {
     status: "unsaved",
     sessions: [{ player: "Public alias", updatedAt: 1 }],
   });
-  const { applicationStartup } = await import("./index");
+  const { startApplication } = await import("./bootstrap");
+  const applicationStartup = startApplication();
   await applicationStartup;
   expect(renderedChild().type).toBe(App);
   expect(logFailureSafely).not.toHaveBeenCalled();

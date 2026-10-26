@@ -1,6 +1,8 @@
 import { warn } from "@/platform/native";
 import i18n from "@/i18n";
 import equal from "fast-deep-equal";
+import { atom, type WritableAtom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
 import type {
     AsyncStorage,
     AsyncStringStorage,
@@ -15,6 +17,48 @@ import {
 } from "./store/debouncedStorage";
 import { reportPersistError } from "./persistError";
 import { storageErrorCause } from "./storageError";
+
+/** Keep the underlying atom's mount, subscription and write contracts intact. */
+export function initializeBeforeUse<Value, Args extends unknown[], Result>(
+    stored: WritableAtom<Value, Args, Result>,
+    initialize: () => void,
+) {
+    return atom(
+        (get) => {
+            initialize();
+            return get(stored);
+        },
+        (_get, set, ...args: Args) => {
+            initialize();
+            return set(stored, ...args);
+        },
+    );
+}
+
+/** One declaration-ordered initial snapshot, shared by every store in this document. */
+export function createDocumentStorageAtoms(initializeDocument: () => void) {
+    const initializers: (() => void)[] = [];
+    return {
+        initialize() {
+            for (const initialize of initializers) initialize();
+        },
+        atomWithStorage<Value>(key: string, initialValue: Value, storage: SyncStorage<Value>) {
+            let stored: ReturnType<typeof atomWithStorage<Value>> | undefined;
+            initializers.push(() => {
+                stored ??= atomWithStorage(key, initialValue, storage, { getOnInit: true });
+            });
+            // The document initializer establishes every initial value before any store reads.
+            return initializeBeforeUse(
+                atom(
+                    (get) => get(stored!),
+                    (_get, set, update: Parameters<NonNullable<typeof stored>["write"]>[2]) =>
+                        set(stored!, update),
+                ),
+                initializeDocument,
+            );
+        },
+    };
+}
 
 export function reportPreferenceStorageFailure(
     operation: "read" | "repair" | "save",

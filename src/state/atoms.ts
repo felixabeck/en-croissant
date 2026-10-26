@@ -40,7 +40,12 @@ import {
     type Session,
     type SessionPersistenceSnapshot,
 } from "../utils/session";
-import { createPreferenceStorage, createZodStorage } from "./utils";
+import {
+    createDocumentStorageAtoms,
+    createPreferenceStorage,
+    createZodStorage,
+    initializeBeforeUse,
+} from "./utils";
 import { FONT_SCALE_DEFAULT, fontScaleSchema } from "./fontScale";
 import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import {
@@ -56,7 +61,7 @@ import {
 } from "./workspace";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
-import { originalPathOwnersSnapshot } from "./pathOwners";
+import { initializeOriginalPathOwners } from "./pathOwners";
 import {
     createEngineOwnerStorage,
     enginesSchema,
@@ -77,9 +82,18 @@ import { cancellationError, tauri, withConversionTicket } from "@/platform/tauri
 export type { PracticeData } from "./practiceStorage";
 export { enginesSchema } from "./engineOwnerStorage";
 
-// Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
-// its source record. App startup consumes this immutable snapshot.
-void originalPathOwnersSnapshot;
+const documentPreferences = createDocumentStorageAtoms(initializeRendererState);
+let rendererStateInitialized = false;
+
+/** Establish the document's original owners and eager preferences before hydration or cleanup. */
+export function initializeRendererState() {
+    if (rendererStateInitialized) return;
+    initializeOriginalPathOwners();
+    // Legacy renderer-visible directories are scrubbed, never migrated into opaque authority.
+    if (typeof localStorage !== "undefined") localStorage.removeItem("document-dir");
+    documentPreferences.initialize();
+    rendererStateInitialized = true;
+}
 
 // Tabs
 
@@ -87,6 +101,7 @@ let initialWorkspace: Workspace | undefined;
 
 /** One successful document snapshot, shared by new stores without replacing their later edits. */
 export function initializeWorkspace(): Workspace {
+    initializeRendererState();
     initialWorkspace ??= loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
     return initialWorkspace;
 }
@@ -252,20 +267,17 @@ export const currentTabAtom = atom(
 // Directories
 // Legacy builds stored a renderer-visible document directory. It is deliberately
 // scrubbed instead of migrated: only the native-issued opaque workspace survives.
-if (typeof localStorage !== "undefined") localStorage.removeItem("document-dir");
 // A native-issued, DownloadFile-only path capability.  Unlike the legacy directory settings it
 // is opaque and never serializes a physical filesystem location into renderer storage.
-export const downloadDestinationAtom = atomWithStorage<PathRef | null>(
+export const downloadDestinationAtom = documentPreferences.atomWithStorage<PathRef | null>(
     "download-destination-capability",
     null,
     createZodStorage(pathRefSchema.nullable(), localStorage),
-    { getOnInit: true },
 );
-export const fileWorkspaceAtom = atomWithStorage<FileWorkspaceHandle | null>(
+export const fileWorkspaceAtom = documentPreferences.atomWithStorage<FileWorkspaceHandle | null>(
     "file-workspace",
     null,
     createZodStorage(fileWorkspaceHandleSchema.nullable(), localStorage),
-    { getOnInit: true },
 );
 export const expandedDirectoriesAtom = createExpandedDirectoriesAtom(
     fileWorkspaceAtom,
@@ -306,7 +318,14 @@ function createEngineOwnerAtom<Value, Update, Fallback extends Value | undefined
         publishOnRefusal?: (update: Update | EngineOwnerCompletionUpdate<Value>) => boolean;
     } = {},
 ) {
-    const storage = createEngineOwnerStorage(key, schema, initialValue);
+    const ownerStorage = createEngineOwnerStorage(key, schema, initialValue);
+    const storage: typeof ownerStorage = {
+        ...ownerStorage,
+        getItem(key, initialValue) {
+            initializeRendererState();
+            return ownerStorage.getItem(key, initialValue);
+        },
+    };
     const stored = unwrap(atomWithStorage(key, initialValue, storage), () => fallback);
     // Once a write publishes, it takes precedence over asynchronous storage hydration.
     const published = atom<Value | undefined>(undefined);
@@ -480,28 +499,21 @@ export const forcedEnPassantAtom = atomWithStorage<boolean>(
     false,
     createPreferenceStorage(false),
 );
-export const showCoordinatesAtom = atomWithStorage<"no" | "edge" | "all">(
+export const showCoordinatesAtom = documentPreferences.atomWithStorage<"no" | "edge" | "all">(
     "show-coordinates-v2",
     "no",
     createZodStorage(z.enum(["no", "edge", "all"]), localStorage),
-    { getOnInit: true },
 );
-export const soundCollectionAtom = atomWithStorage<string>(
+export const soundCollectionAtom = documentPreferences.atomWithStorage<string>(
     "sound-collection",
     "standard",
     createPreferenceStorage("standard"),
-    {
-        getOnInit: true,
-    },
 );
 
-export const soundVolumeAtom = atomWithStorage<number>(
+export const soundVolumeAtom = documentPreferences.atomWithStorage<number>(
     "sound-volume",
     0.8,
     createPreferenceStorage(0.8),
-    {
-        getOnInit: true,
-    },
 );
 
 export const pieceSetAtom = atomWithStorage<string>(
@@ -542,13 +554,10 @@ export const nativeBarAtom = atomWithStorage<boolean>(
     false,
     createPreferenceStorage(false),
 );
-export const telemetryEnabledAtom = atomWithStorage<boolean>(
+export const telemetryEnabledAtom = documentPreferences.atomWithStorage<boolean>(
     "telemetry-enabled",
     false,
     createPreferenceStorage(false),
-    {
-        getOnInit: true,
-    },
 );
 
 // Recent Files
@@ -569,10 +578,13 @@ const recentFileSchema = z.object({
     lastOpened: z.number(),
 });
 
-export const recentFilesAtom = atomWithStorage<RecentFile[]>(
-    "recent-files",
-    [],
-    createZodStorage(z.array(recentFileSchema), localStorage),
+export const recentFilesAtom = initializeBeforeUse(
+    atomWithStorage<RecentFile[]>(
+        "recent-files",
+        [],
+        createZodStorage(z.array(recentFileSchema), localStorage),
+    ),
+    initializeRendererState,
 );
 
 export const addRecentFileAtom = atom(null, (get, set, file: Omit<RecentFile, "lastOpened">) => {
@@ -586,16 +598,22 @@ export const addRecentFileAtom = atom(null, (get, set, file: Omit<RecentFile, "l
 
 // Database
 
-export const referenceDbAtom = atomWithStorage<DatabaseHandle | null>(
-    "reference-database",
-    null,
-    createZodStorage(databaseHandleSchema.nullable(), localStorage),
+export const referenceDbAtom = initializeBeforeUse(
+    atomWithStorage<DatabaseHandle | null>(
+        "reference-database",
+        null,
+        createZodStorage(databaseHandleSchema.nullable(), localStorage),
+    ),
+    initializeRendererState,
 );
 
-export const selectedPuzzleDbAtom = atomWithStorage<PathRef | null>(
-    "puzzle-db",
-    null,
-    createZodStorage(pathRefSchema.nullable(), localStorage),
+export const selectedPuzzleDbAtom = initializeBeforeUse(
+    atomWithStorage<PathRef | null>(
+        "puzzle-db",
+        null,
+        createZodStorage(pathRefSchema.nullable(), localStorage),
+    ),
+    initializeRendererState,
 );
 /** In-memory invalidation signal shared by Settings, the local picker, and Puzzle tabs. */
 export const puzzleWorkspaceGenerationAtom = atom(0);
@@ -745,13 +763,16 @@ export const gameSameTimeControlAtom = atomWithStorage<boolean>(
     createPreferenceStorage(true),
 );
 
-export const gameOpeningBookHandleAtom = atomWithStorage<OpeningBookHandle | null>(
-    "game-opening-book-handle",
-    null,
-    createZodStorage(
-        z.object({ id: pathRefSchema, kind: z.literal("openingBook") }).nullable(),
-        localStorage,
+export const gameOpeningBookHandleAtom = initializeBeforeUse(
+    atomWithStorage<OpeningBookHandle | null>(
+        "game-opening-book-handle",
+        null,
+        createZodStorage(
+            z.object({ id: pathRefSchema, kind: z.literal("openingBook") }).nullable(),
+            localStorage,
+        ),
     ),
+    initializeRendererState,
 );
 
 export const gameOpeningBookEnabledAtom = atomWithStorage<boolean>(
@@ -847,7 +868,7 @@ export const localOptionsFamily = atomFamily((_tab: string) =>
     }),
 );
 
-export const lichessOptionsAtom = atomWithStorage<LichessGamesOptions>(
+export const lichessOptionsAtom = documentPreferences.atomWithStorage<LichessGamesOptions>(
     "lichess-all-options",
     {
         ratings: [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500],
@@ -855,18 +876,12 @@ export const lichessOptionsAtom = atomWithStorage<LichessGamesOptions>(
         color: "white",
     },
     createZodStorage(lichessGamesOptionsSchema, localStorage),
-    {
-        getOnInit: true,
-    },
 );
 
-export const masterOptionsAtom = atomWithStorage<MasterGamesOptions>(
+export const masterOptionsAtom = documentPreferences.atomWithStorage<MasterGamesOptions>(
     "lichess-master-options",
     {},
     createZodStorage(masterOptionsSchema, localStorage),
-    {
-        getOnInit: true,
-    },
 );
 
 export const dbTypeFamily = atomFamily((_tab: string) =>
@@ -919,7 +934,8 @@ export const pendingGameStartFamily = atomFamily((_tab: string) =>
 // Practice
 
 export const deckAtomFamily = atomFamily(
-    ({ file, game }: { file: string; game: number }) => createPracticeDeckAtom({ file, game }),
+    ({ file, game }: { file: string; game: number }) =>
+        initializeBeforeUse(createPracticeDeckAtom({ file, game }), initializeRendererState),
 
     (a, b) => a.file === b.file && a.game === b.game,
 );

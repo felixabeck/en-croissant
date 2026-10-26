@@ -1,5 +1,6 @@
 import { createStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import "./atoms";
 
 vi.mock("@/platform/native", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@/platform/native")>()),
