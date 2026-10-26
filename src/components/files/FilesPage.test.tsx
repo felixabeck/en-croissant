@@ -93,91 +93,131 @@ vi.mock("@/i18n", () => ({
     t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
   },
 }));
-vi.mock("@mantine/core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@mantine/core")>()),
-  Button: ({
-    children,
-    loading,
-    ...props
-  }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) => (
-    <button {...props} disabled={props.disabled || loading}>
-      {children}
-    </button>
-  ),
-  Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Input: ({
-    leftSection: _leftSection,
-    ...props
-  }: React.InputHTMLAttributes<HTMLInputElement> & { leftSection?: React.ReactNode }) => (
-    <input {...props} />
-  ),
-  Modal: ({
-    opened,
-    title,
-    children,
-    onClose,
-  }: {
-    opened: boolean;
-    title: string;
-    children: React.ReactNode;
-    onClose: () => void;
-  }) =>
-    opened ? (
-      <div role="dialog" aria-label={title}>
-        <button onClick={onClose}>Close dialog</button>
+vi.mock("@mantine/core", async (importOriginal) => {
+  const { createContext, useContext } = await import("react");
+  const RadioContext = createContext({ value: "", onChange: (_value: string) => {} });
+  const Radio = Object.assign(
+    ({ value, label }: { value: string; label: string }) => {
+      const group = useContext(RadioContext);
+      return (
+        <label>
+          <input
+            type="radio"
+            value={value}
+            checked={group.value === value}
+            onChange={() => group.onChange(value)}
+          />
+          {label}
+        </label>
+      );
+    },
+    {
+      Group: ({
+        label,
+        value,
+        onChange,
+        children,
+      }: {
+        label: string;
+        value: string;
+        onChange: (value: string) => void;
+        children: React.ReactNode;
+      }) => (
+        <RadioContext.Provider value={{ value, onChange }}>
+          <div role="radiogroup" aria-label={label}>
+            {children}
+          </div>
+        </RadioContext.Provider>
+      ),
+    },
+  );
+  return {
+    ...(await importOriginal<typeof import("@mantine/core")>()),
+    Button: ({
+      children,
+      loading,
+      ...props
+    }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) => (
+      <button {...props} disabled={props.disabled || loading}>
         {children}
-      </div>
-    ) : null,
-  Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ScrollArea: {
-    Autosize: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  },
-  Select: ({
-    "aria-label": ariaLabel,
-    label,
-    value,
-    onChange,
-    data,
-  }: {
-    "aria-label"?: string;
-    label?: string;
-    value: string | null;
-    onChange: (value: string | null) => void;
-    data: { value: string; label: string }[];
-  }) => (
-    <select
-      aria-label={ariaLabel ?? label}
-      value={value ?? ""}
-      onChange={(event) => onChange(event.currentTarget.value || null)}
-    >
-      <option value="" />
-      {data.map((item) => (
-        <option key={item.value} value={item.value}>
-          {item.label}
-        </option>
-      ))}
-    </select>
-  ),
-  SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Text: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p {...props}>{children}</p>
-  ),
-  TextInput: ({
-    label,
-    error,
-    ...props
-  }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; error?: string }) => (
-    <label>
-      {label}
-      <input aria-label={label} {...props} />
-      {error && <span role="alert">{error}</span>}
-    </label>
-  ),
-  Title: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
-}));
+      </button>
+    ),
+    Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Input: ({
+      leftSection: _leftSection,
+      ...props
+    }: React.InputHTMLAttributes<HTMLInputElement> & { leftSection?: React.ReactNode }) => (
+      <input {...props} />
+    ),
+    Modal: ({
+      opened,
+      title,
+      children,
+      onClose,
+    }: {
+      opened: boolean;
+      title: string;
+      children: React.ReactNode;
+      onClose: () => void;
+    }) =>
+      opened ? (
+        <div role="dialog" aria-label={title}>
+          <button onClick={onClose}>Close dialog</button>
+          {children}
+        </div>
+      ) : null,
+    Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Radio,
+    ScrollArea: {
+      Autosize: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    },
+    Select: ({
+      "aria-label": ariaLabel,
+      label,
+      value,
+      onChange,
+      data,
+    }: {
+      "aria-label"?: string;
+      label?: string;
+      value: string | null;
+      onChange: (value: string | null) => void;
+      data: { value: string; label: string }[];
+    }) => (
+      <select
+        aria-label={ariaLabel ?? label}
+        value={value ?? ""}
+        onChange={(event) => onChange(event.currentTarget.value || null)}
+      >
+        <option value="" />
+        {data.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    ),
+    SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Text: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
+      <p {...props}>{children}</p>
+    ),
+    TextInput: ({
+      label,
+      error,
+      ...props
+    }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; error?: string }) => (
+      <label>
+        {label}
+        <input aria-label={label} {...props} />
+        {error && <span role="alert">{error}</span>}
+      </label>
+    ),
+    Title: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
+  };
+});
 vi.mock("./DirectoryTree", () => ({
   default: ({
     files,
@@ -417,7 +457,11 @@ test.each(["file", "folder", "rename", "metadata", "move"] as const)(
     );
     expect(container.textContent).not.toContain("private diagnostic");
     expect(
-      (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
+      (
+        container.querySelector(
+          '[role="dialog"] input[aria-label="Name"]',
+        ) as HTMLInputElement | null
+      )?.value,
     ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Keep this name");
   },
 );
@@ -775,16 +819,16 @@ describe.each(Object.keys(mutationCommands) as MutationAction[])("%s typed refus
       expect(container.querySelector('[data-testid="entries"]')?.textContent).toBe(
         [entry.name, destination.name, ...(relists ? ["Leftover"] : [])].join(","),
       );
-      expect((dialog.querySelector("input") as HTMLInputElement | null)?.value).toBe(
-        action === "move" ? undefined : action === "metadata" ? entry.name : "Retained draft",
-      );
+      expect(
+        (dialog.querySelector('input[aria-label="Name"]') as HTMLInputElement | null)?.value,
+      ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Retained draft");
       expect((dialog.querySelector("select") as HTMLSelectElement | null)?.value).toBe(
-        action === "metadata"
-          ? "repertoire"
-          : action === "move"
-            ? fileWorkspaceKey(workspace)
-            : undefined,
+        action === "metadata" ? "repertoire" : undefined,
       );
+      if (action === "move")
+        expect(
+          (dialog.querySelector('input[type="radio"]:checked') as HTMLInputElement).value,
+        ).toBe(fileWorkspaceKey(workspace));
       expect(dialogButton(action === "move" ? "Move" : "Confirm").disabled).toBe(false);
     },
   );
@@ -883,7 +927,11 @@ test.each(["file", "folder", "rename", "metadata", "move"] as const)(
       refusalCopy["Files.Refusal.Changed"],
     );
     expect(
-      (container.querySelector('[role="dialog"] input') as HTMLInputElement | null)?.value,
+      (
+        container.querySelector(
+          '[role="dialog"] input[aria-label="Name"]',
+        ) as HTMLInputElement | null
+      )?.value,
     ).toBe(action === "move" ? undefined : action === "metadata" ? entry.name : "Retained draft");
     expect(mutationCommands[action].mock.calls[0].slice(0, 2)).toEqual([
       workspace,
@@ -902,11 +950,15 @@ test("move retains a removed destination and refuses a second write", async () =
   );
   await realWorkspace();
   await openMutation("move");
-  const select = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
-  await act(async () => {
-    select.value = fileWorkspaceKey(destination.handle);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const radio = [
+    ...container.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="radio"]'),
+  ].find((input) => input.closest("label")?.textContent === destination.name)!;
+  expect(radio.value).toBe(fileWorkspaceKey(destination.handle));
+  await act(async () => radio.click());
+  await act(async () => radio.click());
+  expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(radio.checked).toBe(true);
+  expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
   await act(async () => dialogButton("Move").click());
   await act(async () => dialogButton("Move").click());
   expect(mocks.moveWorkspaceEntry).toHaveBeenCalledExactlyOnceWith(
@@ -914,8 +966,9 @@ test("move retains a removed destination and refuses a second write", async () =
     entry.handle,
     destination.handle,
   );
-  expect(select.value).toBe(fileWorkspaceKey(destination.handle));
-  expect(select.selectedOptions[0].textContent).toBe(destination.name);
+  expect(radio.checked).toBe(true);
+  expect(radio.closest("label")?.textContent).toBe(destination.name);
+  expect(container.querySelectorAll('[role="dialog"] input[type="radio"]:checked')).toHaveLength(1);
   expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
     refusalCopy["Files.Refusal.Unavailable"],
   );

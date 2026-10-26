@@ -8,7 +8,7 @@ import {
   runDestructiveWithRefresh,
 } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
-import { Box, Button, Center, Group, Select, Stack, Text, TextInput } from "@mantine/core";
+import { Box, Button, Center, Group, Radio, Select, Stack, Text, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -47,7 +47,7 @@ type Presentation = {
 const FILE_CARD_MIN_HEIGHT = "32rem";
 const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // At 320px/200% the default modal clipped the type Select's "Repertoire";
-// below this width the shared create/rename/edit dialog goes full-screen.
+// below this width the shared create/rename/edit dialog and Move go full-screen.
 // The threshold follows the app font scale, measured in scaled root-em.
 const COMPACT_DIALOG_WIDTH_EM = 30;
 
@@ -632,32 +632,42 @@ export function useFileWorkspace(
         </AppModal>
         <AppModal
           opened={moveTarget !== null}
+          fullScreen={compactDialog}
           onClose={closePresentation}
           title={t("Files.MoveFile", { defaultValue: "Move file" })}
         >
-          <Stack>
-            <Select
+          <Stack miw={0}>
+            <Radio.Group
+              miw={0}
+              classNames={{ label: "wrap-anywhere" }}
+              styles={{ label: { minWidth: 0 } }}
               label={t("Files.DestinationFolder", { defaultValue: "Destination folder" })}
-              value={moveTarget}
+              value={moveTarget ?? ""}
               onChange={(value) => {
                 const owner = presentation.current;
                 if (!owner || !owns(owner)) return;
-                if (!value) {
-                  closePresentation();
-                  return;
-                }
                 owner.destination = moveDestinations.find(
                   (entry) => fileWorkspaceKey(entry.handle) === value,
                 );
                 setMoveTarget(value);
               }}
-              data={moveDestinations.map((entry) => ({
-                value: fileWorkspaceKey(entry.handle),
-                label: entry.label,
-              }))}
-            />
+            >
+              <Stack miw={0} mt="xs">
+                {moveDestinations.map((entry) => (
+                  <Radio
+                    key={fileWorkspaceKey(entry.handle)}
+                    miw={0}
+                    value={fileWorkspaceKey(entry.handle)}
+                    label={entry.label}
+                    classNames={{ label: "wrap-anywhere" }}
+                    styles={{ labelWrapper: { minWidth: 0 }, label: { minWidth: 0 } }}
+                  />
+                ))}
+              </Stack>
+            </Radio.Group>
             <Button
-              styles={libraryButtonProps.styles}
+              miw={0}
+              {...libraryButtonProps}
               px="xs"
               disabled={!moveTarget || moving}
               onClick={async () => {

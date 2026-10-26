@@ -359,15 +359,9 @@ for (const locale of ["en-US", "de-DE"] as const) {
                         })
                         .click();
                 } else if (action === "move") {
-                    // The existing open-ended Select design belongs to f-20261007-04.
-                    // Exercise its existing choice contract without changing its presentation.
                     await dialog
-                        .getByRole("textbox", {
-                            name: copy["Files.DestinationFolder"],
-                            exact: true,
-                        })
+                        .getByRole("radio", { name: destination.name, exact: true })
                         .click();
-                    await page.getByRole("option", { name: destination.name, exact: true }).click();
                 } else await input.fill("Retained draft");
                 const submit = dialog.getByRole("button", {
                     name: copy[action === "move" ? "Files.Move" : "Common.Confirm"],
@@ -386,11 +380,8 @@ for (const locale of ["en-US", "de-DE"] as const) {
                     ).toHaveValue(copy["Files.FileType.Repertoire"]);
                 if (action === "move")
                     await expect(
-                        dialog.getByRole("textbox", {
-                            name: copy["Files.DestinationFolder"],
-                            exact: true,
-                        }),
-                    ).toHaveValue(destination.name);
+                        dialog.getByRole("radio", { name: destination.name, exact: true }),
+                    ).toBeChecked();
                 if (reconciles) {
                     await expect(
                         page.getByRole("treeitem", {

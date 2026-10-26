@@ -1449,6 +1449,54 @@ test("database-files: metadata-only editing fits 320px and relists the chosen ty
     });
 });
 
+test("database-files: Move destination wraps at 320px and 200% and submits the selected handle", async ({
+    page,
+    mockScenario,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    const destination = {
+        ...openingDirectory,
+        name: "OneUnbrokenDirectoryNameThatIsMuchWiderThanTheMoveDialogAtTwoHundredPercent",
+    };
+    await mockScenario({
+        commands: filesWorkspaceCommands([[pgnFile, destination], [destination]], {
+            ...pgnFileCommands,
+            move_workspace_entry: { result: null },
+        }),
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, pgnFile.name);
+    await page
+        .getByRole("treeitem", { name: pgnFile.name, exact: true })
+        .getByRole("button", { name: "Move", exact: true })
+        .click();
+    const dialog = page.getByRole("dialog", { name: "Move file", exact: true });
+    await expect(dialog.getByRole("radio", { name: "Collection root", exact: true })).toBeChecked();
+    await expect(dialog.getByText("Collection root", { exact: true })).toBeVisible();
+    await assertNothingClipped(dialog);
+    const radio = dialog.getByRole("radio", { name: destination.name, exact: true });
+    await radio.check();
+    await expect(radio).toBeChecked();
+    const label = dialog.getByText(destination.name, { exact: true });
+    await expect(label).toBeVisible();
+    await assertNothingClipped(dialog);
+    await assertNothingClipped(label, { mode: "reachable" });
+    await dialog.getByRole("button", { name: "Move", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const moves = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter((call) => call.command === "move_workspace_entry"),
+    );
+    expect(moves).toHaveLength(1);
+    expect(moves[0].args).toEqual({
+        workspace: filesWorkspaceFixture.workspace,
+        entry: pgnFile.handle,
+        targetDirectory: destination.handle,
+    });
+});
+
 test("database-files: grants a workspace and creates a folder through typed IPC", async ({
     page,
     mockScenario,
