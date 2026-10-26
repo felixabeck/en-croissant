@@ -15122,6 +15122,9 @@ An ordinary failure after a committed workspace rename, trash, or restore now re
 * **Related:** `f-20260917-08` (introduced `CommittedRemoval`; its cumulative review found this, correctness lens); `d-20261006-24`, `d-20261006-25`, `d-20261002-08`.
 * **Found by:** the `f-20260917-08` cumulative diff review (Codex correctness and records lenses), source-checked by the orchestrator at the lines above, 2026-10-07.
 
+The command-entry puzzle sentence is wrong. delete_puzzle_database at puzzle.rs:590 resolves with PuzzleDelete before delete_puzzle_database_blocking. allows_missing_leaf returns false for PuzzleDelete (path_authority/mod.rs:4888, PuzzleDelete is in the false arm). A puzzle file that is already missing fails that resolve and never reaches the missing-binding arm at puzzle.rs:659. The test command_flow_treats_already_missing_file_as_deleted resolves while the file still exists (puzzle.rs:943) and only then removes it. That is not the pre-resolution case. This database fix does not change puzzle.rs. Status stays open until the database close. Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b9de03f6eea0fb942373969effcd8f3371999d191aeef1c70ef504c41407182a","input_sha256":"5113b449654bcb80f2b955b77aced0b35954b43679c0903d2a57cb9e390b6f3c","kind":"mutation-receipt","operation":"3ebb9691368b99eb5c6bf6b03e6dfbd5148231a66f8e519b1983b8bfd0b439a7","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-01"],"target":"f-20261007-01","v":1} -->
+
 ### Gate receipts bind the whole working tree, so a records-only commit after green gates voids every receipt
 
 * **ID:** f-20261007-02 · **Status:** rejected · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
