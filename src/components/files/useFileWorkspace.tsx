@@ -694,8 +694,9 @@ export function useFileWorkspace(
                 async () => {
                   setTrashed(deleteTarget);
                   setSelectedEntry(null);
-                  // A landed trash still closes when the listing fails. ConfirmModal
-                  // calls onClose only after this refresh resolves.
+                  // A durably successful trash still closes when the listing fails.
+                  // ConfirmModal calls onClose only after this refresh resolves.
+                  // A durability rejection throws after this refresh, so the confirm stays open.
                   await mutate().catch(() => {});
                 },
                 mutate,
