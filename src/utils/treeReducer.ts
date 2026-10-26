@@ -1,6 +1,6 @@
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import type { Move } from "chessops";
-import { INITIAL_FEN, parseFen } from "chessops/fen";
+import { INITIAL_FEN, makeCastlingFen, parseFen } from "chessops/fen";
 import type { Outcome, Score } from "@/bindings";
 import type { PuzzleSession } from "@/state/puzzleSession";
 import { positionFromFen } from "@/utils/chessops";
@@ -286,10 +286,14 @@ export interface ReportState {
 
 export function getBoardState(fen: string): string {
     const fields = fen.split(" ").slice(0, 4);
-    if (fields[3] && fields[3] !== "-") {
+    if ((fields[2] && fields[2] !== "-") || (fields[3] && fields[3] !== "-")) {
         const [position] = positionFromFen(fen);
-        // Only legal EP rights affect identity. Keep raw fields for incomplete editor positions.
-        if (position && position.toSetup().epSquare === undefined) fields[3] = "-";
+        // Compare actual rights through the library, retaining raw fields for rejected positions.
+        if (position) {
+            const setup = position.toSetup();
+            fields[2] = makeCastlingFen(setup.board, setup.castlingRights);
+            if (fields[3] && setup.epSquare === undefined) fields[3] = "-";
+        }
     }
     return fields.join(" ");
 }

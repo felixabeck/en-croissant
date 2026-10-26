@@ -39,10 +39,15 @@ beforeEach(() => {
     mocks.lexPgn.mockReset();
 });
 
-test.each(["header", "override"] as const)(
-    "PGN %s preserves raw EP while indexing its legal repetition",
-    async (source) => {
-        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+test.each(
+    (["header", "override"] as const).flatMap((source) =>
+        ["KQkq e3", "HAha -"].map((rights) => ({ source, rights })),
+    ),
+)(
+    "renderer PGN $source preserves raw $rights while indexing its legal repetition",
+    async ({ source, rights }) => {
+        const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
+        const fen = `${board} ${rights} 0 1`;
         mocks.lexPgn.mockResolvedValueOnce([
             {
                 type: "Header",
@@ -57,7 +62,8 @@ test.each(["header", "override"] as const)(
         expect(tree.root.fen).toBe(fen);
         expect(tree.headers.fen).toBe(fen);
         const repeated = getNodeAtPath(tree.root, [0, 0, 0, 0]);
-        expect(repeated.fen).toBe(fen.replace("e3 0 1", "- 4 3"));
+        expect(repeated.fen).toBe(`${board} KQkq - 4 3`);
+        expect(repeated.halfMoves).toBe(5);
         expect(
             getMemoizedBoardStateMap(tree.root)[getBoardState(repeated.fen)].map(
                 ({ path }) => path,

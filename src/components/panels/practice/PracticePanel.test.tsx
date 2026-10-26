@@ -248,7 +248,7 @@ vi.mock("ts-fsrs", async (importOriginal) => ({
 }));
 
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { createNode, defaultTree, type TreeNode } from "@/utils/treeReducer";
+import { createNode, defaultTree, getBoardState, type TreeNode } from "@/utils/treeReducer";
 import PracticePanel from "./PracticePanel";
 
 const position = (fen: string, card = { due: "2026-09-22T00:00:00.000Z", reps: 0 }) => ({
@@ -418,51 +418,63 @@ test("re-diffs the same tree once a new hydration lands", async () => {
   expect(update(fixtures.deck).positions).toBe(extended);
 });
 
-test("persists an unchanged-answer EP duplicate removal from real syncDeck", async () => {
-  const actual = await vi.importActual<typeof import("@/components/files/opening")>(
-    "@/components/files/opening",
-  );
-  const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
-  const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
-  const tree = defaultTree().root;
-  const node = createNode({
-    fen: canonical,
-    move: parseUci("d7d5")!,
-    san: "d5",
-    halfMoves: 14,
-  });
-  node.children.push(
-    createNode({ fen: canonical, move: parseUci("e2e4")!, san: "e4", halfMoves: 15 }),
-  );
-  tree.children.push(node);
-  const [fresh] = actual.buildFromTree(tree, "white", []);
-  expect(fresh).toMatchObject({ fen: canonical, answer: "e4" });
-  const first = { ...fresh, fen: raw, card: { ...fresh.card, reps: 4 } };
-  const last = { ...fresh, card: { ...fresh.card, reps: 9 } };
-  fixtures.deck = deck({ positions: [first, last] });
-  const inputBefore = structuredClone(fixtures.deck);
-  fixtures.tree.root = tree;
-  fixtures.setDeck.mockClear();
-  fixtures.syncDeck
-    .mockClear()
-    .mockImplementation((...args) =>
-      actual.syncDeck(...(args as Parameters<typeof actual.syncDeck>)),
+test.each([
+  {
+    name: "EP",
+    raw: "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2",
+    canonical: "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8",
+  },
+  {
+    name: "castling",
+    raw: "4k3/8/8/3p4/8/8/4P3/R3K2R w HA - 0 2",
+    canonical: "4k3/8/8/3p4/8/8/4P3/R3K2R w KQ - 12 8",
+  },
+])(
+  "persists an unchanged-answer $name duplicate removal from real syncDeck",
+  async ({ raw, canonical }) => {
+    const actual = await vi.importActual<typeof import("@/components/files/opening")>(
+      "@/components/files/opening",
     );
+    const tree = defaultTree().root;
+    const node = createNode({
+      fen: canonical,
+      move: parseUci("d7d5")!,
+      san: "d5",
+      halfMoves: 14,
+    });
+    node.children.push(
+      createNode({ fen: canonical, move: parseUci("e2e4")!, san: "e4", halfMoves: 15 }),
+    );
+    tree.children.push(node);
+    const [fresh] = actual.buildFromTree(tree, "white", []);
+    expect(fresh).toMatchObject({ fen: canonical, answer: "e4" });
+    const first = { ...fresh, fen: raw, card: { ...fresh.card, reps: 4 } };
+    const last = { ...fresh, card: { ...fresh.card, reps: 9 } };
+    fixtures.deck = deck({ positions: [first, last] });
+    const inputBefore = structuredClone(fixtures.deck);
+    fixtures.tree.root = tree;
+    fixtures.setDeck.mockClear();
+    fixtures.syncDeck
+      .mockClear()
+      .mockImplementation((...args) =>
+        actual.syncDeck(...(args as Parameters<typeof actual.syncDeck>)),
+      );
 
-  await rerenderPracticePanel();
+    await rerenderPracticePanel();
 
-  expect(fixtures.syncDeck).toHaveBeenCalledOnce();
-  const result = fixtures.syncDeck.mock.results[0].value;
-  expect(result).toMatchObject({ added: 0, updated: 0, reordered: false });
-  expect(result.positions).toEqual([last]);
-  expect(result.positions[0].card).toBe(last.card);
-  expect(fixtures.deck).toEqual(inputBefore);
-  expect(fixtures.setDeck).toHaveBeenCalledOnce();
-  const update = fixtures.setDeck.mock.calls[0][0];
-  expect(typeof update).toBe("function");
-  expect(update(fixtures.deck)).toEqual({ ...fixtures.deck, positions: [last] });
-  expect(result.removed).toBe(1);
-});
+    expect(fixtures.syncDeck).toHaveBeenCalledOnce();
+    const result = fixtures.syncDeck.mock.results[0].value;
+    expect(result).toMatchObject({ added: 0, updated: 0, reordered: false });
+    expect(result.positions).toEqual([last]);
+    expect(result.positions[0].card).toBe(last.card);
+    expect(fixtures.deck).toEqual(inputBefore);
+    expect(fixtures.setDeck).toHaveBeenCalledOnce();
+    const update = fixtures.setDeck.mock.calls[0][0];
+    expect(typeof update).toBe("function");
+    expect(update(fixtures.deck)).toEqual({ ...fixtures.deck, positions: [last] });
+    expect(result.removed).toBe(1);
+  },
+);
 
 test("re-diffs an unchanged tree when the practised side or start changes", async () => {
   fixtures.syncDeck.mockClear();
@@ -754,6 +766,30 @@ async function submitCorrectMove(fen: string) {
   await act(async () => latestMoveController().submitMove("e4"));
   await rerenderPracticePanel();
 }
+
+test("current castling card resolves its exact answer-bearing occurrence and retires when only an alias remains", async () => {
+  const raw = "4k3/8/8/3p4/8/8/4P3/R3K2R w HA - 0 2";
+  const canonical = raw.replace(" HA ", " KQ ");
+  expect(getBoardState(raw)).toBe(getBoardState(canonical));
+  const exact = createNode({ fen: raw, move: parseUci("d7d5")!, san: "d5", halfMoves: 2 });
+  exact.children.push(
+    createNode({ fen: canonical, move: parseUci("e2e4")!, san: "e4", halfMoves: 3 }),
+  );
+  const alias = { ...exact, fen: canonical };
+  const tree = defaultTree().root;
+  tree.children.push(alias, { ...exact, children: [] }, exact);
+  fixtures.tree.root = tree;
+  fixtures.tree.goToMove.mockClear();
+
+  await startFullSession([position(raw)]);
+
+  expect(fixtures.tree.goToMove).toHaveBeenCalledExactlyOnceWith([2]);
+  expect(fixtures.practiceState.currentFen).toBe(raw);
+  expect(fixtures.practiceState.phase).toBe("waiting");
+  fixtures.tree.root = { ...tree, children: [alias] };
+  await rerenderPracticePanel();
+  expect(fixtures.practiceState.phase).toBe("idle");
+});
 
 test("full mode skips an active position removed by a deck sync", async () => {
   vi.useFakeTimers();

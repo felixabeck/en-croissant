@@ -165,20 +165,24 @@ describe("practiceSessionReducer", () => {
         expect(canSubmitPracticeMove({ ...waiting, phase: "correct" }, "fen-a")).toBe(false);
     });
 
-    it("keeps exact currentFen authority when EP-equivalent cards share a position key", () => {
-        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-        const canonical = fen.replace(" e3 ", " - ");
-        expect(getBoardState(fen)).toBe(getBoardState(canonical));
-        const waiting = practiceSessionReducer(idlePracticeSession(), {
-            type: "start",
-            token: 7,
-            fen,
-            positionKey: getBoardState(fen),
-        });
-        expect(canSubmitPracticeMove(waiting, fen)).toBe(true);
-        expect(canSubmitPracticeMove(waiting, canonical)).toBe(false);
-        expect(waiting.currentFen).toBe(fen);
-    });
+    it.each(["KQkq e3", "HAha -"])(
+        "keeps exact currentFen authority when %s cards share a position key",
+        (rights) => {
+            const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
+            const fen = `${board} ${rights} 0 1`;
+            const canonical = `${board} KQkq - 0 1`;
+            expect(getBoardState(fen)).toBe(getBoardState(canonical));
+            const waiting = practiceSessionReducer(idlePracticeSession(), {
+                type: "start",
+                token: 7,
+                fen,
+                positionKey: getBoardState(fen),
+            });
+            expect(canSubmitPracticeMove(waiting, fen)).toBe(true);
+            expect(canSubmitPracticeMove(waiting, canonical)).toBe(false);
+            expect(waiting.currentFen).toBe(fen);
+        },
+    );
 
     it("creates empty statistics and identifies every non-idle practice phase", () => {
         expect(idlePracticeSession()).toEqual({ phase: "idle", token: 0 });

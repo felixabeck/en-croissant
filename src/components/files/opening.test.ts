@@ -142,11 +142,26 @@ test.each([
     expect(result.positions.map(({ fen }) => fen)).toEqual(fresh.map((index) => cards[index].fen));
 });
 
-test.each([false, true])(
-    "EP-equivalent deck refresh retains scheduling with an admissible duplicate=%s",
-    (duplicate) => {
-        const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
-        const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
+const identityRefreshes = [
+    {
+        name: "EP",
+        raw: "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2",
+        canonical: "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8",
+    },
+    {
+        name: "castling",
+        raw: "4k3/8/8/3p4/8/8/4P3/R3K2R w HA - 0 2",
+        canonical: "4k3/8/8/3p4/8/8/4P3/R3K2R w KQ - 12 8",
+    },
+];
+
+test.each(
+    identityRefreshes.flatMap((identity) =>
+        [false, true].map((duplicate) => ({ ...identity, duplicate })),
+    ),
+)(
+    "$name-equivalent deck refresh retains scheduling with an admissible duplicate=$duplicate",
+    ({ raw, canonical, duplicate }) => {
         const original = defaultTree().root;
         original.children.push(practiceNode(raw, "e4"));
         const [first] = buildFromTree(original, "white", []);
@@ -181,35 +196,36 @@ test.each([false, true])(
     },
 );
 
-test("deck synchronization signals an unchanged-answer EP duplicate removal", () => {
-    const raw = "4k3/8/8/3p4/8/8/4P3/4K3 w - d6 0 2";
-    const canonical = "4k3/8/8/3p4/8/8/4P3/4K3 w - - 12 8";
-    const original = defaultTree().root;
-    original.children.push(practiceNode(raw, "e4"));
-    const [first] = buildFromTree(original, "white", []);
-    first.card.reps = 4;
-    const last = { ...first, fen: canonical, card: { ...first.card, reps: 9 } };
-    const existing = [first, last];
-    const review = updateCardPerformance([first], 0, first.card, 3)!;
-    const inputBefore = structuredClone(existing);
-    const reviewBefore = structuredClone(review);
-    const refreshed = defaultTree().root;
-    refreshed.children.push(practiceNode(canonical, "e4"));
+test.each(identityRefreshes)(
+    "deck synchronization signals an unchanged-answer $name duplicate removal",
+    ({ raw, canonical }) => {
+        const original = defaultTree().root;
+        original.children.push(practiceNode(raw, "e4"));
+        const [first] = buildFromTree(original, "white", []);
+        first.card.reps = 4;
+        const last = { ...first, fen: canonical, card: { ...first.card, reps: 9 } };
+        const existing = [first, last];
+        const review = updateCardPerformance([first], 0, first.card, 3)!;
+        const inputBefore = structuredClone(existing);
+        const reviewBefore = structuredClone(review);
+        const refreshed = defaultTree().root;
+        refreshed.children.push(practiceNode(canonical, "e4"));
 
-    const result = syncDeck(existing, refreshed, "white", []);
+        const result = syncDeck(existing, refreshed, "white", []);
 
-    expect(result.positions).toEqual([last]);
-    expect(result.positions[0].card).toBe(last.card);
-    expect(existing).toEqual(inputBefore);
-    expect(review).toEqual(reviewBefore);
-    expect(review.entry.fen).toBe(raw);
-    expect(review.entryId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(result).toMatchObject({ added: 0, removed: 1, updated: 0, reordered: false });
-    expect(syncDeck(result.positions, refreshed, "white", [])).toEqual({
-        positions: result.positions,
-        added: 0,
-        removed: 0,
-        updated: 0,
-        reordered: false,
-    });
-});
+        expect(result.positions).toEqual([last]);
+        expect(result.positions[0].card).toBe(last.card);
+        expect(existing).toEqual(inputBefore);
+        expect(review).toEqual(reviewBefore);
+        expect(review.entry.fen).toBe(raw);
+        expect(review.entryId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(result).toMatchObject({ added: 0, removed: 1, updated: 0, reordered: false });
+        expect(syncDeck(result.positions, refreshed, "white", [])).toEqual({
+            positions: result.positions,
+            added: 0,
+            removed: 0,
+            updated: 0,
+            reordered: false,
+        });
+    },
+);

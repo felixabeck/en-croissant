@@ -219,14 +219,55 @@ test("the memoized map is keyed by the whole start path, not its concatenated di
     }
 });
 
+test.each([
+    { board: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR", rights: "HAha" },
+    { board: "rkr5/8/8/8/8/8/8/RKR5", rights: "CAca" },
+])(
+    "castling maps preserve occurrence order, subtree bounds and root ownership for $rights",
+    ({ board, rights }) => {
+        const raw = `${board} b ${rights} - 0 1`;
+        const canonical = `${board} b KQkq - 4 3`;
+        const root = defaultTree(raw).root;
+        root.children.push(child(canonical, 2), child(raw, 2));
+        const key = `${board} b KQkq -`;
+        const complete = getMemoizedBoardStateMap(root);
+        expect(complete[key].map(({ path }) => path)).toEqual([[], [0], [1]]);
+        expect(complete[key].map(({ node }) => node.fen)).toEqual([raw, canonical, raw]);
+        expect(getMemoizedBoardStateMap(root)).toBe(complete);
+        expect(getMemoizedBoardStateMap(root, [1])[key].map(({ path }) => path)).toEqual([[1]]);
+        const replacement = { ...root, children: [root.children[1]] };
+        const rebuilt = getMemoizedBoardStateMap(replacement);
+        expect(rebuilt).not.toBe(complete);
+        expect(rebuilt[key].map(({ path }) => path)).toEqual([[], [0]]);
+        expect(root.fen).toBe(raw);
+    },
+);
+
 test("board-state identity excludes clocks even for incomplete positions", () => {
     expect(getBoardState("8/8/8/8/8/8/8/8 w - - 17 42")).toBe("8/8/8/8/8/8/8/8 w - -");
 });
 
-test("board-state identity needs no legal-position parse when EP is absent", () => {
+test("board-state identity skips construction only when castling and EP are both absent", () => {
     const parse = vi.spyOn(chessops, "positionFromFen");
     try {
         for (const [fen, expectedKey] of [
+            [
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - -",
+            ],
+            ["4k3/8/8/8/8/8/8/4K3 b - - 0 1", "4k3/8/8/8/8/8/8/4K3 b - -"],
+            ["8/8/8/8/8/8/8/8 w - - 17 42", "8/8/8/8/8/8/8/8 w - -"],
+            ["synthetic w - - 0 1", "synthetic w - -"],
+            ["synthetic w -", "synthetic w -"],
+            ["not a", "not a"],
+            ["", ""],
+        ]) {
+            expect(getBoardState(fen)).toBe(expectedKey);
+        }
+        expect(parse).not.toHaveBeenCalled();
+
+        // Ordinary KQ claims also need interpretation, even without EP (d-20261026-08).
+        for (const [fen, expected] of [
             [
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
@@ -235,20 +276,24 @@ test("board-state identity needs no legal-position parse when EP is absent", () 
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 17 42",
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
             ],
-            ["4k3/8/8/8/8/8/8/4K3 b - - 0 1", "4k3/8/8/8/8/8/8/4K3 b - -"],
-            ["8/8/8/8/8/8/8/8 w - - 17 42", "8/8/8/8/8/8/8/8 w - -"],
-            ["synthetic w KQ - 0 1", "synthetic w KQ -"],
+            [
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 17 42",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+            ],
+            ["4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", "4k3/8/8/3pP3/8/8/8/4K3 w - d6"],
+            ["4k3/8/8/3pP3/8/8/8/4K2R w H d6 0 2", "4k3/8/8/3pP3/8/8/8/4K2R w K d6"],
+            [
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha e3 0 1",
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -",
+            ],
             ["synthetic w KQ", "synthetic w KQ"],
+            ["synthetic w KQ - 0 1", "synthetic w KQ -"],
             ["not a FEN", "not a FEN"],
-            ["", ""],
         ]) {
-            expect(getBoardState(fen)).toBe(expectedKey);
+            parse.mockClear();
+            expect(getBoardState(fen)).toBe(expected);
+            expect(parse).toHaveBeenCalledExactlyOnceWith(fen);
         }
-        expect(parse).not.toHaveBeenCalled();
-
-        const legalEp = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2";
-        expect(getBoardState(legalEp)).toBe("4k3/8/8/3pP3/8/8/8/4K3 w - d6");
-        expect(parse).toHaveBeenCalledExactlyOnceWith(legalEp);
     } finally {
         parse.mockRestore();
     }
@@ -296,16 +341,108 @@ test.each([
     expect(getBoardState(fen)).toBe(expectedKey);
 });
 
-test("EP correction preserves unrelated board, turn and castling representations", () => {
+test("rights correction preserves board and turn while canonicalizing castling aliases", () => {
     const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha e3 17 42";
     expect(chessops.positionFromFen(fen)[1]).toBeNull();
-    expect(getBoardState(fen)).toBe("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha -");
+    expect(getBoardState(fen)).toBe("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -");
     expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(" b ", " w ")));
-    expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(" HAha ", " KQkq ")));
+    expect(getBoardState(fen)).toBe(getBoardState(fen.replace(" HAha ", " KQkq ")));
+    expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(" HAha ", " - ")));
+    const alternateBoard = "4k3/8/8/8/8/8/8/4K11R w H - 17 42";
+    expect(chessops.positionFromFen(alternateBoard)[1]).toBeNull();
+    expect(getBoardState(alternateBoard)).toBe("4k3/8/8/8/8/8/8/4K11R w K -");
+});
+
+test.each([
+    {
+        name: "Chess960 both colours",
+        board: "rkr5/8/8/8/8/8/8/RKR5",
+        turn: "w",
+        alias: "CAca",
+        canonical: "KQkq",
+    },
+    {
+        name: "inner queenside rook",
+        board: "4k3/8/8/8/8/8/8/RR2K2R",
+        turn: "w",
+        alias: "HB",
+        canonical: "KB",
+    },
+    {
+        name: "inner kingside rook",
+        board: "4k3/8/8/8/8/8/8/3K1R1R",
+        turn: "w",
+        alias: "F",
+        canonical: "F",
+    },
+    {
+        name: "absent rooks with ordinary claims",
+        board: "4k3/8/8/8/8/8/8/4K3",
+        turn: "w",
+        alias: "KQkq",
+        canonical: "-",
+    },
+    {
+        name: "absent rooks with file claims",
+        board: "4k3/8/8/8/8/8/8/4K3",
+        turn: "w",
+        alias: "HAha",
+        canonical: "-",
+    },
+    {
+        name: "off-rank king",
+        board: "4k3/8/8/8/8/8/4K3/R6R",
+        turn: "w",
+        alias: "KQ",
+        canonical: "-",
+    },
+])(
+    "castling identity uses actual library rights for $name",
+    ({ board, turn, alias, canonical }) => {
+        const fen = `${board} ${turn} ${alias} - 17 42`;
+        expect(chessops.positionFromFen(fen)[1]).toBeNull();
+        expect(getBoardState(fen)).toBe(`${board} ${turn} ${canonical} -`);
+        expect(getBoardState(fen)).toBe(getBoardState(`${board} ${turn} ${canonical} - 0 1`));
+    },
+);
+
+test.each([
+    ["4k3/8/8/8/8/8/8/RR2K2R w HB - 0 1", "KQ"],
+    ["4k3/8/8/8/8/8/8/3K1R1R w F - 0 1", "K"],
+    ["rr2k2r/8/8/8/8/8/8/4K3 b hb - 0 1", "kq"],
+])("castling identity distinguishes actual rook squares in %s", (fen, otherRights) => {
+    const other = fen.replace(/ [A-Za-z]+ - /, ` ${otherRights} - `);
+    expect(chessops.positionFromFen(fen)[1]).toBeNull();
+    expect(chessops.positionFromFen(other)[1]).toBeNull();
+    expect(getBoardState(fen)).not.toBe(getBoardState(other));
+});
+
+test.each([
+    {
+        name: "blocked paths",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1",
+        castle: "e1h1",
+        rights: "KQkq",
+    },
+    { name: "current check", fen: "k3r3/8/8/8/8/8/8/4K2R w H - 0 1", castle: "e1h1", rights: "K" },
+    {
+        name: "attacked transit",
+        fen: "k4r2/8/8/8/8/8/8/4K2R w H - 0 1",
+        castle: "e1h1",
+        rights: "K",
+    },
+])("castling possession survives unavailable moves from $name", ({ fen, castle, rights }) => {
+    const [position, error] = chessops.positionFromFen(fen);
+    expect(error).toBeNull();
+    expect(position!.isLegal(parseUci(castle)!)).toBe(false);
+    expect(getBoardState(fen)).toBe(fen.replace(/ [A-Za-z]+ - 0 1$/, ` ${rights} -`));
+    expect(getBoardState(fen)).not.toBe(getBoardState(fen.replace(/ [A-Za-z]+ - /, " - - ")));
 });
 
 test.each([
     "8/8/8/8/8/8/8/8 w - e3 17 42",
+    "8/8/8/8/8/8/8/8 w H - 17 42",
+    "4k3/8/8/8/8/8/8/8 w K - 0 1",
     "4k3/8/8/8/8/8/8/8 w - e3 0 1",
     "4k3/8/8/8/8/8/8/4K3 w - invalid 0 1",
     "synthetic w KQ e3 0 1",

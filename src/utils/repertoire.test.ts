@@ -265,48 +265,51 @@ test("a repetition line terminates coverage instead of recursing until the stack
     expect(coverageMap.get("0,0")).toBe(1);
 });
 
-test("coverage shares a raw EP root's prepared moves and database result with its legal repetition", async () => {
-    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-    const builder = createTreeStore(undefined, defaultTree(fen));
-    expect(
-        builder.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success,
-    ).toBe(true);
-    const root = builder.getState().root;
-    const stateMoves = new Map<string, Map<string, string>>();
-    for (const [key, entries] of Object.entries(getMemoizedBoardStateMap(root))) {
-        const moves = new Map<string, string>();
-        for (const { node } of entries) {
-            for (const child of node.children) moves.set(child.san!, getBoardState(child.fen));
+test.each(["KQkq e3", "HAha -"])(
+    "coverage shares a raw %s root's prepared moves and database result with its legal repetition",
+    async (rights) => {
+        const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rights} 0 1`;
+        const builder = createTreeStore(undefined, defaultTree(fen));
+        expect(
+            builder.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success,
+        ).toBe(true);
+        const root = builder.getState().root;
+        const stateMoves = new Map<string, Map<string, string>>();
+        for (const [key, entries] of Object.entries(getMemoizedBoardStateMap(root))) {
+            const moves = new Map<string, string>();
+            for (const { node } of entries) {
+                for (const child of node.children) moves.set(child.san!, getBoardState(child.fen));
+            }
+            if (moves.size) stateMoves.set(key, moves);
         }
-        if (moves.size) stateMoves.set(key, moves);
-    }
-    const canonical = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -";
-    const afterNf6 = getBoardState(root.children[0].fen);
-    mocks.searchPosition.mockImplementation(async ({ fen: key }: { fen: string }) => [
-        [
-            ...[...(stateMoves.get(key)?.keys() ?? [])].map((move) => ({
-                move,
-                white: 10,
-                draw: 0,
-                black: 0,
-            })),
-            ...(key === afterNf6 ? [{ move: "d4", white: 10, draw: 0, black: 0 }] : []),
-        ],
-    ]);
+        const canonical = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -";
+        const afterNf6 = getBoardState(root.children[0].fen);
+        mocks.searchPosition.mockImplementation(async ({ fen: key }: { fen: string }) => [
+            [
+                ...[...(stateMoves.get(key)?.keys() ?? [])].map((move) => ({
+                    move,
+                    white: 10,
+                    draw: 0,
+                    black: 0,
+                })),
+                ...(key === afterNf6 ? [{ move: "d4", white: 10, draw: 0, black: 0 }] : []),
+            ],
+        ]);
 
-    const result = await computeTreeCoverage(root, "black", database, 1, [], stateMoves);
-    expect(result.coverageMap.get("")).toBe(0.5);
-    expect(result.coverageMap.get("0,0,0,0")).toBe(0.5);
-    expect(result.gamesMap.get("")).toBe(10);
-    expect(result.gamesMap.get("0,0,0,0")).toBe(10);
-    expect(result.dbMovesMap.get(canonical)?.moves[0].move).toBe("Nf6");
-    expect(
-        mocks.searchPosition.mock.calls
-            .map(([options]) => options.fen)
-            .filter((key) => key === canonical),
-    ).toHaveLength(1);
-    expect(root.fen).toBe(fen);
-});
+        const result = await computeTreeCoverage(root, "black", database, 1, [], stateMoves);
+        expect(result.coverageMap.get("")).toBe(0.5);
+        expect(result.coverageMap.get("0,0,0,0")).toBe(0.5);
+        expect(result.gamesMap.get("")).toBe(10);
+        expect(result.gamesMap.get("0,0,0,0")).toBe(10);
+        expect(result.dbMovesMap.get(canonical)?.moves[0].move).toBe("Nf6");
+        expect(
+            mocks.searchPosition.mock.calls
+                .map(([options]) => options.fen)
+                .filter((key) => key === canonical),
+        ).toHaveLength(1);
+        expect(root.fen).toBe(fen);
+    },
+);
 
 test.each([false, true])(
     "fractional opponent weights are exactly full only with every significant continuation, missing=%s",

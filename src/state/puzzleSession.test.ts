@@ -161,93 +161,96 @@ test("selection derives from stable identity and unresolved selection never gues
     ).toBe(false);
 });
 
-test("EP-equivalent puzzle attempts retain their selected UUID and require the actual played path", () => {
-    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-    const puzzle = {
-        ...attempt("unused").puzzle,
-        fen: fen.replace(" e3 ", " - "),
-        moves: ["g8f6", "g1f3", "f6g8", "f3g1"],
-    };
-    const a = "11111111-1111-4111-8111-111111111111";
-    const b = "22222222-2222-4222-8222-222222222222";
-    const memory = createTreeStore(undefined, defaultTree(fen));
-    expect(
-        memory.getState().makeMoves({ payload: puzzle.moves.slice(0, 2), changeHeaders: false })
-            .success,
-    ).toBe(true);
-    memory.getState().setComment("retained played annotation");
-    const tree = {
-        ...memory.getState(),
-        puzzleSession: {
-            version: 1 as const,
-            attempts: [
-                { attemptId: a, puzzle: { ...puzzle, fen } },
-                { attemptId: b, puzzle },
-            ],
-            selectedAttemptId: b,
-        },
-    };
-    expect(puzzleSessionSchema.safeParse(tree.puzzleSession).success).toBe(true);
-    expect(puzzleOwnsTree(puzzle, tree)).toBe(true);
-    const restored = restorePuzzleSession("ep-selected", tree);
-    expect(restored).toBe(tree.puzzleSession);
-    expect(restored.selectedAttemptId).toBe(b);
-    expect(restored.attempts.map(({ attemptId }) => attemptId)).toEqual([a, b]);
-    expect(tree.root.fen).toBe(fen);
-    expect(tree.headers.fen).toBe(fen);
-    expect(tree.position).toEqual([0, 0]);
-    expect(memory.getState().currentNode().comment).toBe("retained played annotation");
-
-    memory.getState().goToStart();
-    memory.getState().makeMove({ payload: "d5", changeHeaders: false });
-    const incompatible = {
-        ...tree,
-        root: memory.getState().root,
-        position: memory.getState().position,
-    };
-    expect(puzzleOwnsTree(puzzle, incompatible)).toBe(false);
-    expect(restorePuzzleSession("ep-selected", incompatible)).toEqual({
-        ...restored,
-        selectedAttemptId: null,
-    });
-    expect(tree.puzzleSession.selectedAttemptId).toBe(b);
-});
-
-test.each(["unique", "ambiguous"] as const)(
-    "legacy EP ownership handles %s matches",
-    (ownership) => {
-        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+test.each(["KQkq e3", "HAha -"])(
+    "%s-equivalent puzzle attempts retain their selected UUID and require the actual played path",
+    (rights) => {
+        const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
+        const fen = `${board} ${rights} 0 1`;
         const puzzle = {
             ...attempt("unused").puzzle,
-            fen: fen.replace(" e3 ", " - "),
-            moves: ["g8f6", "g1f3"],
+            fen: `${board} KQkq - 0 1`,
+            moves: ["g8f6", "g1f3", "f6g8", "f3g1"],
         };
+        const a = "11111111-1111-4111-8111-111111111111";
+        const b = "22222222-2222-4222-8222-222222222222";
         const memory = createTreeStore(undefined, defaultTree(fen));
-        memory.getState().makeMove({ payload: "Nf6", changeHeaders: false });
-        memory.getState().setComment("legacy played tree");
-        const tree = memory.getState();
-        const key = legacyPuzzleKey("ep-legacy");
-        const rows = ownership === "unique" ? [puzzle] : [puzzle, { ...puzzle, fen }];
-        const bytes = serializeStorageValue(rows);
-        sessionStorage.setItem(key, bytes);
-        try {
-            const restored = restorePuzzleSession("ep-legacy", tree);
-            expect(restored.attempts.map(({ puzzle }) => puzzle)).toEqual(rows);
-            expect(new Set(restored.attempts.map(({ attemptId }) => attemptId)).size).toBe(
-                rows.length,
-            );
-            for (const { attemptId } of restored.attempts)
-                expect(attemptId).toMatch(/^[0-9a-f-]{36}$/);
-            expect(selectedPuzzleIndex(restored)).toBe(ownership === "unique" ? 0 : -1);
-            expect(tree.root.fen).toBe(fen);
-            expect(tree.position).toEqual([0]);
-            expect(tree.currentNode().comment).toBe("legacy played tree");
-            expect(sessionStorage.getItem(key)).toBe(bytes);
-        } finally {
-            sessionStorage.removeItem(key);
-        }
+        expect(
+            memory.getState().makeMoves({ payload: puzzle.moves.slice(0, 2), changeHeaders: false })
+                .success,
+        ).toBe(true);
+        memory.getState().setComment("retained played annotation");
+        const tree = {
+            ...memory.getState(),
+            puzzleSession: {
+                version: 1 as const,
+                attempts: [
+                    { attemptId: a, puzzle: { ...puzzle, fen } },
+                    { attemptId: b, puzzle },
+                ],
+                selectedAttemptId: b,
+            },
+        };
+        expect(puzzleSessionSchema.safeParse(tree.puzzleSession).success).toBe(true);
+        expect(puzzleOwnsTree(puzzle, tree)).toBe(true);
+        const restored = restorePuzzleSession("ep-selected", tree);
+        expect(restored).toBe(tree.puzzleSession);
+        expect(restored.selectedAttemptId).toBe(b);
+        expect(restored.attempts.map(({ attemptId }) => attemptId)).toEqual([a, b]);
+        expect(tree.root.fen).toBe(fen);
+        expect(tree.headers.fen).toBe(fen);
+        expect(tree.position).toEqual([0, 0]);
+        expect(memory.getState().currentNode().comment).toBe("retained played annotation");
+
+        memory.getState().goToStart();
+        memory.getState().makeMove({ payload: "d5", changeHeaders: false });
+        const incompatible = {
+            ...tree,
+            root: memory.getState().root,
+            position: memory.getState().position,
+        };
+        expect(puzzleOwnsTree(puzzle, incompatible)).toBe(false);
+        expect(restorePuzzleSession("ep-selected", incompatible)).toEqual({
+            ...restored,
+            selectedAttemptId: null,
+        });
+        expect(tree.puzzleSession.selectedAttemptId).toBe(b);
     },
 );
+
+test.each(
+    (["unique", "ambiguous"] as const).flatMap((ownership) =>
+        ["KQkq e3", "HAha -"].map((rights) => ({ ownership, rights })),
+    ),
+)("legacy $rights ownership handles $ownership matches", ({ ownership, rights }) => {
+    const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
+    const fen = `${board} ${rights} 0 1`;
+    const puzzle = {
+        ...attempt("unused").puzzle,
+        fen: `${board} KQkq - 0 1`,
+        moves: ["g8f6", "g1f3"],
+    };
+    const memory = createTreeStore(undefined, defaultTree(fen));
+    memory.getState().makeMove({ payload: "Nf6", changeHeaders: false });
+    memory.getState().setComment("legacy played tree");
+    const tree = memory.getState();
+    const key = legacyPuzzleKey("ep-legacy");
+    const rows = ownership === "unique" ? [puzzle] : [puzzle, { ...puzzle, fen }];
+    const bytes = serializeStorageValue(rows);
+    sessionStorage.setItem(key, bytes);
+    try {
+        const restored = restorePuzzleSession("ep-legacy", tree);
+        expect(restored.attempts.map(({ puzzle }) => puzzle)).toEqual(rows);
+        expect(new Set(restored.attempts.map(({ attemptId }) => attemptId)).size).toBe(rows.length);
+        for (const { attemptId } of restored.attempts) expect(attemptId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(selectedPuzzleIndex(restored)).toBe(ownership === "unique" ? 0 : -1);
+        expect(tree.root.fen).toBe(fen);
+        expect(tree.position).toEqual([0]);
+        expect(tree.currentNode().comment).toBe("legacy played tree");
+        expect(sessionStorage.getItem(key)).toBe(bytes);
+    } finally {
+        sessionStorage.removeItem(key);
+    }
+});
 
 test("puzzle restoration rejects a root with different legal EP capture rights", () => {
     const fen = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2";

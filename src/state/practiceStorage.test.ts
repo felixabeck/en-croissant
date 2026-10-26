@@ -63,6 +63,11 @@ const identityRefreshes = [
         raw: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
         refreshed: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 7 42",
     },
+    {
+        name: "castling aliases",
+        raw: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b HAha - 0 1",
+        refreshed: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 7 42",
+    },
 ];
 
 function position(fen = firstFen, card = { due: "2026-09-22T00:00:00.000Z", reps: 0 }): Position {
@@ -652,23 +657,25 @@ describe("the real practice deck atom", () => {
         },
     );
 
-    test("debounced EP sync retains the last committed equivalent card without merging histories", async () => {
-        const { raw, refreshed } = identityRefreshes[1];
-        const first = position(raw, { due: "2026-10-01T00:00:00.000Z", reps: 4 });
-        const last = position(refreshed, { due: "2026-11-01T00:00:00.000Z", reps: 9 });
-        native.load.mockResolvedValue(snapshot([first, last]));
-        const { atom, store, unsubscribe } = mountDeck();
-        await waitForReady(store, atom);
-        vi.useFakeTimers();
-        const pending = store.set(atom, { type: "sync", positions: [position(raw)] });
-        await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
-        await pending;
-        expect(JSON.parse(native.sync.mock.calls[0][4]).positions).toEqual([
-            { ...first, card: last.card },
-        ]);
-        expect(store.get(atom).positions).toEqual([{ ...first, card: last.card }]);
-        unsubscribe();
-    });
+    test.each(identityRefreshes)(
+        "debounced $name sync retains the last committed equivalent card without merging histories",
+        async ({ raw, refreshed }) => {
+            const first = position(raw, { due: "2026-10-01T00:00:00.000Z", reps: 4 });
+            const last = position(refreshed, { due: "2026-11-01T00:00:00.000Z", reps: 9 });
+            native.load.mockResolvedValue(snapshot([first, last]));
+            const { atom, store, unsubscribe } = mountDeck();
+            await waitForReady(store, atom);
+            vi.useFakeTimers();
+            const pending = store.set(atom, { type: "sync", positions: [position(raw)] });
+            await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+            await pending;
+            expect(JSON.parse(native.sync.mock.calls[0][4]).positions).toEqual([
+                { ...first, card: last.card },
+            ]);
+            expect(store.get(atom).positions).toEqual([{ ...first, card: last.card }]);
+            unsubscribe();
+        },
+    );
 
     test("drops a debounced sync computed before a reset", async () => {
         const initial = position();

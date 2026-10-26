@@ -406,10 +406,15 @@ test("appendMove checks repetition along the mainline append path", () => {
     expect(store.getState().headers.result).toBe("1/2-1/2");
 });
 
-test.each(["defaultTree", "setFen", "setHeaders"] as const)(
-    "%s preserves a raw EP root while real moves count its third occurrence",
-    (creation) => {
-        const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+test.each(
+    (["defaultTree", "setFen", "setHeaders"] as const).flatMap((creation) =>
+        ["KQkq e3", "HAha -", "KQkq -"].map((rights) => ({ creation, rights })),
+    ),
+)(
+    "$creation preserves raw $rights while real moves count its third occurrence",
+    ({ creation, rights }) => {
+        const board = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b";
+        const fen = `${board} ${rights} 0 1`;
         const store = createTreeStore(
             undefined,
             creation === "defaultTree" ? defaultTree(fen) : undefined,
@@ -436,7 +441,7 @@ test.each(["defaultTree", "setFen", "setHeaders"] as const)(
             expect(state.root.fen).toBe(fen);
             expect(state.headers.fen).toBe(fen);
             expect(state.currentNode()).toMatchObject({
-                fen: fen.replace("e3 0 1", `- ${4 * repetition} ${2 * repetition + 1}`),
+                fen: `${board} KQkq - ${4 * repetition} ${2 * repetition + 1}`,
                 halfMoves: 4 * repetition + 1,
                 clock: 121 - 4 * repetition,
             });
@@ -444,6 +449,16 @@ test.each(["defaultTree", "setFen", "setHeaders"] as const)(
             const currentCyclePath = [...state.position];
             expect(nextContinuation(state)?.path).toEqual([]);
             expect(nextContinuation(state)?.children).toBe(state.root.children);
+            state.setPracticePath(currentCyclePath);
+            expect(nextContinuation(store.getState())).toBeNull();
+            store.getState().goToNext();
+            expect(store.getState().position).toEqual(currentCyclePath);
+            store.getState().setPracticePath(null);
+            store.getState().setHeaders({ ...store.getState().headers, start: [0] });
+            expect(nextContinuation(store.getState())?.path).toEqual(
+                repetition === 1 ? undefined : [0, 0, 0, 0],
+            );
+            store.getState().setHeaders({ ...store.getState().headers, start: undefined });
             state.goToNext();
             expect(store.getState().position).toEqual([0]);
             store.getState().goToMove(currentCyclePath);
@@ -452,25 +467,28 @@ test.each(["defaultTree", "setFen", "setHeaders"] as const)(
     },
 );
 
-test("EP repetition counts the selected batch path without borrowing sibling occurrences", () => {
-    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-    const store = createTreeStore(undefined, defaultTree(fen));
-    expect(store.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success).toBe(
-        true,
-    );
-    expect(store.getState().headers.result).toBe("*");
-    store.getState().goToStart();
-    const siblingCycle = ["g8h6", "g1h3", "h6g8", "h3g1"];
-    expect(store.getState().makeMoves({ payload: siblingCycle }).success).toBe(true);
-    expect(store.getState().position).toEqual([1, 0, 0, 0]);
-    expect(store.getState().headers.result).toBe("*");
-    expect(store.getState().makeMoves({ payload: siblingCycle }).success).toBe(true);
-    expect(store.getState().position).toEqual([1, 0, 0, 0, 0, 0, 0, 0]);
-    expect(store.getState().headers.result).toBe("1/2-1/2");
-    expect(store.getState().root.fen).toBe(fen);
-    expect(store.getState().headers.fen).toBe(fen);
-    expect(getNodeAtPath(store.getState().root, [0, 0, 0, 0]).children).toEqual([]);
-});
+test.each(["KQkq e3", "HAha -"])(
+    "%s repetition counts the selected batch path without borrowing sibling occurrences",
+    (rights) => {
+        const fen = `rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b ${rights} 0 1`;
+        const store = createTreeStore(undefined, defaultTree(fen));
+        expect(
+            store.getState().makeMoves({ payload: ["g8f6", "g1f3", "f6g8", "f3g1"] }).success,
+        ).toBe(true);
+        expect(store.getState().headers.result).toBe("*");
+        store.getState().goToStart();
+        const siblingCycle = ["g8h6", "g1h3", "h6g8", "h3g1"];
+        expect(store.getState().makeMoves({ payload: siblingCycle }).success).toBe(true);
+        expect(store.getState().position).toEqual([1, 0, 0, 0]);
+        expect(store.getState().headers.result).toBe("*");
+        expect(store.getState().makeMoves({ payload: siblingCycle }).success).toBe(true);
+        expect(store.getState().position).toEqual([1, 0, 0, 0, 0, 0, 0, 0]);
+        expect(store.getState().headers.result).toBe("1/2-1/2");
+        expect(store.getState().root.fen).toBe(fen);
+        expect(store.getState().headers.fen).toBe(fen);
+        expect(getNodeAtPath(store.getState().root, [0, 0, 0, 0]).children).toEqual([]);
+    },
+);
 
 test("makeMove does not apply the 50-move result when header changes are disabled", () => {
     const tree = defaultTree("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 99 1");
