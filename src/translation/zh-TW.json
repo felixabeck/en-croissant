@@ -439,6 +439,8 @@
     "Databases.Layout.EnlargePreview": "放大預覽",
     "Databases.Layout.EnlargeTable": "放大表格",
     "Databases.LoadError": "無法載入資料庫。請再試一次。",
+    "Databases.LoadError.Admission": "此資料庫已使用另一個名稱開啟",
+    "Databases.LoadError.AdmissionRecovery": "該使用結束後，即可再次開啟。",
     "Databases.LoadError.Changed": "此資料庫資料夾已變更。請選擇其他資料夾。",
     "Databases.LoadError.Description": "请检查文件是否存在且未损坏",
     "Databases.LoadError.Missing": "此資料庫檔案已不存在",

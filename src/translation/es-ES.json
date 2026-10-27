@@ -449,6 +449,8 @@
     "Databases.Layout.EnlargePreview": "Ampliar vista previa",
     "Databases.Layout.EnlargeTable": "Ampliar tabla",
     "Databases.LoadError": "No se pudieron cargar las bases de datos. Inténtalo de nuevo.",
+    "Databases.LoadError.Admission": "Esta base de datos ya está abierta con otro nombre",
+    "Databases.LoadError.AdmissionRecovery": "Podrá abrirse de nuevo cuando termine ese uso.",
     "Databases.LoadError.Changed": "Esta carpeta de bases de datos ha cambiado. Elige otra.",
     "Databases.LoadError.Description": "Comprueba que el archivo existe y no está dañado.",
     "Databases.LoadError.Missing": "Este archivo de base de datos ya no existe",

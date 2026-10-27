@@ -449,6 +449,8 @@
     "Databases.Layout.EnlargePreview": "Ingrandisci anteprima",
     "Databases.Layout.EnlargeTable": "Ingrandisci tabella",
     "Databases.LoadError": "Impossibile caricare i database. Riprova.",
+    "Databases.LoadError.Admission": "Questo database è già aperto con un altro nome",
+    "Databases.LoadError.AdmissionRecovery": "Potrà essere riaperto al termine di tale utilizzo.",
     "Databases.LoadError.Changed": "Questa cartella di database è cambiata. Scegline un’altra.",
     "Databases.LoadError.Description": "Controlla che il file esista e che non sia corrotto.",
     "Databases.LoadError.Missing": "Questo file di database non esiste più",

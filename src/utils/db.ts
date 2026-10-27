@@ -20,7 +20,7 @@ import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { collectSequential } from "@/utils/collectSequential";
 import { loadSignedCatalog } from "@/utils/signedCatalog";
-import { logFailureSafely, safeFailureContext } from "@/platform/errors";
+import { logFailureSafely, normalizeError, safeFailureContext } from "@/platform/errors";
 import i18n from "i18next";
 import { getDefaultStore } from "jotai";
 import { fileWorkspaceAtom } from "@/state/atoms";
@@ -321,6 +321,7 @@ async function getDatabase(
     try {
         return { type: "success", ...(await tauri.getDbInfo(file)), file };
     } catch (cause) {
+        const databaseAdmission = normalizeError(cause).databaseAdmission === true;
         const primaryFailure = safeFailureContext(cause);
         if (signal?.aborted || primaryFailure.category === "cancelled") throw cause;
         const logContext = {
@@ -335,7 +336,9 @@ async function getDatabase(
             "Database metadata logging failed",
         );
         let error: string;
-        if (primaryFailure.message === DATABASE_NOT_INITIALIZED) {
+        if (databaseAdmission) {
+            error = i18n.t("Databases.LoadError.Admission");
+        } else if (primaryFailure.message === DATABASE_NOT_INITIALIZED) {
             error = i18n.t("Databases.ImportUnfinished");
         } else {
             error = databaseReadErrorMessage(
@@ -349,6 +352,7 @@ async function getDatabase(
             filename,
             indexed: false,
             error,
+            ...(databaseAdmission ? { databaseAdmission: true } : {}),
         };
     }
 }

@@ -19,6 +19,38 @@ vi.mock("./native", async (importOriginal) => ({
     warn: native.warn,
 }));
 
+describe("database admission discriminator", () => {
+    test("copies exact true without adding it to safe failure context", () => {
+        const payload = {
+            tag: "backend-error",
+            category: "conflict",
+            message: "Conflict: database is open through another name",
+            databaseAdmission: true,
+        };
+        expect(normalizeError(payload)).toEqual({
+            category: "validation",
+            backendCategory: "conflict",
+            message: payload.message,
+            databaseAdmission: true,
+        });
+        expect(safeFailureContext(payload)).toEqual({
+            category: "validation",
+            message: payload.message,
+        });
+    });
+
+    test.each([false, null, 1, "true"])("omits non-true value %j", (databaseAdmission) => {
+        expect(
+            normalizeError({
+                tag: "backend-error",
+                category: "conflict",
+                message: "Conflict: database is open through another name",
+                databaseAdmission,
+            }),
+        ).not.toHaveProperty("databaseAdmission");
+    });
+});
+
 describe("explicit error reporting ownership", () => {
     test("marks a frozen safe payload by identity without changing its fields or normalization", () => {
         const payload = Object.freeze<ErrorPayload>({

@@ -351,6 +351,17 @@ describe("production database metadata pipeline", () => {
         supportedLocales.flatMap((locale) =>
             [
                 {
+                    category: "conflict",
+                    message: "Conflict: database is open through another name",
+                    databaseAdmission: true,
+                    key: "Databases.LoadError.Admission",
+                },
+                {
+                    category: "conflict",
+                    message: "Conflict: database is open through another name",
+                    key: "Databases.LoadError.Title",
+                },
+                {
                     category: "invalid-input",
                     message:
                         "Invalid input: could not open SQLite database: unable to open database file",
@@ -370,7 +381,7 @@ describe("production database metadata pipeline", () => {
         ),
     )(
         "uses fixed safe text for $category in the shipped $locale catalogue without fallback",
-        async ({ locale, category, message, key }) => {
+        async ({ locale, category, message, key, databaseAdmission }) => {
             const { default: catalogue } = await import(`../translation/${locale}.json`);
             const translator = i18n.createInstance();
             await translator.init({
@@ -393,6 +404,7 @@ describe("production database metadata pipeline", () => {
                 tag: "backend-error",
                 category,
                 message,
+                ...(databaseAdmission === true ? { databaseAdmission: true } : {}),
             });
 
             const { databases: result } = await getDatabases();
@@ -403,6 +415,7 @@ describe("production database metadata pipeline", () => {
                     filename: "unreadable.db3",
                     indexed: false,
                     error: catalogue.translation[key],
+                    ...(databaseAdmission === true ? { databaseAdmission: true } : {}),
                 },
             ]);
             expect(JSON.stringify(result)).not.toContain(message);

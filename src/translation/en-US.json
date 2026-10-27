@@ -444,6 +444,8 @@
     "Databases.Layout.EnlargePreview": "Enlarge preview",
     "Databases.Layout.EnlargeTable": "Enlarge table",
     "Databases.LoadError": "Could not load databases. Please try again.",
+    "Databases.LoadError.Admission": "This database is already open under another name",
+    "Databases.LoadError.AdmissionRecovery": "It can be opened again after that use ends.",
     "Databases.LoadError.Changed": "This database folder changed. Choose another.",
     "Databases.LoadError.Description": "Check if the file exists and that it is not corrupted.",
     "Databases.LoadError.Missing": "This database file no longer exists",

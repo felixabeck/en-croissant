@@ -26,6 +26,7 @@ export type AppError = {
     engineFailure?: EngineTerminalSnapshot;
     remoteHttpRejection?: RemoteHttpRejection;
     nameTaken?: true;
+    databaseAdmission?: true;
     progress_generation?: string;
 };
 
@@ -243,6 +244,7 @@ export function normalizeError(error: unknown): AppError {
             backendCategory: error.category,
             message: redact(error.message),
             ...(error.nameTaken === true ? { nameTaken: true } : {}),
+            ...(error.databaseAdmission === true ? { databaseAdmission: true } : {}),
             ...(typeof error.progressGeneration === "string"
                 ? { progress_generation: error.progressGeneration }
                 : {}),

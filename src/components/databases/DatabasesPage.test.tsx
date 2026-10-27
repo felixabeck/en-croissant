@@ -22,7 +22,7 @@ function DatabasesPage() {
             <span>Add a database to get started</span>
           </>
         )}
-      {source.detail}
+      <div data-testid="selected-detail">{source.detail}</div>
       {source.dialogs}
     </>
   );
@@ -254,6 +254,40 @@ test.each(["sibling opener", "card double-click"])(
     expect(mocks.setDatabase).toHaveBeenCalledOnce();
     expect(mocks.navigate).toHaveBeenCalledOnce();
     expect(activeDatabase).toBe(database);
+  },
+);
+
+test.each([true, false])(
+  "selected error detail chooses admission recovery only with databaseAdmission=%s",
+  async (databaseAdmission) => {
+    mocks.listWorkspaceDatabases.mockResolvedValue({ entries: [entry], unread: [] });
+    mocks.getDbInfo.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "conflict",
+      message: "Conflict: database is open through another name",
+      ...(databaseAdmission ? { databaseAdmission: true } : {}),
+    });
+    await render();
+    const card = host.querySelector<HTMLButtonElement>("[data-card]")!;
+    await act(async () => card.click());
+    const detail = host.querySelector('[data-testid="selected-detail"]')!;
+    const admission = "This database is already open under another name";
+    const recovery = "It can be opened again after that use ends.";
+    const generic = "There was an error loading this database";
+    const corruption = "Check if the file exists and that it is not corrupted.";
+    if (databaseAdmission) {
+      expect(detail.textContent).toContain(admission);
+      expect(detail.textContent).toContain(recovery);
+      expect(detail.textContent).not.toContain(generic);
+      expect(detail.textContent).not.toContain("Reason:");
+      expect(detail.textContent).not.toContain(corruption);
+    } else {
+      expect(detail.textContent).toContain(generic);
+      expect(detail.textContent).toContain("Reason:");
+      expect(detail.textContent).toContain(corruption);
+      expect(detail.textContent).not.toContain(admission);
+      expect(detail.textContent).not.toContain(recovery);
+    }
   },
 );
 

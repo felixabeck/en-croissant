@@ -454,6 +454,8 @@
     "Databases.Layout.EnlargePreview": "Увеличить предпросмотр",
     "Databases.Layout.EnlargeTable": "Увеличить таблицу",
     "Databases.LoadError": "Не удалось загрузить базы данных. Повторите попытку.",
+    "Databases.LoadError.Admission": "Эта база данных уже открыта под другим именем",
+    "Databases.LoadError.AdmissionRecovery": "Её можно будет открыть снова после завершения этого использования.",
     "Databases.LoadError.Changed": "Эта папка баз данных изменилась. Выберите другую.",
     "Databases.LoadError.Description": "Проверьте, существует ли файл и не повреждён ли он.",
     "Databases.LoadError.Missing": "Этот файл базы данных больше не существует",

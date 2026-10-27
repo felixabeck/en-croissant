@@ -376,20 +376,29 @@ export function useDatabaseLibrary(
     detail: selectedDatabase ? (
       <Stack>
         {selectedDatabase.type === "error" ? (
-          <>
-            <Text fz="lg" fw="bold">
-              {t("Databases.LoadError.Title")}
-            </Text>
-
-            <Text>
-              <Text td="underline" span>
-                {t("Common.Reason")}:
+          selectedDatabase.databaseAdmission === true ? (
+            <>
+              <Text fz="lg" fw="bold">
+                {t("Databases.LoadError.Admission")}
               </Text>
-              {` ${selectedDatabase.error}`}
-            </Text>
+              <Text>{t("Databases.LoadError.AdmissionRecovery")}</Text>
+            </>
+          ) : (
+            <>
+              <Text fz="lg" fw="bold">
+                {t("Databases.LoadError.Title")}
+              </Text>
 
-            <Text>{t("Databases.LoadError.Description")}</Text>
-          </>
+              <Text>
+                <Text td="underline" span>
+                  {t("Common.Reason")}:
+                </Text>
+                {` ${selectedDatabase.error}`}
+              </Text>
+
+              <Text>{t("Databases.LoadError.Description")}</Text>
+            </>
+          )
         ) : (
           <>
             <Divider variant="dashed" label={t("Common.GeneralSettings")} />

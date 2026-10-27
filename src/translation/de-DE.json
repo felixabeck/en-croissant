@@ -444,6 +444,8 @@
     "Databases.Layout.EnlargePreview": "Vorschau vergrößern",
     "Databases.Layout.EnlargeTable": "Tabelle vergrößern",
     "Databases.LoadError": "Datenbanken konnten nicht geladen werden. Bitte versuche es erneut.",
+    "Databases.LoadError.Admission": "Diese Datenbank ist bereits unter einem anderen Namen geöffnet",
+    "Databases.LoadError.AdmissionRecovery": "Sie kann wieder geöffnet werden, sobald diese Nutzung endet.",
     "Databases.LoadError.Changed": "Dieser Datenbankordner hat sich geändert. Wähle einen anderen.",
     "Databases.LoadError.Description": "Prüfe, ob die Datei existiert und nicht beschädigt ist.",
     "Databases.LoadError.Missing": "Diese Datenbankdatei existiert nicht mehr",

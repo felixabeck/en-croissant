@@ -439,6 +439,8 @@
     "Databases.Layout.EnlargePreview": "扩大预览",
     "Databases.Layout.EnlargeTable": "扩大表格",
     "Databases.LoadError": "无法加载数据库。请重试。",
+    "Databases.LoadError.Admission": "此数据库已使用另一个名称打开",
+    "Databases.LoadError.AdmissionRecovery": "该使用结束后，即可再次打开。",
     "Databases.LoadError.Changed": "此数据库文件夹已更改。请选择其他文件夹。",
     "Databases.LoadError.Description": "请检查文件是否存在且未损坏",
     "Databases.LoadError.Missing": "此数据库文件已不存在",

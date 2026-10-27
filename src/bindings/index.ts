@@ -31,5 +31,6 @@ export type DatabaseInfo =
           file: DatabaseHandle;
           filename: string;
           error: string;
+          databaseAdmission?: true;
           indexed: boolean;
       };

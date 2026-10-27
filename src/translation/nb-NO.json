@@ -444,6 +444,8 @@
     "Databases.Layout.EnlargePreview": "Utvid forhåndsvisning",
     "Databases.Layout.EnlargeTable": "Utvid tabell",
     "Databases.LoadError": "Kunne ikke laste databaser. Prøv igjen.",
+    "Databases.LoadError.Admission": "Denne databasen er allerede åpen under et annet navn",
+    "Databases.LoadError.AdmissionRecovery": "Den kan åpnes igjen når den bruken er avsluttet.",
     "Databases.LoadError.Changed": "Denne databasemappen er endret. Velg en annen.",
     "Databases.LoadError.Description": "Kontroller at filen finnes og ikke er skadet.",
     "Databases.LoadError.Missing": "Denne databasefilen finnes ikke lenger",

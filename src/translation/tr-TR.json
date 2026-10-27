@@ -444,6 +444,8 @@
     "Databases.Layout.EnlargePreview": "Önizlemeyi büyüt",
     "Databases.Layout.EnlargeTable": "Tabloyu büyüt",
     "Databases.LoadError": "Veritabanları yüklenemedi. Lütfen tekrar deneyin.",
+    "Databases.LoadError.Admission": "Bu veritabanı zaten başka bir adla açık",
+    "Databases.LoadError.AdmissionRecovery": "Bu kullanım sona erdikten sonra yeniden açılabilir.",
     "Databases.LoadError.Changed": "Bu veritabanı klasörü değişti. Başka birini seçin.",
     "Databases.LoadError.Description": "Veritabanı yüklenirken bir hata oluştu.",
     "Databases.LoadError.Missing": "Bu veritabanı dosyası artık mevcut değil",

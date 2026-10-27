@@ -1710,6 +1710,61 @@ test("database-files: concurrent conversions render their own live progress coun
     ).toBeDisabled();
 });
 
+test("database-files: admission conflicts show temporary-use recovery while ordinary failures keep corruption guidance", async ({
+    page,
+    mockScenario,
+}) => {
+    const conflict = {
+        tag: "backend-error",
+        category: "conflict",
+        message: "Conflict: database is open through another name",
+    };
+    await mockScenario({
+        commands: {
+            ...databaseScenario.commands,
+            list_workspace_databases: {
+                result: {
+                    entries: ["admission", "ordinary"].map((id) => ({
+                        handle: { id: { id }, kind: "database" },
+                        filename: `${id}.db3`,
+                        availability: "available",
+                    })),
+                    unread: [],
+                },
+            },
+            get_db_info: {
+                outcomes: [
+                    { error: { ...conflict, databaseAdmission: true } },
+                    { error: conflict },
+                ],
+            },
+        },
+    });
+    await page.goto("/library");
+    const detail = page.locator(".mantine-Paper-root").filter({
+        has: page.getByRole("button", { name: "Delete", exact: true }),
+    });
+    const admission = "This database is already open under another name";
+    const recovery = "It can be opened again after that use ends.";
+    const generic = "There was an error loading this database";
+    const corruption = "Check if the file exists and that it is not corrupted.";
+
+    await page.getByRole("button").filter({ hasText: "admission.db3" }).click();
+    await expect(detail.getByText(admission, { exact: true })).toBeVisible();
+    await expect(detail.getByText(recovery, { exact: true })).toBeVisible();
+    await expect(detail.getByText(generic, { exact: true })).toHaveCount(0);
+    await expect(detail.getByText("Reason:", { exact: true })).toHaveCount(0);
+    await expect(detail.getByText(corruption, { exact: true })).toHaveCount(0);
+    await assertNothingClipped(detail);
+
+    await page.getByRole("button").filter({ hasText: "ordinary.db3" }).click();
+    await expect(detail.getByText(generic, { exact: true })).toBeVisible();
+    await expect(detail.getByText(corruption, { exact: true })).toBeVisible();
+    await expect(detail.getByText(admission, { exact: true })).toHaveCount(0);
+    await expect(detail.getByText(recovery, { exact: true })).toHaveCount(0);
+    await assertNothingClipped(detail);
+});
+
 test("database-files: an unfinished import stays visible with Delete and no reference star", async ({
     page,
     mockScenario,

@@ -454,6 +454,8 @@
     "Databases.Layout.EnlargePreview": "Powiększ podgląd",
     "Databases.Layout.EnlargeTable": "Powiększ tabelę",
     "Databases.LoadError": "Nie udało się wczytać baz danych. Spróbuj ponownie.",
+    "Databases.LoadError.Admission": "Ta baza danych jest już otwarta pod inną nazwą",
+    "Databases.LoadError.AdmissionRecovery": "Można ją ponownie otworzyć po zakończeniu tego użycia.",
     "Databases.LoadError.Changed": "Ten folder baz danych uległ zmianie. Wybierz inny.",
     "Databases.LoadError.Description": "Sprawdź, czy plik istnieje i nie jest uszkodzony.",
     "Databases.LoadError.Missing": "Ten plik bazy danych już nie istnieje",
