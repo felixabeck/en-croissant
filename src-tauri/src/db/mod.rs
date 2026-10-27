@@ -2217,8 +2217,18 @@ pub struct PlayerQuery {
     pub options: QueryOptions<PlayerSort>,
     #[specta(optional)]
     pub name: Option<String>,
+    #[serde(rename = "nameMatch")]
+    #[specta(optional)]
+    pub name_match: Option<PlayerNameMatch>,
     #[specta(optional)]
     pub range: Option<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PlayerNameMatch {
+    Contains,
+    Exact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -2310,8 +2320,14 @@ fn get_players_blocking(
         count_query = count_query.filter(players::name.is_not("Unknown"));
 
         if let Some(name) = query.name {
-            sql_query = sql_query.filter(players::name.like(format!("%{}%", name)));
-            count_query = count_query.filter(players::name.like(format!("%{}%", name)));
+            let (predicate, value) = match query.name_match {
+                Some(PlayerNameMatch::Exact) => ("Name COLLATE NOCASE = ", name),
+                _ => ("Name LIKE ", format!("%{}%", name)),
+            };
+            let name_filter = diesel::dsl::sql::<diesel::sql_types::Bool>(predicate)
+                .bind::<diesel::sql_types::Text, _>(value);
+            sql_query = sql_query.filter(name_filter.clone());
+            count_query = count_query.filter(name_filter);
         }
 
         if let Some(range) = query.range {
@@ -5948,6 +5964,7 @@ mod tests {
                 page_size: None,
             },
             name: None,
+            name_match: None,
             range: None,
         };
         assert!(recorded_result(PathOperation::DatabaseRead, || {
@@ -6389,6 +6406,7 @@ mod tests {
                             page_size: None,
                         },
                         name: None,
+                        name_match: None,
                         range: None,
                     },
                     &CancellationToken::new(),
@@ -9473,6 +9491,7 @@ mod tests {
                     direction: SortDirection::Asc,
                 },
                 name: Some("Carlsen".into()),
+                name_match: None,
                 range: None,
             },
             &CancellationToken::new(),
@@ -9494,6 +9513,7 @@ mod tests {
                     direction: SortDirection::Desc,
                 },
                 name: None,
+                name_match: None,
                 range: Some((2800, 2900)),
             },
             &CancellationToken::new(),
@@ -9767,6 +9787,7 @@ mod tests {
                     direction: SortDirection::Asc,
                 },
                 name: Some("Source".into()),
+                name_match: None,
                 range: None,
             },
             &CancellationToken::new(),
@@ -9785,6 +9806,7 @@ mod tests {
                     direction: SortDirection::Asc,
                 },
                 name: Some("Target".into()),
+                name_match: None,
                 range: None,
             },
             &CancellationToken::new(),
@@ -11142,6 +11164,7 @@ mod tests {
                         direction: SortDirection::Asc,
                     },
                     name: None,
+                    name_match: None,
                     range: None,
                 },
                 token,
@@ -12526,6 +12549,140 @@ mod setup_policy_tests {
 
 #[cfg(test)]
 mod content_validation_tests;
+
+#[cfg(test)]
+mod exact_player_tests {
+    use super::*;
+    use diesel::connection::SimpleConnection;
+    use tauri::Manager;
+
+    fn query(name: &str, mode: Option<PlayerNameMatch>) -> PlayerQuery {
+        PlayerQuery {
+            options: QueryOptions {
+                skip_count: false,
+                page: None,
+                page_size: None,
+                sort: PlayerSort::Id,
+                direction: SortDirection::Asc,
+            },
+            name: Some(name.into()),
+            name_match: mode,
+            range: None,
+        }
+    }
+
+    #[test]
+    fn exact_player_literal_identity_and_default_substring() {
+        let (_dir, app, handle, database) =
+            schema_database_case("exact-player", vec![PathOperation::DatabaseRead]);
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection
+            .batch_execute(
+                "INSERT INTO Players (ID, Name, Elo) VALUES
+             (1, 'alexander', 1500), (2, 'alex', 1200), (3, 'ALex', 1600),
+             (4, 'ALEx', 2000), (5, 'axb', 1500), (6, 'a_b', 1500),
+             (7, 'percentOther', 1500), (8, 'percent%', 1500),
+             (9, 'o''brien', 1500), (10, 'o''brien junior', 1500),
+             (11, 'missing-owner-opponent', 1500),
+             (12, 'Älex', 1500), (13, 'älex', 1500);",
+            )
+            .unwrap();
+        drop(connection);
+        let state = app.state::<AppState>();
+        let lookup = |query| {
+            get_players_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                query,
+                &CancellationToken::new(),
+            )
+            .unwrap()
+        };
+        for (name, expected) in [
+            ("alex", vec![2, 3, 4]),
+            ("a_b", vec![6]),
+            ("percent%", vec![8]),
+            ("o'brien", vec![9]),
+            ("missing-owner", vec![]),
+            ("ÄLEX", vec![12]),
+        ] {
+            let result = lookup(query(name, Some(PlayerNameMatch::Exact)));
+            assert_eq!(
+                result.count,
+                Some(expected.len() as i32),
+                "count for {name}"
+            );
+            assert_eq!(
+                result.data.iter().map(|p| p.id).collect::<Vec<_>>(),
+                expected,
+                "data for {name}"
+            );
+        }
+        for mode in [None, Some(PlayerNameMatch::Contains)] {
+            let result = lookup(query("alex", mode));
+            assert_eq!(result.count, Some(4));
+            assert_eq!(
+                result.data.iter().map(|p| p.id).collect::<Vec<_>>(),
+                vec![1, 2, 3, 4]
+            );
+        }
+        assert_eq!(lookup(query("a_b", None)).count, Some(2));
+        assert_eq!(lookup(query("percent%", None)).count, Some(2));
+
+        let mut paged = query("aLeX", Some(PlayerNameMatch::Exact));
+        paged.range = Some((1500, 2200));
+        paged.options.page_size = Some(1);
+        paged.options.page = Some(2);
+        let result = lookup(paged.clone());
+        assert_eq!(result.count, Some(2));
+        assert_eq!(
+            result.data.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![4]
+        );
+        paged.options.skip_count = true;
+        assert_eq!(lookup(paged).count, None);
+
+        let mut substring_page = query("alex", None);
+        substring_page.range = Some((1500, 2200));
+        substring_page.options.page_size = Some(1);
+        substring_page.options.page = Some(2);
+        let result = lookup(substring_page);
+        assert_eq!(result.count, Some(3));
+        assert_eq!(
+            result.data.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn exact_player_optional_wire_contract() {
+        let original = serde_json::json!({
+            "options": {"skipCount": false, "sort": "id", "direction": "asc"},
+            "name": "alex"
+        });
+        let legacy: PlayerQuery = serde_json::from_value(original.clone()).unwrap();
+        assert!(legacy.name_match.is_none());
+        let mut nullable = original.clone();
+        nullable["nameMatch"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<PlayerQuery>(nullable)
+            .unwrap()
+            .name_match
+            .is_none());
+        for (value, exact) in [("contains", false), ("exact", true)] {
+            let mut wire = original.clone();
+            wire["nameMatch"] = serde_json::json!(value);
+            let decoded: PlayerQuery = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                matches!(decoded.name_match, Some(PlayerNameMatch::Exact)),
+                exact
+            );
+        }
+        let mut wire = original;
+        wire["nameMatch"] = serde_json::json!("prefix");
+        assert!(serde_json::from_value::<PlayerQuery>(wire).is_err());
+    }
+}
 
 /// Database deletion tests that run on every target, Windows included. Tests that need the
 /// Unix-only removal fault injector stay in `mod tests`.

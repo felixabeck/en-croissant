@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     verifySignedBytes: vi.fn(),
     remoteGet: vi.fn(),
     searchPosition: vi.fn(),
+    getPlayers: vi.fn(),
 }));
 vi.mock("@/platform/tauri", () => ({
     tauri: {
@@ -22,6 +23,7 @@ vi.mock("@/platform/tauri", () => ({
         getDbInfo: mocks.getDbInfo,
         verifySignedBytes: mocks.verifySignedBytes,
         searchPosition: mocks.searchPosition,
+        getPlayers: mocks.getPlayers,
         linkedCollectionsSupported: vi.fn(async () => false),
         listLinkedCollections: vi.fn(async () => []),
     },
@@ -47,6 +49,7 @@ import {
     manifestPuzzleDatabaseInstallCard,
     sameDatabaseHandle,
     searchPosition,
+    query_players,
     type ManagedDatabaseInfo,
 } from "./db";
 
@@ -58,6 +61,42 @@ beforeEach(() => {
 });
 
 const handle = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
+
+it.each([undefined, "contains", "exact"] as const)(
+    "forwards player nameMatch %s through the real wrapper",
+    async (nameMatch) => {
+        const response = { data: [{ id: 2, name: "a_b", elo: null }], count: 1 };
+        mocks.getPlayers.mockResolvedValue(response);
+        const signal = new AbortController().signal;
+        const result = await query_players(
+            handle("owner"),
+            {
+                name: "a_b",
+                nameMatch,
+                range: [1000, 2000],
+                options: { sort: "id", direction: "asc", skipCount: false },
+            },
+            { signal },
+        );
+        expect(result).toBe(response);
+        expect(mocks.getPlayers).toHaveBeenCalledExactlyOnceWith(
+            handle("owner"),
+            {
+                name: "a_b",
+                nameMatch,
+                range: [1000, 2000],
+                options: {
+                    sort: "id",
+                    direction: "asc",
+                    skipCount: false,
+                    page: undefined,
+                    pageSize: undefined,
+                },
+            },
+            { signal },
+        );
+    },
+);
 
 const database = (id: string, filename = `${id}.db3`): ManagedDatabaseInfo => ({
     type: "success",

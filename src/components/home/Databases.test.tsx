@@ -53,6 +53,7 @@ vi.mock("./PersonalCard", () => ({
     return (
       <div>
         player-card {name}
+        <span data-testid="statistics">{JSON.stringify(info)}</span>
         {notice}
       </div>
     );
@@ -136,6 +137,40 @@ function displayedProgress() {
   return container.textContent ?? "";
 }
 
+function exactOwnerScenario(ownerPresent = true) {
+  const rows = [
+    { id: 1, name: "MagnusOpponent", elo: null },
+    ...(ownerPresent
+      ? [
+          { id: 7, name: "magnus", elo: null },
+          { id: 8, name: "MAGNUS", elo: null },
+          { id: 9, name: "MagNus", elo: null },
+        ]
+      : []),
+  ];
+  mocks.query_players.mockImplementation(async (_file, query) => {
+    const matching = rows.filter((row) =>
+      query.nameMatch === "exact"
+        ? row.name.toLowerCase() === query.name.toLowerCase()
+        : row.name.toLowerCase().includes(query.name.toLowerCase()),
+    );
+    return {
+      data: query.options.pageSize ? matching.slice(0, query.options.pageSize) : matching,
+      count: matching.length,
+    };
+  });
+  mocks.getPlayersGameInfo.mockImplementation(async (_progress, _file, id) => ({
+    site_stats_data: [
+      {
+        site: "Lichess",
+        player: rows.find((row) => row.id === id)!.name,
+        daily: [{ won: id, drawn: 0, lost: 0 }],
+        openings: [{ name: `opening-${id}` }],
+      },
+    ],
+  }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -166,6 +201,109 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+});
+
+test("exact account lookup combines every casing variant under session spelling and excludes an earlier opponent", async () => {
+  exactOwnerScenario();
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
+  expect(mocks.getPlayersGameInfo.mock.calls.map((call) => call[2])).toEqual([7, 8, 9]);
+  const calls = mocks.getPlayersGameInfo.mock.calls;
+  expect(new Set(calls.map((call) => call[0])).size).toBe(3);
+  expect(calls.every((call) => call[3].signal === calls[0][3].signal)).toBe(true);
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+    site_stats_data: [7, 8, 9].map((id) => ({
+      site: "Lichess",
+      player: "Magnus",
+      daily: [{ won: id, drawn: 0, lost: 0 }],
+      openings: [{ name: `opening-${id}` }],
+    })),
+  });
+  expect(container.textContent).toContain('"won":9');
+  expect(container.textContent).not.toContain("MagnusOpponent");
+  expect(container.textContent).not.toContain('"player":"MAGNUS"');
+});
+
+test("a large owner response preserves all 200000 distinct site groups under session spelling", async () => {
+  const groupCount = 200_000;
+  mocks.query_players.mockResolvedValue({
+    data: [{ id: 7, name: "MAGNUS", elo: null }],
+    count: 1,
+  });
+  mocks.getPlayersGameInfo.mockResolvedValue({
+    site_stats_data: Array.from({ length: groupCount }, (_, index) => ({
+      site: `https://example.com/game/${index}`,
+      player: "MAGNUS",
+      daily: [],
+      openings: [],
+    })),
+  });
+
+  await renderDatabases();
+
+  const groups = mocks.personalCardInfo.mock.lastCall?.[0]?.site_stats_data ?? [];
+  expect(groups.length).toBe(groupCount);
+  expect(groups[0].site).toBe("https://example.com/game/0");
+  expect(groups.at(-1).site).toBe("https://example.com/game/199999");
+  expect(
+    groups.filter((group: { player: string }) => group.player !== session.lichess.username).length,
+  ).toBe(0);
+});
+
+test("an absent exact owner with only a substring opponent contributes no statistics or warning", async () => {
+  exactOwnerScenario(false);
+  await renderDatabases();
+  await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Empty.Title"));
+  expect(mocks.getPlayersGameInfo).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(mocks.logError).not.toHaveBeenCalled();
+});
+
+test("abort while a casing variant is held prevents later reads and publication", async () => {
+  exactOwnerScenario();
+  const original = mocks.getPlayersGameInfo.getMockImplementation()!;
+  let release!: (value: unknown) => void;
+  mocks.getPlayersGameInfo.mockImplementation((progress, file, id, options) =>
+    id === 8
+      ? new Promise((resolve) => {
+          release = resolve;
+        })
+      : original(progress, file, id, options),
+  );
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledTimes(2));
+  const signal = mocks.getPlayersGameInfo.mock.calls[1][3].signal;
+  await act(async () => root.render(null));
+  expect(signal.aborted).toBe(true);
+  await act(async () => release({ site_stats_data: [] }));
+  expect(mocks.getPlayersGameInfo.mock.calls.map((call) => call[2])).toEqual([7, 8]);
+  expect(mocks.personalCardInfo).not.toHaveBeenCalled();
+  expect(mocks.logError).not.toHaveBeenCalled();
+});
+
+test("a later casing variant failure discards that database and preserves its named warning and successful sibling", async () => {
+  exactOwnerScenario();
+  mocks.getDatabases.mockResolvedValue({
+    databases: [database("db-1"), database("db-2")],
+    unread: [],
+    root: { id: { id: "root" }, kind: "databaseRoot" },
+  });
+  const original = mocks.getPlayersGameInfo.getMockImplementation()!;
+  const sibling = { site: "Chess.com", player: "Magnus", daily: [{ won: 42 }], openings: [] };
+  mocks.getPlayersGameInfo.mockImplementation(async (progress, file, id, options) => {
+    if (file.id.id === "db-2") return { site_stats_data: id === 7 ? [sibling] : [] };
+    if (id === 8) throw new Error("later variant unreadable");
+    return original(progress, file, id, options);
+  });
+  await renderDatabases();
+  await vi.waitFor(() =>
+    expect(container.textContent).toContain("Home.Databases.Incomplete.Title"),
+  );
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [sibling] });
+  expect(container.textContent).toContain('"won":42');
+  expect(container.textContent).not.toContain('"won":7');
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Magnus Lichess");
+  expect(container.querySelector('[role="alert"]')?.textContent).not.toContain("Magnus Chess.com");
 });
 
 test("a ProgressEvent under the id passed to getPlayersGameInfo moves the bar", async () => {
@@ -659,7 +797,9 @@ test("the default player uses the session username when account username casing 
   await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
 
   expect(accountDatabase.filename).toBe("Magnus_lichess.db3");
-  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [record] });
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+    site_stats_data: [{ ...record, player: "magnus" }],
+  });
   expect(mocks.query_players).toHaveBeenCalledWith(
     accountDatabase.file,
     expect.objectContaining({ name: "magnus" }),
@@ -908,7 +1048,9 @@ test.each([false, true])(
     await renderDatabases();
     await vi.waitFor(() =>
       expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
-        site_stats_data: failedSibling ? [lichessRecord] : [lichessRecord, chesscomRecord],
+        site_stats_data: failedSibling
+          ? [{ ...lichessRecord, player: "felix" }]
+          : [{ ...lichessRecord, player: "felix" }, chesscomRecord],
       }),
     );
     expect(mocks.query_players).toHaveBeenCalledTimes(failedSibling ? 1 : 2);
@@ -1083,7 +1225,9 @@ test.each([{}, { perfs: { blitz: { games: 2 } } }, { username: "foreign" }])(
     mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [record] });
     await renderDatabases();
     await vi.waitFor(() =>
-      expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [record] }),
+      expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+        site_stats_data: [{ ...record, player: "magnus" }],
+      }),
     );
     expect(container.textContent).toContain("Coach");
     expect(mocks.query_players).toHaveBeenCalledExactlyOnceWith(

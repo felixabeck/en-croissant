@@ -234,8 +234,8 @@ function Databases() {
               db.file,
               {
                 name: username,
+                nameMatch: "exact",
                 options: {
-                  pageSize: 1,
                   direction: "asc",
                   sort: "id",
                   skipCount: false,
@@ -246,12 +246,19 @@ function Databases() {
             if (players.data.length === 0) {
               return null;
             }
-            const player = players.data[0];
-            const progressId = crypto.randomUUID();
-            map.set(progressId, 0);
-            const info = await tauri.getPlayersGameInfo(progressId, db.file, player.id, {
-              signal,
-            });
+            const info: PlayerGameInfo = { site_stats_data: [] };
+            // Variants form one atomic database contribution. The outer collector owns failures.
+            for (const player of players.data) {
+              if (signal.aborted) throw new DOMException("Cancellation", "AbortError");
+              const progressId = crypto.randomUUID();
+              map.set(progressId, 0);
+              const variant = await tauri.getPlayersGameInfo(progressId, db.file, player.id, {
+                signal,
+              });
+              for (const site of variant.site_stats_data) {
+                info.site_stats_data.push({ ...site, player: username });
+              }
+            }
             return { db, info };
           },
           {

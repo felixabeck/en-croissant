@@ -245,6 +245,7 @@ export async function query_players(
                 direction: query.options.direction,
             },
             name: query.name,
+            nameMatch: query.nameMatch,
             range: normalizeRange(query.range),
         },
         options,

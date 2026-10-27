@@ -649,6 +649,72 @@ const summaryStatistics = {
     ],
 };
 
+test("accounts-puzzles-engines: home summary retains mixed-case owner games after account selection", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify(
+                ["alex", "other"].map((username) => ({
+                    player: "Alex",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    lichess: { username, account: { id: username, username, perfs: {} } },
+                })),
+            ),
+        );
+    });
+    const variant = (player: string, won: number) => ({
+        site_stats_data: [
+            {
+                ...summaryStatistics.site_stats_data[0],
+                player,
+                daily: [
+                    { ...summaryStatistics.site_stats_data[0].daily[0], won, drawn: 0, lost: 0 },
+                ],
+            },
+        ],
+    });
+    await mockScenario({
+        commands: {
+            list_workspace_databases: { result: { entries: [summaryLichessDatabase], unread: [] } },
+            get_db_info: { result: summaryLichessInfo },
+            get_players: {
+                result: {
+                    data: [
+                        { id: 7, name: "Alex", elo: 1500 },
+                        { id: 8, name: "ALEX", elo: 1500 },
+                    ],
+                    count: 2,
+                },
+            },
+            get_players_game_info: {
+                outcomes: [{ result: variant("Alex", 3) }, { result: variant("ALEX", 5) }],
+                error: "Unexpected extra statistics read",
+            },
+        },
+    });
+    await page.goto("/accounts");
+    const overview = page.getByRole("tabpanel", { name: "Overview", exact: true });
+    const total = overview.getByText("8 Games", { exact: true });
+    await expect(total).toBeVisible();
+    await overview.getByRole("textbox", { name: "Website", exact: true }).click();
+    await page.getByRole("option", { name: "Lichess", exact: true }).click();
+    await overview.getByRole("textbox", { name: "Account", exact: true }).click();
+    await page.getByRole("option", { name: "alex", exact: true }).click();
+    await expect(total).toBeVisible();
+    const reads = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter(({ command }) => command === "get_players_game_info")
+            .map(({ args }) => (args as { id: number }).id),
+    );
+    expect(reads).toEqual([7, 8]);
+    await capture("home-summary-exact-player-account-selected");
+});
+
 for (const state of ["partial", "failed"] as const) {
     test(`accounts-puzzles-engines: home summary ${state} statistics`, async ({
         page,

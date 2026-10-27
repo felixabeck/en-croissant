@@ -263,6 +263,7 @@ mod tests {
                         direction: SortDirection::Asc,
                     },
                     name: None,
+                    name_match: None,
                     range: None,
                 },
                 token,
