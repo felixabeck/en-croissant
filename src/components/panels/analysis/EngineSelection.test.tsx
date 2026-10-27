@@ -21,7 +21,10 @@ vi.mock("@tanstack/react-router", () => ({ Link: () => <a /> }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
-vi.mock("@/utils/engines", () => ({ stopEngine: mocks.stopEngine }));
+vi.mock("@/utils/engines", () => ({
+  stopEngine: mocks.stopEngine,
+  loadDefaultEngineCatalog: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("@/state/atoms", () => ({
   activeTabAtom: mocks.activeTabAtom,
   enginesAtom: mocks.enginesAtom,

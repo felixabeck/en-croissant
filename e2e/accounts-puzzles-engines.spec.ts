@@ -62,8 +62,8 @@ for (const layout of ["desktop", "narrow"] as const) {
             .getByRole("button", { pressed: true })
             .filter({ hasText: savedEngine.name });
         const editor = page.getByRole("button", { name: "Select image", exact: true });
-        const assertPortraits = async () => {
-            for (const surface of [card, editor]) {
+        const assertPortraits = async (surfaces = [card, editor]) => {
+            for (const surface of surfaces) {
                 const image = surface.getByRole("img", { name: savedEngine.name, exact: true });
                 await expect(image).toHaveAttribute("src", catalogEngine.image);
                 await expect(image).toBeVisible();
@@ -86,6 +86,16 @@ for (const layout of ["desktop", "narrow"] as const) {
         await assertNoHorizontalOverflow();
         if (layout === "narrow") await editor.scrollIntoViewIfNeeded();
         await capture(`saved-catalog-portraits-reloaded-${layout}`);
+        await page.getByRole("link", { name: "Board", exact: true }).click();
+        await page.getByRole("button", { name: /^open$/i }).click();
+        await page.getByRole("tab", { name: "Analysis", exact: true }).click();
+        await page.getByRole("button", { name: "Select engines", exact: true }).click();
+        const picker = page.locator(".mantine-Popover-dropdown");
+        await expect(picker).toBeVisible();
+        await assertPortraits([picker]);
+        await expect(picker.getByRole("checkbox")).not.toBeChecked();
+        expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(saved);
+        await capture(`saved-catalog-portraits-analysis-picker-${layout}`);
     });
 }
 

@@ -303,7 +303,7 @@ export async function loadDefaultEngineCatalog(
     signature?: string,
 ): Promise<DefaultEngine[]> {
     // Startup recovery needs engine schemas and application helpers, but no catalog lookup.
-    // Load the signed catalog bytes only when an install or upgrade requests the catalog.
+    // Load signed catalog bytes on demand for installation, upgrades or saved-engine portraits.
     const [catalogDocument, catalogSignature] = await Promise.all([
         document ?? import("@/catalogs/engines.json?raw").then((module) => module.default),
         signature ?? import("@/catalogs/engines.json.minisig?raw").then((module) => module.default),

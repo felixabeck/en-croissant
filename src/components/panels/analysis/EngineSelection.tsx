@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { memo } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import LocalImage from "@/components/common/LocalImage";
+import EnginePortrait from "@/components/engines/EnginePortrait";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
 import { type Engine } from "@/utils/engines";
@@ -14,13 +14,13 @@ function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () 
     <Paper withBorder p="sm" w="100%" h="3rem" onClick={toggleLoaded} style={{ cursor: "pointer" }}>
       <Group wrap="nowrap">
         <Checkbox checked={!!engine.loaded} onChange={() => {}} />
-        {engine.imageHandle ? (
-          <LocalImage image={engine.imageHandle} alt={engine.name} w="1.5rem" />
-        ) : engine.type !== "local" ? (
-          <IconCloud size="1.5rem" />
-        ) : (
-          <IconCpu size="1.5rem" />
-        )}
+        <EnginePortrait
+          engine={engine}
+          imageProps={{ w: "1.5rem" }}
+          fallback={
+            engine.type !== "local" ? <IconCloud size="1.5rem" /> : <IconCpu size="1.5rem" />
+          }
+        />
         <Text lineClamp={1} fz="sm">
           {engine.name}
         </Text>
