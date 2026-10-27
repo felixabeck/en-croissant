@@ -10420,3 +10420,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Revisit if portraits must survive removal of their exact download URL from the bundled catalog. Preserve custom-image precedence, authenticated same-origin paths and existing-record coverage.
 * **Decided by:** Codex, full-auto pinned finding run, 2026-10-27. Plan authorship and arbitration share one context. Detection uses the same OpenAI model family as code · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"75b5d548344650580947af2a6c81cd8e3d484de95fb6911401330561ea197c41","input_sha256":"2f41bbd34633f194bd5fd29e0163d729f812fb67a291c2230848c10db32b1f4e","kind":"mutation-receipt","operation":"895130a4fe5356e22f1c8aaffe7e8e2e6ac3b622f5bd3603d79d64c177348ef9","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20261027-24 — When one member of a player-group removal fails, what happens to the others?
+
+* **Question:** When one member of a player-group removal fails or returns durability_uncertain, what happens to the group?
+* **Governs:** f-20261008-05
+* **Chosen:** Each member follows the per-card logout on its own. A returned removal drops that member only while the snapshotted Lichess handle is still on the session, and shows the existing pending and durability warnings. A throw keeps that member, reports Common.Error, and the walk continues. Chess.com-only and handle-less members drop without a native call.
+* **Rejected:** Aborting the group on the first throw. Dropping sessions before the native call. Dropping by group name or username after the await. A new native batch command. Changing startup reconciliation.
+* **Reason:** d-20260831-20 already logs out on any returned removal and keeps the session when removal throws. Native removal deletes the credential before provider revocation returns, and a new sign-in can publish a new handle during that wait, so the drop has to match the handle. A rename changes the group name and not the handle. Revocation cannot be rolled back, so a later member must still be revoked.
+* **Reversal:** Restore a group-wide abort or a username drop only with a new removal contract that still cannot resurrect a revoked token or delete a replacement credential.
+* **Decided by:** Grok, drain session 639b7b96-4d27-46a3-9a37-afd2958f9366, full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2103b3442f33c9f92f17f8fd187e82bf5faf5eaf7879077089408b479fe2b0b4","input_sha256":"22ff9fcb087b8b758ef6f55e62507a4afd715ba5c20f38bdede0af94c5617c38","kind":"mutation-receipt","operation":"ed3a5d5fb0eddbe5b8e6c6ab6be8fe244995f4dbc94db182c392c087e697fa23","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-24"],"target":"decisions-ledger","v":1} -->
