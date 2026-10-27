@@ -18585,3 +18585,19 @@ Duplicate of handled f-20261026-05. Both name the same hosted witness: Test run 
 
 Duplicate of handled f-20261026-05. This stub names the same red Test run 40294415121 on 5122842865a27495664e1ee8436e9bad482a535a and the same Linux test job. f-20261026-05 recorded that failure, ca7fe9c4 changed the witness, and the finding is handled on aef03a2655bfe33021d9e63f89ab6ad33edb592b. This entry adds no separate defect. Drain session 2763cffc-cfef-4201-ab7b-eca30b9caeda, run 93f3da77-42b8-4edd-bb3c-bae8106349d6.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"ea9fdd7a3454a118e82b3a696bd75f9148ea58c6cd5eb56663bcea96e540e160","header_sha256":"559340288a824cc6cd6905328ab3dc8ef4aabfcc0ac210243510d8cb3c20b949","header_status":"handled","input_sha256":"14b8578c2da8c3ad073fdc1e3cfb41ee1aad0e584565be6c2ed6eda7a3adf7f7","kind":"mutation-receipt","operation":"6b558c2c6ae6e5793287eceb8f57922bca67b244777b44d60e715c70e9839630","options":{"section":null},"request_id_sha256":null,"results":["f-20261026-07"],"target":"f-20261026-07","v":1} -->
+
+---
+
+## 2026-10-27 — filed through the inbox spool
+
+### Archive terminal-cleanup witness sees the saved payload identity after cleanup during a full native gate
+
+* **ID:** f-20261027-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** `src-tauri/src/fs.rs:6928-6936`, `assert_archive_terminal_cleanup_waits_for_admission`, consumed by `archive_staging_authority_cancelled_payload_waits_for_terminal_cleanup_and_lease`.
+* **Defect:** On 2026-10-27 the repeated complete Rust gate for f-20261006-01 at clean HEAD13b2b5dc failed backend testing with 2773 passed, one failed and two existing ignored. The cleanup hook reads `/proc/self/fd/<saved fd>` and asserts its device/inode differs from the payload captured before cleanup. Actual values were equal `(64513, 91229168)`, causing the Tokio worker panic at fs.rs6935 and then the waiting test's RecvError at7023. This is an observed release-blocking failure, with no production cause established.
+* **Failure scenario:** The full ordinary native suite reaches archive cancellation, its terminal cleanup hook observes the saved descriptor number resolving to the captured identity, and the required backend gate exits101. The same suite on the preceding reviewed tree passed2774/0/2ignored. The current slice changes only a separate workspace-listing test and records.
+* **Open question:** Is the original anonymous payload actually retained at the hook, or can descriptor and inode reuse make the post-drop identity comparison a false witness? Trace the actual owning drop and existing fixture seams, reproduce against real owned file descriptors and preserve proof that cleanup destroys the original payload before completion and lease release. No retry, weaker identity assertion or production change is assumed.
+* **Evidence:** `/home/felixb/.local/state/chessfable-codex-lane/f-20261006-01/gate-push-gate.NzfX0S/completion.record` is `101 push-gate 13b2b5dc9add447dffe47df8374352814fd9625e`. Full transcript `artifacts/gates/20261027T032014576Z-566674/receipt-backend-test.log`, raw failure copied in runtime `final-r2-backend-test-preparation.log`. No other gate from this sequential attempt remains active.
+* **Related:** handled f-20261022-08 concerns different archive-availability and download-tail timeout witnesses. Its exact repaired assertions and decisions remain intact. No shared Root is asserted. Existing native identity-reuse findings concern the SQLite admission registry, whose cause is not assumed here.
+* **Found by:** Independent Codex side lane during the repeated final gate for f-20261006-01. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as code.
