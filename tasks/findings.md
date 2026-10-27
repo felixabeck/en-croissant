@@ -12851,6 +12851,9 @@ Reversal path: if that preview stops scrolling and clips the name, reopen the an
 The original Where line says the name Text is rendered by Databases.tsx:248. That line is the player lookup. getPlayersGameInfo is called at Databases.tsx:252, and the card render is Databases.tsx:386, which passes setName. The name Text is PersonalCard.tsx:78 and is reached from PlayerCard.tsx:42, which does not pass setName. Read the Where line with those later notes.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"61e3aefccf3c479bbd71f282339b460f3c36986c5fba4dc2889d351eab69b076","input_sha256":"b9a177877713919c46561a37fdc362f986f505c85390a6b23defc18f30b8c0a4","kind":"mutation-receipt","operation":"a62f2553cc6a01fdec918802fb7b5eb07b1c457a6b39bc026adbee88e8845bc3","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
 
+d-20261027-20 is superseded by d-20261027-21. Its reversal path names an exemption in e2e/fixtures.ts and two synthetic cases in e2e/settings-responsive.spec.ts. Those edits were reverted before any commit. This range does not touch either file. Neither the journey nor the exemption was shipped.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"50e139c79059319d19d2db837e3e6d63a36abc573a18afcd41e719e9af414277","input_sha256":"688f02f3a93b2e04da8394746f22c26c6928606dae39b3df966f0e70d887d072","kind":"mutation-receipt","operation":"41c749170d4f4548d5184875046ca30de31ab7fe1fe3d7954ab3e9d0140dc6c1","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
+
 ### Seven test files each carry their own inert ResizeObserver stub
 
 * **ID:** f-20260928-01 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
