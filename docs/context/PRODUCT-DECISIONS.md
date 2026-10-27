@@ -18,6 +18,23 @@ finding ids and date.
   - **Phase 2:** Every collection exists exactly once. A user's own PGN file in the
     library folder is the truth. A database is either the search index of such a
     file or a standalone reference collection.
+    - Game collections in the library folder get automatically maintained linked
+      search indexes, including after external rewrites. Edits go to the file.
+    - Repertoires and studies remain plain files without indexes. Position search
+      inside repertoire variations is not promised.
+    - Account sync appends only games not already present to one accumulated PGN
+      per account in the library folder, linked like any game collection.
+    - Large collections imported from outside the library folder remain
+      standalone databases.
+    - Existing unlinked file/database pairs are offered a one-time link, without
+      silent merging or losing edits made on either side since import.
+    - Working editing must be preserved. Linked collections ship where PGN
+      write-back works (Linux, macOS). Windows keeps unlinked databases until PGN
+      atomic replacement is ported.
+- **Ruled out:** Converting everything to one storage format. Converting
+  repertoires to databases loses free-form editing and repertoire practice.
+  Converting databases to PGN loses indexed position search and the opening
+  explorer over large collections.
 - **Felix's reason:** "in chess space this is all in one list". Users organise by
   purpose, not storage format.
 - **Findings:** `f-20261001-11` (phase 1), `f-20261004-15` (phase 2, linked collections).
