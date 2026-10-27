@@ -377,6 +377,8 @@
     "Common.Open": "Ouvrir",
     "Common.OpenFolder": "Ouvrir le dossier dans le système de fichier",
     "Common.OpenGame": "Ouvrir la partie",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable n’a pas pu terminer la suppression de toutes les anciennes sessions de problèmes. Les demandes de suppression les plus récentes ont été conservées. Quittez ChessFable pour supprimer les sessions de problèmes restantes.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable n’a pas pu terminer la suppression de tous les échiquiers fermés. Les demandes de suppression les plus récentes ont été conservées. Quittez ChessFable pour supprimer les parties sauvegardées restantes.",
     "Common.PGNFile": "Fichier PGN",
     "Common.PGNGame": "PGN de la partie",
     "Common.PickDate": "Choisissez une date",

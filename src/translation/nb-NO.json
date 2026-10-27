@@ -372,6 +372,8 @@
     "Common.Open": "Åpne",
     "Common.OpenFolder": "Åpne mappen i filutforsker",
     "Common.OpenGame": "Åpne parti",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable kunne ikke fullføre slettingen av alle gamle oppgaveøkter. De nyeste sletteforespørslene ble beholdt. Avslutt ChessFable for å forkaste de gjenværende oppgaveøktene.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable kunne ikke fullføre slettingen av alle lukkede brett. De nyeste sletteforespørslene ble beholdt. Avslutt ChessFable for å forkaste de gjenværende lagrede partiene.",
     "Common.PGNFile": "PGN-fil",
     "Common.PGNGame": "PGN parti",
     "Common.PickDate": "Velg dato",

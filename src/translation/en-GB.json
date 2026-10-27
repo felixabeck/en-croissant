@@ -372,6 +372,8 @@
     "Common.Open": "Open",
     "Common.OpenFolder": "Open folder in file explorer",
     "Common.OpenGame": "Open game",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable could not finish deleting every old puzzle session. The newest deletions were kept. Quit ChessFable to discard the leftover puzzle sessions.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable could not finish deleting every closed board. The newest deletions were kept. Quit ChessFable to discard the leftover saved games.",
     "Common.PGNFile": "PGN file",
     "Common.PGNGame": "PGN Game",
     "Common.PickDate": "Pick date",

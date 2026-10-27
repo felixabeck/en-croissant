@@ -372,6 +372,8 @@
     "Common.Open": "Aç",
     "Common.OpenFolder": "Klasörü dosya gezgininde aç",
     "Common.OpenGame": "Oyunu aç",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable tüm eski bulmaca oturumlarını silmeyi tamamlayamadı. En yeni silme istekleri korundu. Kalan bulmaca oturumlarını silmek için ChessFable’dan çıkın.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable tüm kapatılmış tahtaları silmeyi tamamlayamadı. En yeni silme istekleri korundu. Kalan kayıtlı oyunları silmek için ChessFable’dan çıkın.",
     "Common.PGNFile": "PGN dosyası",
     "Common.PGNGame": "PGN Oyunu",
     "Common.PickDate": "Tarih seçin",

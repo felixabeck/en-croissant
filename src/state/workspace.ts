@@ -219,10 +219,7 @@ export function reconcilePendingTreeRemovals(
     priorIds: readonly string[],
     newIds: Iterable<string>,
     retainedIds: ReadonlySet<string>,
-): { unreadableIds: Set<string> } & (
-    | { ids: string[]; overflowCount: null }
-    | { ids: null; overflowCount: number }
-) {
+): { ids: string[]; droppedIds: string[]; unreadableIds: Set<string> } {
     const unreadableIds = new Set<string>();
     let firstError: unknown;
     let prior = priorIds.filter((id) => {
@@ -242,12 +239,24 @@ export function reconcilePendingTreeRemovals(
         const failedPriorRemovals = tabStorage.removeKnownTreesSafely(
             prior.filter((id) => !unreadableIds.has(id)),
         );
-        prior = prior.filter((id) => failedPriorRemovals.has(id) || unreadableIds.has(id));
+        prior = prior.filter((id) => {
+            if (failedPriorRemovals.has(id) || unreadableIds.has(id)) return true;
+            try {
+                return sessionStorage.getItem(id) !== null;
+            } catch {
+                return true;
+            }
+        });
         pending = new Set([...prior, ...additions]);
     }
-    return pending.size <= MAX_PENDING_TREE_REMOVALS
-        ? { ids: [...pending], overflowCount: null, unreadableIds }
-        : { ids: null, overflowCount: pending.size, unreadableIds };
+    const { kept, dropped } = boundPendingRemovals(pending, MAX_PENDING_TREE_REMOVALS);
+    return { ids: kept, droppedIds: dropped, unreadableIds };
+}
+
+function boundPendingRemovals(pending: ReadonlySet<string>, cap: number) {
+    const entries = [...pending];
+    const overflow = Math.max(0, entries.length - cap);
+    return { kept: entries.slice(overflow), dropped: entries.slice(0, overflow) };
 }
 
 /** Old intents already carry durable authority. New keys cannot be removed before publication. */
@@ -255,14 +264,15 @@ export function reconcileLegacyPuzzleRemovals(
     prior: readonly string[],
     retiredLogicalIds: Iterable<string>,
     retainedTabs: readonly Tab[],
-): string[] | null {
+): { keys: string[]; droppedKeys: string[] } {
     const retained = new Set(retainedTabs.map((tab) => legacyPuzzleKey(tab.value)));
     const keys = new Set(prior.filter((key) => !retained.has(key) && !removeLegacyPuzzleKey(key)));
     for (const id of retiredLogicalIds) {
         const key = legacyPuzzleKey(id);
         if (!retained.has(key)) keys.add(key);
     }
-    return keys.size <= MAX_PENDING_PUZZLE_REMOVALS ? [...keys] : null;
+    const { kept, dropped } = boundPendingRemovals(keys, MAX_PENDING_PUZZLE_REMOVALS);
+    return { keys: kept, droppedKeys: dropped };
 }
 
 /** UUID orphans are discoverable only with authoritative workspace ownership. */
@@ -296,14 +306,26 @@ function workspaceActionError(cause: Error): Error {
 }
 
 export function pendingTreeRemovalCapacityError(count: number): Error {
-    return workspaceActionError(
-        new Error(`Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`),
+    return new Error(
+        i18n.t("Common.PendingTreeRemovalOverflow") ||
+            enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"],
+        {
+            cause: new Error(
+                `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`,
+            ),
+        },
     );
 }
 
-export function pendingPuzzleRemovalCapacityError(): Error {
-    return workspaceActionError(
-        new Error(`Pending legacy puzzle removals exceeded ${MAX_PENDING_PUZZLE_REMOVALS}`),
+export function pendingPuzzleRemovalCapacityError(count: number): Error {
+    return new Error(
+        i18n.t("Common.PendingPuzzleRemovalOverflow") ||
+            enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"],
+        {
+            cause: new Error(
+                `Pending legacy puzzle removals exceeded ${MAX_PENDING_PUZZLE_REMOVALS}: ${count}`,
+            ),
+        },
     );
 }
 
@@ -554,10 +576,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         durableMigratedSources,
         repairedRetainedIds,
     );
-    if (pendingRemovalResult.ids === null) {
-        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
-        return refuseRepair();
-    }
     const pendingRemovalIds = pendingRemovalResult.ids;
     if (pendingRemovalIds.length > 0) {
         plan.workspace.treeOwnershipPendingRemovalIds = pendingRemovalIds;
@@ -568,15 +586,12 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         );
     }
 
-    const puzzleRemovalKeys = reconcileLegacyPuzzleRemovals(
+    const puzzleRemovalResult = reconcileLegacyPuzzleRemovals(
         persistedPuzzleRemovals,
         plan.cloneTargets.filter(({ puzzle }) => puzzle).map(({ logicalId }) => logicalId),
         plan.workspace.tabs,
     );
-    if (puzzleRemovalKeys === null) {
-        reportPersistError(pendingPuzzleRemovalCapacityError());
-        return refuseRepair();
-    }
+    const puzzleRemovalKeys = puzzleRemovalResult.keys;
     if (puzzleRemovalKeys.length > 0) plan.workspace.legacyPuzzleRemovalKeys = puzzleRemovalKeys;
 
     const payload = serializeStorageValue(plan.workspace);
@@ -588,7 +603,14 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    // Every migrated source is in the published pending-removal list. This also reclaims
+    if (pendingRemovalResult.droppedIds.length > 0)
+        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.droppedIds.length));
+    if (puzzleRemovalResult.droppedKeys.length > 0)
+        reportPersistError(
+            pendingPuzzleRemovalCapacityError(puzzleRemovalResult.droppedKeys.length),
+        );
+
+    // Kept migrated sources are in the published pending-removal list. This also reclaims
     // unreadable bytes, which ordinary orphan sweeps cannot decode.
     const failedKnownRemovals = tabStorage.removeKnownTreesSafely(
         pendingRemovalIds.filter((id) => !pendingRemovalResult.unreadableIds.has(id)),

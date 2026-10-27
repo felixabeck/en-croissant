@@ -367,6 +367,8 @@
     "Common.Open": "打开",
     "Common.OpenFolder": "在文件资源管理器中打开文件夹",
     "Common.OpenGame": "打开棋局",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable 未能完成删除所有旧习题会话。已保留最新的删除请求。请退出 ChessFable 以丢弃剩余的习题会话。",
+    "Common.PendingTreeRemovalOverflow": "ChessFable 未能完成删除所有已关闭的棋盘。已保留最新的删除请求。请退出 ChessFable 以丢弃剩余的已保存棋局。",
     "Common.PGNFile": "PGN 文件",
     "Common.PGNGame": "PGN 对局",
     "Common.PickDate": "选择日期",

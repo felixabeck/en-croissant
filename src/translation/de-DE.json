@@ -372,6 +372,8 @@
     "Common.Open": "Öffnen",
     "Common.OpenFolder": "Ordner im Datei-Explorer öffnen",
     "Common.OpenGame": "Partie öffnen",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable konnte nicht alle alten Aufgabensitzungen vollständig löschen. Die neuesten Löschaufträge wurden beibehalten. Beende ChessFable, um die übrigen Aufgabensitzungen zu verwerfen.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable konnte nicht alle geschlossenen Bretter vollständig löschen. Die neuesten Löschaufträge wurden beibehalten. Beende ChessFable, um die übrigen gespeicherten Partien zu verwerfen.",
     "Common.PGNFile": "PGN-Datei",
     "Common.PGNGame": "PGN-Spiel",
     "Common.PickDate": "Wähle Datum",

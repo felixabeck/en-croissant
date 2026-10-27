@@ -367,6 +367,8 @@
     "Common.Open": "열기",
     "Common.OpenFolder": "파일 탐색기에서 폴더 열기",
     "Common.OpenGame": "게임 열기",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable이 모든 이전 퍼즐 세션을 삭제하지 못했습니다. 가장 최근의 삭제 요청은 유지되었습니다. 남은 퍼즐 세션을 버리려면 ChessFable을 종료하세요.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable이 닫힌 모든 보드를 삭제하지 못했습니다. 가장 최근의 삭제 요청은 유지되었습니다. 남은 저장된 게임을 버리려면 ChessFable을 종료하세요.",
     "Common.PGNFile": "PGN 파일",
     "Common.PGNGame": "PGN 게임",
     "Common.PickDate": "날짜 선택",

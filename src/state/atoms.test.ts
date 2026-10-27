@@ -355,24 +355,28 @@ test.each([1, 100])(
     },
 );
 
-test("closing refuses when all 100 pending targets are unreadable", async () => {
-    const { workspace, closed, unreadable, tree, atoms, bytes, refusal, store } =
+test("closing keeps the newest 100 intents when all prior targets are unreadable", async () => {
+    const { workspace, closed, unreadable, tree, atoms, refusal, store } =
         await prepareCloseWithUnreadablePending(100, 100);
+    const remove = vi.spyOn(Storage.prototype, "removeItem");
 
-    expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(false);
+    expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(true);
 
     expect(persistError.reportPersistError).toHaveBeenCalledTimes(2);
     for (const id of unreadable)
         expect(refusal.mock.calls.filter(([key]) => key === id)).toHaveLength(1);
+    for (const id of unreadable) expect(remove).not.toHaveBeenCalledWith(id);
     refusal.mockRestore();
     for (const id of unreadable) expect(sessionStorage.getItem(id)).toBe(tree);
-    expect(sessionStorage.getItem("workspace")).toBe(bytes);
-    expect(sessionStorage.getItem(closed)).toBe(tree);
-    expect(store.get(atoms.tabsAtom)).toEqual(workspace.tabs);
+    expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toMatchObject({
+        treeOwnershipPendingRemovalIds: [...unreadable.slice(1), closed],
+    });
+    expect(sessionStorage.getItem(closed)).toBeNull();
+    expect(store.get(atoms.tabsAtom)).toEqual([workspace.tabs[1]]);
     expect(persistError.reportPersistError).toHaveBeenLastCalledWith(
         expect.objectContaining({
             cause: expect.objectContaining({
-                message: "Pending tree removals exceeded 100: 101",
+                message: "Pending tree removals exceeded 100: 1",
             }),
         }),
     );

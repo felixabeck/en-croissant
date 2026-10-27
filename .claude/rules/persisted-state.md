@@ -78,7 +78,10 @@ inside a `try` that produces a comprehensible error rather than an unhandled thr
   stored value whether or not it decodes and retries until the key is absent, while an unowned
   undecodable value with no recorded intent is never swept, an intent under a non-UUID id still
   needs a decodable tree, and a refused-admission marker removes only a decodable tree
-  (d-20261008-09). A version field that nothing migrates is not migration.
+  (d-20261008-09). When the pending list exceeds its cap after the retry, the oldest intents are
+  dropped, those bytes stay until a certain-ownership sweep removes a decodable tree or the webview
+  session ends, and the close or load still publishes. A version field that nothing migrates is
+  not migration.
 
 ## DO NOT
 

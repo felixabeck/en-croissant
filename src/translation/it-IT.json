@@ -377,6 +377,8 @@
     "Common.Open": "Apri",
     "Common.OpenFolder": "Apri la cartella in esplora risorse",
     "Common.OpenGame": "Apri partita",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable non ha potuto completare l’eliminazione di tutte le vecchie sessioni di problemi. Le richieste di eliminazione più recenti sono state conservate. Esci da ChessFable per scartare le sessioni di problemi rimanenti.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable non ha potuto completare l’eliminazione di tutte le scacchiere chiuse. Le richieste di eliminazione più recenti sono state conservate. Esci da ChessFable per scartare le partite salvate rimanenti.",
     "Common.PGNFile": "File PGN",
     "Common.PGNGame": "Partita PGN",
     "Common.PickDate": "Scegli data",

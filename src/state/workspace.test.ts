@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
+import { errorUnlessCancelled } from "@/platform/errors";
 import { denyStorageRemoval, refuseStorageReads } from "@/utils/tests/storageMocks";
 import { defaultTree } from "@/utils/treeReducer";
 import { getTabTreeKey, type Tab } from "./workspaceTypes";
@@ -227,38 +228,73 @@ test("PR-1 cold document replays logical history cleanup after different physica
     expect(sessionStorage.getItem(fixture.unrelated.value)).not.toBeNull();
 });
 
-test.each(["save", "capacity"] as const)(
-    "puzzle ID repair %s refusal preserves original logical and physical owners",
-    (failure) => {
+test("puzzle ID repair save refusal preserves original logical and physical owners", () => {
+    const fixture = puzzleRepairFixture();
+    const write = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+        if (key === WORKSPACE_STORAGE_KEY)
+            throw new DOMException("refused intent", "QuotaExceededError");
+        write.call(this, key, value);
+    });
+    const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    const loaded = loadStoredWorkspace();
+    expect(loaded.tabs).toEqual(fixture.envelope.tabs);
+    expect(loaded.legacyPuzzleRemovalKeys).toBeUndefined();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+    expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
+    expect(sessionStorage.getItem(fixture.physical)).not.toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalled();
+});
+
+test.each([false, true])(
+    "puzzle ID repair bounds failed cleanup with a failed publish: %s",
+    (failPublish) => {
         const fixture = puzzleRepairFixture();
-        let expectedIntents: string[] | undefined;
-        if (failure === "capacity") {
-            const keys = Array.from({ length: 100 }, (_, i) => `retired-${i}-puzzles`);
-            expectedIntents = keys;
-            for (const key of keys) sessionStorage.setItem(key, "[]");
-            sessionStorage.setItem(
-                WORKSPACE_STORAGE_KEY,
-                serializeStorageValue({ ...fixture.envelope, legacyPuzzleRemovalKeys: keys }),
-            );
-            denyStorageRemoval((candidate) => keys.includes(candidate));
-        } else {
+        const prior = Array.from({ length: 100 }, (_, i) => `retired-${i}-puzzles`);
+        for (const key of prior) sessionStorage.setItem(key, "[]");
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({ ...fixture.envelope, legacyPuzzleRemovalKeys: prior }),
+        );
+        denyStorageRemoval((key) => [...prior, fixture.historyKey].includes(key));
+        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        if (failPublish) {
             const write = Storage.prototype.setItem;
             vi.spyOn(Storage.prototype, "setItem").mockImplementation(
                 function (this: Storage, key, value) {
                     if (key === WORKSPACE_STORAGE_KEY)
-                        throw new DOMException("refused intent", "QuotaExceededError");
+                        throw new DOMException("quota", "QuotaExceededError");
                     write.call(this, key, value);
                 },
             );
         }
-        const bytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+        const message = enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"];
+        const expectedKeys = [...prior.slice(1), fixture.historyKey];
+        persistError.reportPersistError.mockImplementation((error: Error) => {
+            if (error.message === message)
+                expect(
+                    readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY),
+                ).toMatchObject({ legacyPuzzleRemovalKeys: expectedKeys });
+        });
         const loaded = loadStoredWorkspace();
-        expect(loaded.tabs).toEqual(fixture.envelope.tabs);
-        expect(loaded.legacyPuzzleRemovalKeys).toEqual(expectedIntents);
-        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
-        expect(sessionStorage.getItem(fixture.historyKey)).not.toBeNull();
-        expect(sessionStorage.getItem(fixture.physical)).not.toBeNull();
-        expect(persistError.reportPersistError).toHaveBeenCalled();
+        const errors = persistError.reportPersistError.mock.calls
+            .map(([error]) => error)
+            .filter((error) => error.message === message);
+        if (failPublish) {
+            expect(loaded.tabs).toEqual(fixture.envelope.tabs);
+            expect(loaded.legacyPuzzleRemovalKeys).toEqual(prior);
+            expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
+            expect(errors).toEqual([]);
+        } else {
+            expect(loaded.tabs[0]!.value).not.toBe(fixture.logical);
+            expect(loaded.legacyPuzzleRemovalKeys).toEqual(expectedKeys);
+            expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual(loaded);
+            expect(errors).toHaveLength(1);
+            expect(errorUnlessCancelled(errors[0])).toEqual({ category: "unexpected", message });
+            expect(errors[0].cause.message).toBe("Pending legacy puzzle removals exceeded 100: 1");
+        }
+        expect(sessionStorage.getItem(prior[0]!)).toBe("[]");
+        persistError.reportPersistError.mockReset();
     },
 );
 
@@ -391,13 +427,17 @@ test("cleanup reconciliation protects retained logical owners and admits exactly
     sessionStorage.setItem(retainedKey, "live history");
     expect(
         reconcileLegacyPuzzleRemovals([retainedKey], [retained.value, uuid, "retired"], [retained]),
-    ).toEqual([`${uuid}-puzzles`, "retired-puzzles"]);
+    ).toEqual({ keys: [`${uuid}-puzzles`, "retired-puzzles"], droppedKeys: [] });
     expect(sessionStorage.getItem(retainedKey)).toBe("live history");
     const retired = Array.from({ length: 100 }, (_, i) => `old-${i}`);
-    expect(reconcileLegacyPuzzleRemovals([], retired, [])).toEqual(
-        retired.map((id) => `${id}-puzzles`),
-    );
-    expect(reconcileLegacyPuzzleRemovals([], [...retired, "overflow"], [])).toBeNull();
+    expect(reconcileLegacyPuzzleRemovals([], retired, [])).toEqual({
+        keys: retired.map((id) => `${id}-puzzles`),
+        droppedKeys: [],
+    });
+    expect(reconcileLegacyPuzzleRemovals([], [...retired, "overflow"], [])).toEqual({
+        keys: [...retired.slice(1), "overflow"].map((id) => `${id}-puzzles`),
+        droppedKeys: ["old-0-puzzles"],
+    });
 });
 
 test("uncertain persisted workspace replays exact UUID intents without a tree and protects retained and unknown histories", async () => {
@@ -437,13 +477,13 @@ test("uncertain persisted workspace replays exact UUID intents without a tree an
 });
 
 test("legacy cleanup capacity errors keep localized action text and the concrete refusal cause", () => {
-    const error = pendingPuzzleRemovalCapacityError();
+    const error = pendingPuzzleRemovalCapacityError(2);
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toBe(
-        i18n.t("Common.ConfirmationError.unexpected") ||
-            enUSCatalogue.translation["Common.ConfirmationError.unexpected"],
+        i18n.t("Common.PendingPuzzleRemovalOverflow") ||
+            enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"],
     );
-    expect(error.cause).toEqual(new Error("Pending legacy puzzle removals exceeded 100"));
+    expect(error.cause).toEqual(new Error("Pending legacy puzzle removals exceeded 100: 2"));
 });
 
 test("history sweeping reports refused enumeration and retries without deleting unrelated UUID-prefixed values", () => {
@@ -1847,43 +1887,85 @@ test("retries a failed migrated-source removal even when the ownership snapshot 
     expect(loadStoredWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
 });
 
-test("does not persist an over-capacity retry list during legacy ID migration", () => {
-    sessionStorage.clear();
-    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    const pendingIds = Array.from(
-        { length: MAX_PENDING_TREE_REMOVALS },
-        (_, index) => `pending-tree-${index}`,
-    );
-    for (const id of pendingIds) sessionStorage.setItem(id, tree);
-    sessionStorage.setItem(legacyTab.value, tree);
-    const originalEnvelope = serializeStorageValue({
-        version: 1,
-        tabs: [legacyTab],
-        activeTab: legacyTab.value,
-        treeOwnershipPendingRemovalIds: pendingIds,
-    });
-    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, originalEnvelope);
-    const deny = denyStorageRemoval((id) => id.startsWith("pending-tree-"));
+test.each([false, true])(
+    "legacy ID migration bounds pending intents with a failed publish: %s",
+    (failPublish) => {
+        sessionStorage.clear();
+        const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+        const pendingIds = Array.from(
+            { length: MAX_PENDING_TREE_REMOVALS },
+            (_, index) => `pending-tree-${index}`,
+        );
+        for (const id of pendingIds) sessionStorage.setItem(id, tree);
+        sessionStorage.setItem(legacyTab.value, tree);
+        const originalEnvelope = serializeStorageValue({
+            version: 1,
+            tabs: [legacyTab],
+            activeTab: legacyTab.value,
+            treeOwnershipPendingRemovalIds: pendingIds,
+        });
+        sessionStorage.setItem(WORKSPACE_STORAGE_KEY, originalEnvelope);
+        const deny = denyStorageRemoval(
+            (id) => id.startsWith("pending-tree-") || id === legacyTab.value,
+        );
+        if (failPublish) {
+            const write = Storage.prototype.setItem;
+            vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+                function (this: Storage, key, value) {
+                    if (key === WORKSPACE_STORAGE_KEY)
+                        throw new DOMException("quota", "QuotaExceededError");
+                    write.call(this, key, value);
+                },
+            );
+        }
+        const overflowMessage = enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"];
+        persistError.reportPersistError.mockImplementation((error: Error) => {
+            if (error.message === overflowMessage)
+                expect(
+                    readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY),
+                ).toMatchObject({
+                    treeOwnershipPendingRemovalIds: [...pendingIds.slice(1), legacyTab.value],
+                });
+        });
 
-    const first = loadStoredWorkspace();
+        const first = loadStoredWorkspace();
 
-    expect(first.tabs[0]!.value).toBe(legacyTab.value);
-    expect(first.treeOwnershipPendingRemovalIds).toEqual(pendingIds);
-    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
-    expect(persistError.reportPersistError).toHaveBeenCalledWith(
-        expect.objectContaining({
-            cause: expect.objectContaining({
-                message: `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 101`,
-            }),
-        }),
-    );
-    deny.mockRestore();
+        if (failPublish) {
+            expect(first.tabs).toEqual([legacyTab]);
+            expect(first.treeOwnershipPendingRemovalIds).toEqual(pendingIds);
+            expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
+            expect(persistError.reportPersistError).not.toHaveBeenCalledWith(
+                expect.objectContaining({ message: overflowMessage }),
+            );
+        } else {
+            expect(first.tabs[0]!.value).not.toBe(legacyTab.value);
+            expect(first.treeOwnershipPendingRemovalIds).toEqual([
+                ...pendingIds.slice(1),
+                legacyTab.value,
+            ]);
+            expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual(first);
+            const overflow = persistError.reportPersistError.mock.calls
+                .map(([error]) => error)
+                .find((error) => error.message === overflowMessage);
+            expect(errorUnlessCancelled(overflow)).toEqual({
+                category: "unexpected",
+                message: overflowMessage,
+            });
+            expect(overflow.cause.message).toBe("Pending tree removals exceeded 100: 1");
+        }
+        expect(sessionStorage.getItem(pendingIds[0]!)).toBe(tree);
+        expect(sessionStorage.getItem(legacyTab.value)).not.toBeNull();
+        deny.mockRestore();
+        vi.restoreAllMocks();
+        persistError.reportPersistError.mockReset();
 
-    const repaired = loadStoredWorkspace();
-    expect(repaired.tabs[0]!.value).not.toBe(legacyTab.value);
-    expect(sessionStorage.getItem(pendingIds[0]!)).toBeNull();
-    expect(loadStoredWorkspace().treeOwnershipPendingRemovalIds).toBeUndefined();
-});
+        const repaired = loadStoredWorkspace();
+        expect(repaired.tabs[0]!.value).not.toBe(legacyTab.value);
+        expect(sessionStorage.getItem(pendingIds[0]!)).toBeNull();
+        expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
+        expect(loadStoredWorkspace().treeOwnershipPendingRemovalIds).toBeUndefined();
+    },
+);
 
 test("pending-removal overflow reports the count after partial cleanup", () => {
     sessionStorage.clear();
@@ -1903,8 +1985,8 @@ test("pending-removal overflow reports the count after partial cleanup", () => {
 
     deny.mockRestore();
     expect(result).toEqual({
-        ids: null,
-        overflowCount: MAX_PENDING_TREE_REMOVALS + 2,
+        ids: [...priorIds.slice(3), "new-tree-1", "new-tree-2", "new-tree-3"],
+        droppedIds: priorIds.slice(1, 3),
         unreadableIds: new Set(),
     });
     expect(sessionStorage.getItem(priorIds[0]!)).toBeNull();
@@ -1912,15 +1994,15 @@ test("pending-removal overflow reports the count after partial cleanup", () => {
 });
 
 test("pending-removal capacity errors have a localized user message and exact cause", () => {
-    const error = pendingTreeRemovalCapacityError(MAX_PENDING_TREE_REMOVALS + 1);
+    const error = pendingTreeRemovalCapacityError(1);
 
     expect(error.message).toBe(
-        i18n.t("Common.ConfirmationError.unexpected") ||
-            enUSCatalogue.translation["Common.ConfirmationError.unexpected"],
+        i18n.t("Common.PendingTreeRemovalOverflow") ||
+            enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"],
     );
     expect(error.message).not.toBe("");
     expect((error.cause as Error).message).toBe(
-        `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 101`,
+        `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 1`,
     );
 });
 
@@ -1937,7 +2019,7 @@ test("pending-removal reconciliation excludes retained IDs and leaves an exact-c
 
     const result = reconcilePendingTreeRemovals(priorIds, [retainedId], new Set([retainedId]));
 
-    expect(result).toEqual({ ids: priorIds, overflowCount: null, unreadableIds: new Set() });
+    expect(result).toEqual({ ids: priorIds, droppedIds: [], unreadableIds: new Set() });
     expect(removeItem).not.toHaveBeenCalled();
     removeItem.mockRestore();
 });
@@ -1951,7 +2033,7 @@ test("pending-removal reconciliation excludes retained prior IDs and keeps other
 
     const result = reconcilePendingTreeRemovals([retainedId, pendingId], [], new Set([retainedId]));
 
-    expect(result).toEqual({ ids: [pendingId], overflowCount: null, unreadableIds: new Set() });
+    expect(result).toEqual({ ids: [pendingId], droppedIds: [], unreadableIds: new Set() });
     expect(sessionStorage.getItem(retainedId)).toBe(tree);
     expect(sessionStorage.getItem(pendingId)).toBe(tree);
 });
@@ -1974,7 +2056,7 @@ test("pending-removal reconciliation reports the first unreadable error and reta
 
     const result = reconcilePendingTreeRemovals(ids, [], new Set());
 
-    expect(result).toEqual({ ids, overflowCount: null, unreadableIds: new Set(ids) });
+    expect(result).toEqual({ ids, droppedIds: [], unreadableIds: new Set(ids) });
     expect(persistError.reportPersistError).toHaveBeenCalledOnce();
     expect(persistError.reportPersistError.mock.calls[0][0]).toBe(firstError);
     expect(persistError.reportPersistError.mock.calls[0][0].message).toBe(
@@ -1999,11 +2081,45 @@ test("pending-removal reconciliation accepts exact capacity after one successful
     deny.mockRestore();
     expect(result).toEqual({
         ids: [...priorIds.slice(1), "new-tree"],
-        overflowCount: null,
+        droppedIds: [],
         unreadableIds: new Set(),
     });
     expect(sessionStorage.getItem(priorIds[0]!)).toBeNull();
 });
+
+test.each(["present undecodable", "read throws", "removal throws"] as const)(
+    "over-cap retry retains an attempted key when %s instead of confirming absence",
+    (failure) => {
+        sessionStorage.clear();
+        const ids = Array.from({ length: 100 }, (_, index) => `confirmed-absence-${index}`);
+        const target = ids[99]!;
+        const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+        for (const id of ids) sessionStorage.setItem(id, tree);
+        const remove = Storage.prototype.removeItem;
+        let attempted = false;
+        vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key) {
+            if (!ids.includes(key)) return remove.call(this, key);
+            if (key !== target) return;
+            attempted = true;
+            if (failure === "present undecodable") sessionStorage.setItem(key, "not a tree");
+            else remove.call(this, key);
+            if (failure === "removal throws") throw new Error("removal failed after deletion");
+        });
+        const read = Storage.prototype.getItem;
+        vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+            if (attempted && key === target && failure === "read throws")
+                throw new Error("follow-up read failed");
+            return read.call(this, key);
+        });
+
+        expect(reconcilePendingTreeRemovals(ids, ["new-tree"], new Set())).toEqual({
+            ids: [...ids.slice(1), "new-tree"],
+            droppedIds: [ids[0]],
+            unreadableIds: new Set(),
+        });
+        expect(attempted).toBe(true);
+    },
+);
 
 test("does not delete a non-tree session value named by a persisted retry", () => {
     sessionStorage.clear();

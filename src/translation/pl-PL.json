@@ -382,6 +382,8 @@
     "Common.Open": "Otwórz",
     "Common.OpenFolder": "Otwórz folder w eksploratorze plików",
     "Common.OpenGame": "Otwórz partię",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable nie mógł dokończyć usuwania wszystkich starych sesji zadań. Zachowano najnowsze żądania usunięcia. Zamknij ChessFable, aby odrzucić pozostałe sesje zadań.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable nie mógł dokończyć usuwania wszystkich zamkniętych szachownic. Zachowano najnowsze żądania usunięcia. Zamknij ChessFable, aby odrzucić pozostałe zapisane partie.",
     "Common.PGNFile": "Plik PGN",
     "Common.PGNGame": "Gra PGN",
     "Common.PickDate": "Wybierz datę",

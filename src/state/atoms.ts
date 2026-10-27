@@ -125,10 +125,6 @@ const commitWorkspaceAtom = atom(
             closedIds,
             retainedIds,
         );
-        if (pendingRemovalResult.ids === null) {
-            reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
-            return false;
-        }
         const pendingRemovalIds = pendingRemovalResult.ids;
         const puzzleRemovals = reconcileLegacyPuzzleRemovals(
             previous.legacyPuzzleRemovalKeys ?? [],
@@ -137,19 +133,24 @@ const commitWorkspaceAtom = atom(
                 .map((tab) => tab.value),
             workspace.tabs,
         );
-        if (puzzleRemovals === null) {
-            reportPersistError(pendingPuzzleRemovalCapacityError());
-            return false;
-        }
         const canonical = {
             ...workspace,
             ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),
             treeOwnershipPendingRemovalIds:
                 pendingRemovalIds.length === 0 ? undefined : pendingRemovalIds,
-            legacyPuzzleRemovalKeys: puzzleRemovals.length === 0 ? undefined : puzzleRemovals,
+            legacyPuzzleRemovalKeys:
+                puzzleRemovals.keys.length === 0 ? undefined : puzzleRemovals.keys,
         };
         const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
         if (!saved) return false;
+        if (pendingRemovalResult.droppedIds.length > 0)
+            reportPersistError(
+                pendingTreeRemovalCapacityError(pendingRemovalResult.droppedIds.length),
+            );
+        if (puzzleRemovals.droppedKeys.length > 0)
+            reportPersistError(
+                pendingPuzzleRemovalCapacityError(puzzleRemovals.droppedKeys.length),
+            );
         set(committedWorkspaceAtom, saved);
         sweepLegacyPuzzleKeys(saved);
         onSaved?.(saved);

@@ -382,6 +382,8 @@
     "Common.Open": "Адкрыць",
     "Common.OpenFolder": "Адкрыць тэчку ў правадыру файлаў",
     "Common.OpenGame": "Адкрыць партыю",
+    "Common.PendingPuzzleRemovalOverflow": "ChessFable не ўдалося завяршыць выдаленне ўсіх старых сеансаў рашэння задач. Найноўшыя запыты на выдаленне захаваны. Выйдзіце з ChessFable, каб выдаліць астатнія сеансы рашэння задач.",
+    "Common.PendingTreeRemovalOverflow": "ChessFable не ўдалося завяршыць выдаленне ўсіх закрытых дошак. Найноўшыя запыты на выдаленне захаваны. Выйдзіце з ChessFable, каб выдаліць астатнія захаваныя партыі.",
     "Common.PGNFile": "Файл PGN",
     "Common.PGNGame": "Гульня PGN",
     "Common.PickDate": "Выберыце дату",
