@@ -8045,7 +8045,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Reuse the existing bounded exact-key cleanup intents for every proven retired logical owner, including UUIDs. Save authority before retirement and replay it even while global tree ownership remains uncertain. Retained owners and unidentified values remain protected.
 * **Rejected:** Relying solely on UUID orphan discovery during uncertain ownership, widening unknown-key sweeping, or adding a second cleanup registry or policy switch.
 * **Reason:** Cumulative review D2 traces a background UUID puzzle tab closed under treeOwnershipUncertain. The existing UUID exclusion drops its exact authority while the global uncertainty guard correctly blocks discovery across reload. This new evidence extends d-20261015-24 without reversing its bounded authority and capacity-refusal contract. One canonical reconciliation route avoids a second conditional policy. Refused cleanup can consume the existing 100-intent capacity, overflow preserves the previous owner. Reversal requires equivalent cold-document removal/refusal proof, or retirement of legacy migration and all outstanding intents. The existing legacy-field removal path remains.
-* **Decided by:** Codex, source trace and cumulative review D2 under full auto · **Superseded-by:** -
+* **Decided by:** Codex, source trace and cumulative review D2 under full auto · **Superseded-by:** d-20261027-28
 
 ### d-20261015-28 — Where should puzzle opening assembly share move semantics?
 
@@ -8055,7 +8055,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Retaining the component's manual SAN/FEN/node/cursor construction, creating another move implementation, or introducing a new store or service solely for candidate construction.
 * **Reason:** Cumulative minimalism M1 identifies the same move-to-tree concept in Puzzles.tsx and the canonical makeMove mutation. The existing mutation already owns legal move, halfmove, cursor, variation and result semantics. Sharing it removes the duplicated component construction without expanding the module layout. Reversal requires equivalent shared semantics and real admission/store proof for nonstandard starts, move variants, header preservation, refusal and sound order.
 * **Decided by:** Codex, traced existing draft mutation and cumulative review M1 under full auto · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"d4cbaf4610da5de15fd03c351bd24e3276f798bc8f197abffdf6aa2a49140445","input_sha256":"34f6e644ae0950b6499841f00dffa131d33736c7dcde9141c9975c2db17c8b7a","kind":"mutation-receipt","operation":"ec9ac55dce5b96dbda71d3a50a5d16dbe02f731454d53d230e9cec975fd46a5f","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-27","d-20261015-28"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"a1283be1ee22f4bf47343b05af2accf0c2bcbc61dda43b1b1f62be4d993fb207","input_sha256":"34f6e644ae0950b6499841f00dffa131d33736c7dcde9141c9975c2db17c8b7a","kind":"mutation-receipt","operation":"ec9ac55dce5b96dbda71d3a50a5d16dbe02f731454d53d230e9cec975fd46a5f","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-27","d-20261015-28"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261015-29 — Which copy should a puzzle-history storage limit display?
 
