@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createStore, Provider } from "jotai";
 import { tabsAtom, updateTabById } from "@/state/atoms";
-import { denyStorageRemoval } from "@/utils/tests/storageMocks";
+import { denyStorageRemoval, refuseStorageReads } from "@/utils/tests/storageMocks";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
@@ -431,13 +431,7 @@ test("a refused initialization precedes ID allocation, seed and caller-supplied 
     const { tabs, repository } = await importFreshAdmission();
     const { WorkspaceReadError } = await import("@/state/workspace");
     const failure = new DOMException("workspace read refused", "SecurityError");
-    const originalGetItem = Storage.prototype.getItem;
-    const refusal = vi
-        .spyOn(Storage.prototype, "getItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (this === sessionStorage && key === WORKSPACE_STORAGE_KEY) throw failure;
-            return originalGetItem.call(this, key);
-        });
+    const refusal = refuseStorageReads([WORKSPACE_STORAGE_KEY], failure);
     const allocate = vi.spyOn(crypto, "randomUUID");
     const seed = vi.fn((id: string) => repository.seed(id, defaultTree()));
     const setTabs = vi.fn(() => true);

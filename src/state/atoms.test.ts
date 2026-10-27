@@ -204,13 +204,7 @@ test("failed initialization propagates without caching a successful default", as
     const { atoms, load } = await importAtoms();
     const { WorkspaceReadError } = await import("./workspace");
     const failure = new DOMException("workspace read refused", "SecurityError");
-    const originalGetItem = Storage.prototype.getItem;
-    const refusal = vi
-        .spyOn(Storage.prototype, "getItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (this === sessionStorage && key === "workspace") throw failure;
-            return originalGetItem.call(this, key);
-        });
+    const refusal = refuseStorageReads(["workspace"], failure);
 
     expect(() => atoms.initializeWorkspace()).toThrow(WorkspaceReadError);
     expect(() => atoms.initializeWorkspace()).toThrow(expect.objectContaining({ cause: failure }));
