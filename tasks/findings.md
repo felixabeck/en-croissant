@@ -12820,7 +12820,7 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 
 ### No e2e journey renders the personal player card, so its narrow-width wrapping is unverified
 
-* **ID:** f-20260927-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260927-10 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/home/PersonalCard.tsx:77` (player-name `Text`, `wrap-anywhere` since `0e9f3713`), rendered by `src/components/home/Databases.tsx:248` only after `tauri.getPlayersGameInfo` has streamed a player's statistics.
 * **Defect:** during the f-20260829-02 cumulative review, review-root-cause found that a long unbroken player name in the personal card could be cut by the card's `overflow: hidden` Paper at 320px / 200% — the same chain as the account names that fix closed — and `0e9f3713` gave the name the shared `wrap-anywhere` class. review-tests (repair re-check, blocker 99) then noted that no e2e test ever reaches `PersonalPlayerCard`: the Accounts journeys use sessions without a personal database, so reverting the wrap would leave every clipping assertion green.
 * **Fix:** an e2e journey in the 320px / 200% `async-errors` project (German) that mocks a session with a personal database and the `get_players_game_info` progress stream, renders the personal card with a long unbroken player name, asserts the name visible, and runs `assertNoHorizontalOverflow` plus `assertPageNotClipped`.
@@ -12833,7 +12833,20 @@ Entry revalidation, 2026-10-27: build to inline.
 The filed open question was how to mock the streamed getPlayersGameInfo progress protocol without a second IPC mock. That question is settled by d-20261027-18. The wrap-anywhere name is the Text branch in PersonalCard, reached only from PlayerCard, which awaits the command result. databaseLayoutCommands already supplies that result. The home summary passes setName and renders a Select, so an Accounts journey would not go red if the class were removed.
 
 What still holds: no journey uses an unbroken name, so removing wrap-anywhere from the name Text leaves the existing spaced-name database-files journey green. The remaining work is one async-errors journey on the database player route.
-<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"1b552372cd61d2f17ba6e90e704aee7438f5fea52aae4aea3966fb3f1e228848","header_sha256":"3f471b5e218256ddb43d5c3f04af970f779c033906acbb96904b6d65704b48be","header_status":"open","input_sha256":"e9abbc8d57a6e3c9b60616e0693892508d9cb7155a8100eefe73d1ed5d4d1b88","kind":"mutation-receipt","operation":"a0e8eeab15cf859f0bdf5649383e29cc3dda8f32ea02491c7a35a9f328773cd9","options":{"headers":{"Entry":"inline"},"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
+<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"1b552372cd61d2f17ba6e90e704aee7438f5fea52aae4aea3966fb3f1e228848","header_sha256":"1e9987a17c3abbcf4103f026d76953aff1cee35fff155dd0d2ba40cf09b88a22","header_status":"handled","input_sha256":"e9abbc8d57a6e3c9b60616e0693892508d9cb7155a8100eefe73d1ed5d4d1b88","kind":"mutation-receipt","operation":"a0e8eeab15cf859f0bdf5649383e29cc3dda8f32ea02491c7a35a9f328773cd9","options":{"headers":{"Entry":"inline"},"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
+
+2026-10-27: Handled by closing the finding. No product change and no new test. d-20261027-21 governs. d-20261027-18 and d-20261027-20 are superseded by it. The class stays on the name Text.
+
+The entry note above said the remaining work was one async-errors journey with an unbroken name. That sentence is withdrawn. The journey was written, measured, and deleted. It is not in the tree.
+
+The name Text renders only when setName is absent (PersonalCard.tsx). Databases.tsx always passes setName. PlayerCard.tsx is the call site, and it awaits getPlayersGameInfo. The compact database preview does not clip that name. GridLayout.module.css sets overflow: auto !important on `.previewContent > .mantine-Paper-root:not(.gameCard)` (lines 87-88). Under `.view[data-compact]`, the same preview gives that paper min-width: 20rem (lines 202-207) and the view itself scrolls (line 148). d-20260831-16 accepts scroll.
+
+Measured 2026-10-27 in the pinned container, async-errors project, viewport 320 by 720, font 200, locale de-DE, on `/databases/game-opening-db`, Spieler tab, with wrap-anywhere removed and a 48-character unbroken name: one line, overflow-wrap normal, word-break normal, white-space normal, text width 1153px, paper clientWidth 636, scrollWidth 1185, computed overflow auto. assertNoHorizontalOverflow and assertPageNotClipped both stayed green. The class was then restored with git checkout. A green test that stays green without the class is not the proof this finding asked for, so the journey was not shipped. Narrowing the compact preview so the check would go red was rejected: that min-width is outside this finding, and scroll stays accepted.
+
+The set-header note's description of the call site and of databaseLayoutCommands still matches the source. What does not stand is its claim that an unbroken-name journey is still required.
+
+Reversal path: if that preview stops scrolling and clips the name, reopen the anchor. Reversal of the decision is a new decision, not an edit of d-20261027-21.
+<!-- ledger-meta {"command":"close","effect_lines":11,"effect_sha256":"e78d57c1283727df5b92c4b2fd3e3cf31d885d297b408ff09755611a7c0a111e","header_sha256":"1e9987a17c3abbcf4103f026d76953aff1cee35fff155dd0d2ba40cf09b88a22","header_status":"handled","input_sha256":"13a0e9826d890fa544adcc80322dbe92f30620cfaedcdf1be764da10a05a8d1e","kind":"mutation-receipt","operation":"8256ed4c3955345ebad7b705f74c0005d7af88140798d0ddf6b078d9352a5200","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
 
 ### Seven test files each carry their own inert ResizeObserver stub
 
