@@ -1575,7 +1575,98 @@ async function doubleClickAt(session, x, y) {
   });
 }
 
-async function filesRowCoordinates(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS) {
+async function reachableStableCoordinates(
+  session,
+  label,
+  script,
+  args = [],
+  { timeoutMs = FILES_PROBE_TIMEOUT_MS, beforeProbe, leftInset } = {},
+) {
+  let previous;
+  let stableSince;
+  return waitFor(
+    label,
+    async () => {
+      await beforeProbe?.();
+      const point = await session.execute(
+        `
+    const element = (${script});
+    if (!element) return false;
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right);
+    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    let settleMs = 0;
+    const appearance = [];
+    const milliseconds = value => parseFloat(value) * (value.trim().endsWith('ms') ? 1 : 1000);
+    for (let node = element; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) return false;
+      if (node.getAnimations?.().some(animation => animation.pending || animation.playState === 'running')) return false;
+      const durations = style.transitionDuration.split(',').map(milliseconds);
+      const delays = style.transitionDelay.split(',').map(milliseconds);
+      for (let i = 0; i < Math.max(durations.length, delays.length); i++) {
+        settleMs = Math.max(settleMs, durations[i % durations.length] + delays[i % delays.length]);
+      }
+      appearance.push([style.transform, style.opacity]);
+      if (node === element) continue;
+      const bounds = node.getBoundingClientRect();
+      // Rows may extend behind another pane. Use only their reachable scrolling viewport.
+      if (style.overflowX !== 'visible') {
+        left = Math.max(left, bounds.left + node.clientLeft);
+        right = Math.min(right, bounds.left + node.clientLeft + node.clientWidth);
+      }
+      if (style.overflowY !== 'visible') {
+        top = Math.max(top, bounds.top + node.clientTop);
+        bottom = Math.min(bottom, bounds.top + node.clientTop + node.clientHeight);
+      }
+    }
+    if (right <= left || bottom <= top) return false;
+    const x = Math.round(left + Math.min(${leftInset ?? "Infinity"}, (right - left) / 2));
+    const y = Math.round((top + bottom) / 2);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || (hit !== element && !element.contains(hit))) return false;
+    return { x, y, disabled: element.disabled, selected: element.getAttribute('aria-selected'),
+      element, settleMs, geometry: [box.x, box.y, box.width, box.height, left, right, top, bottom, appearance] };
+  `,
+        args,
+      );
+      const now = Date.now();
+      const stable =
+        point &&
+        previous &&
+        JSON.stringify(point.element) === JSON.stringify(previous.element) &&
+        JSON.stringify(point.geometry) === JSON.stringify(previous.geometry);
+      if (!stable) stableSince = now;
+      previous = point;
+      // Mantine schedules its enter transition over animation frames. Equal early rectangles
+      // alone can be a pre-enter plateau. Require unchanged geometry/appearance for the actual
+      // ancestor transition budget as well as no pending/running animation, within this deadline.
+      return stable && now - stableSince >= point.settleMs ? point : false;
+    },
+    { timeoutMs },
+  );
+}
+
+async function filesRowCoordinates(
+  session,
+  name,
+  timeoutMs = FILES_PROBE_TIMEOUT_MS,
+  stable = false,
+) {
+  if (stable)
+    return reachableStableCoordinates(
+      session,
+      `${name} stable Files row`,
+      `document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']')`,
+      [name],
+      {
+        timeoutMs,
+        leftInset: 60,
+        beforeProbe: () => showLibraryOverview(session).catch(() => false),
+      },
+    );
   return waitFor(
     `${name} Files row`,
     async () => {
@@ -2237,51 +2328,8 @@ async function verifyGameOpening(session, ownedRoot) {
       );
     return result.value;
   };
-  const coordinates = async (script, args = []) => {
-    let previous;
-    return waitFor(
-      "game-opening pointer target",
-      async () => {
-        const point = await session.execute(
-          `
-    const element = (${script});
-    if (!element) return false;
-    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    const box = element.getBoundingClientRect();
-    if (!box.width || !box.height) return false;
-    let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right);
-    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
-    // A table row can be wider than its scrolling viewport. Its unbounded centre can land in
-    // the preview pane, so pointer actions must use the part the user can actually reach.
-    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-      const bounds = parent.getBoundingClientRect();
-      const style = getComputedStyle(parent);
-      if (style.overflowX !== 'visible') {
-        left = Math.max(left, bounds.left + parent.clientLeft);
-        right = Math.min(right, bounds.left + parent.clientLeft + parent.clientWidth);
-      }
-      if (style.overflowY !== 'visible') {
-        top = Math.max(top, bounds.top + parent.clientTop);
-        bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight);
-      }
-    }
-    if (right <= left || bottom <= top) return false;
-    const x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2);
-    const hit = document.elementFromPoint(x, y);
-    if (!hit || (hit !== element && !element.contains(hit))) return false;
-    return { x, y, disabled: element.disabled, selected: element.getAttribute('aria-selected') };
-  `,
-          args,
-        );
-        // The resizable pane settles after its element measurement. A hit-test in a single
-        // frame can precede that reflow, so require the reachable point to stay put.
-        const stable = point && previous && point.x === previous.x && point.y === previous.y;
-        previous = point;
-        return stable ? point : false;
-      },
-      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-    );
-  };
+  const coordinates = (script, args = []) =>
+    reachableStableCoordinates(session, "game-opening pointer target", script, args);
   const button = (text) =>
     coordinates(
       `[...document.querySelectorAll('button')].find(node => node.textContent.trim() === arguments[0])`,
@@ -4686,26 +4734,13 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     }
   };
   const clickMetadataControl = async (label, lookup, args = []) => {
-    const coordinates = await waitFor(
-      label,
-      () =>
-        session.execute(
-          `
-        const control = ${lookup};
-        if (!control) return false;
-        control.scrollIntoView({ block: 'nearest' });
-        const box = control.getBoundingClientRect();
-        return box.width > 0 && box.height > 0 && !control.disabled && {
-          x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2)
-        };`,
-          args,
-        ),
-      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-    );
+    const coordinates = await reachableStableCoordinates(session, label, lookup, args);
+    if (coordinates.disabled) throw new Error(`${label} is disabled`);
     await clickAt(session, coordinates.x, coordinates.y);
+    return coordinates.element;
   };
   const chooseRepertoire = async (inDialog) => {
-    await clickMetadataControl(
+    const control = await clickMetadataControl(
       inDialog ? "the edit dialog's File type Select" : "the Files page's File type filter",
       `(() => {
         const label = [...document.querySelectorAll('label')].find(label =>
@@ -4716,9 +4751,28 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       [inDialog],
     );
     await clickMetadataControl(
-      "the Repertoire option",
-      `[...document.querySelectorAll('[role="option"]')].find(option =>
-        option.textContent.trim() === 'Repertoire' && option.getBoundingClientRect().height > 0)`,
+      "the opened File type control's Repertoire option",
+      `(() => {
+        const control = arguments[0];
+        if (!control.isConnected) return null;
+        const listboxId = control.getAttribute('aria-controls');
+        const listbox = listboxId && document.getElementById(listboxId);
+        if (listbox?.getAttribute('role') !== 'listbox') return null;
+        return [...listbox.querySelectorAll('[role="option"]')].find(option =>
+          option.textContent.trim() === 'Repertoire');
+      })()`,
+      [control],
+    );
+    await waitFor(
+      "the intended File type control to accept Repertoire before continuing",
+      () =>
+        session.execute(
+          `const control = arguments[0];
+           if (!control.isConnected) throw new Error('the intended File type control disconnected');
+           return control.value === 'Repertoire';`,
+          [control],
+        ),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
     );
   };
   let metadataSubmitted = false;
@@ -4729,7 +4783,12 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       .sort();
     if (existsSync(filesMetadataInfoPath))
       throw new Error("the metadata fixture already has a sidecar");
-    const row = await filesRowCoordinates(session, filesMetadataRowName);
+    const row = await filesRowCoordinates(
+      session,
+      filesMetadataRowName,
+      FILES_PROBE_TIMEOUT_MS,
+      true,
+    );
     await clickAt(session, row.x, row.y);
     await clickMetadataControl(
       "the FileCard Edit metadata control",
