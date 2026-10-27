@@ -16,7 +16,7 @@ import { useTranslation } from "react-i18next";
 import type { CategoricalChartFunc } from "recharts/types/chart/types";
 import { useStore } from "zustand";
 import { reportTypeAtom } from "@/state/atoms";
-import { ANNOTATION_INFO, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
+import { ANNOTATION_INFO, formatNagGlyphs, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { positionFromFen } from "@/utils/chessops";
 import { skipWhile, takeWhile } from "@/utils/misc";
 import { getGamePhases } from "@/utils/phase";
@@ -104,7 +104,7 @@ function EvalChart(props: EvalChartProps) {
           return t("Board.Analysis.NotAnalysed");
         };
         return {
-          name: `${Math.ceil(node.halfMoves / 2)}.${pos?.turn === "black" ? "" : ".."} ${node.san}${annotations.join("")}`,
+          name: `${Math.ceil(node.halfMoves / 2)}.${pos?.turn === "black" ? "" : ".."} ${node.san}${formatNagGlyphs(annotations)}`,
           cpText: node.score
             ? `${t("Board.Analysis.Advantage")}: ${formatScore(node.score.value)}`
             : terminalText(),

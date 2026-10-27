@@ -2,7 +2,13 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Token } from "@/bindings";
-import { ANNOTATION_INFO, type Annotation, NAG_INFO, nagGlyphs } from "../annotation";
+import {
+    ANNOTATION_INFO,
+    type Annotation,
+    NAG_INFO,
+    formatNagGlyphs,
+    nagGlyphs,
+} from "../annotation";
 import {
     getLastMainlinePosition,
     getGameStats,
@@ -368,6 +374,18 @@ test.each([
     [[220, 1], ["!"]],
 ])("NAG display projection %j yields %j", (nags, glyphs) => {
     expect(nagGlyphs(nags as number[])).toEqual(glyphs);
+});
+
+test.each([
+    [[], ""],
+    [["!"], "!"],
+    [["!?"], "!?"],
+    [["!", "?"], "! ?"],
+    [["!", "!!"], "! !!"],
+    [["?", "??"], "? ??"],
+    [["=", "∞"], "= ∞"],
+])("formatNagGlyphs %j is %j", (glyphs, text) => {
+    expect(formatNagGlyphs(glyphs as Annotation[])).toBe(text);
 });
 
 test("game stats count every basic NAG including duplicates", () => {

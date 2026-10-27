@@ -132,6 +132,11 @@ test.each([
   { nags: [220], text: "e4" },
   { nags: [220, 1], text: "e4!" },
   { nags: [7, 8], text: "e4□" },
+  { nags: [1, 2], text: "e4! ?" },
+  { nags: [5], text: "e4!?" },
+  { nags: [1, 3], text: "e4! !!" },
+  { nags: [2, 4], text: "e4? ??" },
+  { nags: [10, 13], text: "e4= ∞" },
 ])("GameNotation renders move-cell glyph text for NAGs $nags", async ({ nags, text }) => {
   await render(<GameNotation />, nags);
   const cell = host.querySelector('button[class*="cell"]');
@@ -141,6 +146,9 @@ test.each([
 test.each([
   { nags: [220], label: "1. e4", color: "gray" },
   { nags: [220, 1], label: "1. e4!", color: "teal" },
+  { nags: [1, 2], label: "1. e4! ?", color: "teal" },
+  { nags: [5], label: "1. e4!?", color: "lime" },
+  { nags: [10, 13], label: "1. e4= ∞", color: "gray" },
 ])(
   "EvalChart renders projected labels and primary colour for NAGs $nags",
   async ({ nags, label, color }) => {
@@ -150,7 +158,7 @@ test.each([
     expect(point.querySelector('[class*="tooltipTitle"]')?.textContent).toBe(label);
     expect(point.textContent).not.toMatch(/220|\b1,/);
     expect(point.querySelector("circle")?.getAttribute("fill") ?? null).toBe(
-      color === "teal" ? "var(--mantine-color-teal-7)" : null,
+      color === "gray" ? null : `var(--mantine-color-${color}-7)`,
     );
   },
 );

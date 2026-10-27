@@ -96,6 +96,13 @@ export function nagGlyphs(nags: readonly number[]): Annotation[] {
     return [...new Set(glyphs)];
 }
 
+// A space so two glyphs cannot spell another NAG (`!` + `?` is `!?`, `=` + `∞` is `=∞`).
+export const NAG_GLYPH_SEPARATOR = " ";
+
+export function formatNagGlyphs(glyphs: readonly Annotation[]): string {
+    return glyphs.join(NAG_GLYPH_SEPARATOR);
+}
+
 type AnnotationInfo = {
     group?: string;
     name: string;
