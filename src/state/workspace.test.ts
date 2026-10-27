@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import i18n from "@/i18n";
 import enUSCatalogue from "@/translation/en-US.json";
-import { denyStorageRemoval } from "@/utils/tests/storageMocks";
+import { denyStorageRemoval, refuseStorageReads } from "@/utils/tests/storageMocks";
 import { defaultTree } from "@/utils/treeReducer";
 import { getTabTreeKey, type Tab } from "./workspaceTypes";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
@@ -44,17 +44,6 @@ function loadStoredWorkspace() {
     return loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
 }
 
-function refuseStorageRead(
-    refusedKey: string,
-    failure = new DOMException("read refused", "SecurityError"),
-) {
-    const read = Storage.prototype.getItem;
-    return vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
-        if (this === sessionStorage && key === refusedKey) throw failure;
-        return read.call(this, key);
-    });
-}
-
 function expectLegacyContentRefusal(key: "tabs" | "activeTab") {
     sessionStorage.clear();
     const tabs = serializeStorageValue([legacyTab]);
@@ -62,7 +51,7 @@ function expectLegacyContentRefusal(key: "tabs" | "activeTab") {
     sessionStorage.setItem("tabs", tabs);
     sessionStorage.setItem("activeTab", active);
     const failure = new DOMException("legacy content refused", "SecurityError");
-    const refusal = refuseStorageRead(key, failure);
+    const refusal = refuseStorageReads([key], failure);
     const write = vi.spyOn(Storage.prototype, "setItem");
     const remove = vi.spyOn(Storage.prototype, "removeItem");
 
@@ -94,7 +83,7 @@ test.each(["tabs", "activeTab"])(
         // With tabs absent, the activeTab presence check is reached independently.
         const legacyKey = key === "tabs" ? "tabs" : "activeTab";
         sessionStorage.setItem(legacyKey, "legacy bytes");
-        const refusal = refuseStorageRead(key);
+        const refusal = refuseStorageReads([key]);
         const remove = vi.spyOn(Storage.prototype, "removeItem");
 
         expect(loadStoredWorkspace()).toEqual(workspace);
@@ -119,7 +108,7 @@ test("one unreadable pending id is reported once, retained and excluded while ot
             treeOwnershipPendingRemovalIds: [unreadable, readable],
         }),
     );
-    const refusal = refuseStorageRead(unreadable);
+    const refusal = refuseStorageReads([unreadable]);
 
     const loaded = loadStoredWorkspace();
 
@@ -159,7 +148,7 @@ test("a fresh ownership snapshot excludes pending ids before their single refuse
             treeOwnershipPendingRemovalIds: [unreadable],
         }),
     );
-    const refusal = refuseStorageRead(unreadable);
+    const refusal = refuseStorageReads([unreadable]);
 
     const loaded = loadStoredWorkspace();
 

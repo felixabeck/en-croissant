@@ -33,6 +33,18 @@ function logStartupDiagnostic(
   );
 }
 
+async function closeSplashscreenSafely(): Promise<void> {
+  try {
+    await tauri.closeSplashscreen();
+  } catch {
+    await logStartupDiagnostic(
+      "closeSplashscreen",
+      WINDOW_REVEAL_FAILURE,
+      "Startup window reveal failed",
+    );
+  }
+}
+
 /** Do not mount feature routes until credential-bearing legacy storage has been scrubbed and
  * native account metadata has reconciled into public renderer sessions. */
 export function startApplication(): Promise<void> {
@@ -60,15 +72,7 @@ export function startApplication(): Promise<void> {
           <WorkspaceReadFailure />
         </I18nextProvider>,
       );
-      try {
-        await tauri.closeSplashscreen();
-      } catch {
-        await logStartupDiagnostic(
-          "closeSplashscreen",
-          WINDOW_REVEAL_FAILURE,
-          "Startup window reveal failed",
-        );
-      }
+      await closeSplashscreenSafely();
       return;
     }
     try {
@@ -111,15 +115,7 @@ export function startApplication(): Promise<void> {
           />
         </I18nextProvider>,
       );
-      try {
-        await tauri.closeSplashscreen();
-      } catch {
-        await logStartupDiagnostic(
-          "closeSplashscreen",
-          WINDOW_REVEAL_FAILURE,
-          "Startup window reveal failed",
-        );
-      }
+      await closeSplashscreenSafely();
       // Only the class and public summary may leave this credential-handling boundary.
       const diagnostic = `SessionSanitizationError: legacySignInFound=${legacySignInFound}, allRevoked=${allRevoked}, unresolvedReasons=${unresolvedReasons.join(",")}`;
       await logStartupDiagnostic(

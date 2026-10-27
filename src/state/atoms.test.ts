@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
 import { defaultTree } from "@/utils/treeReducer";
-import { denyStorageRemoval } from "@/utils/tests/storageMocks";
+import { denyStorageRemoval, refuseStorageReads } from "@/utils/tests/storageMocks";
 import "./atoms";
 
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
@@ -229,17 +229,6 @@ test("failed initialization propagates without caching a successful default", as
     expect(load).toHaveBeenCalledTimes(4);
 });
 
-function refuseReads(
-    ids: readonly string[],
-    failure = new DOMException("read refused", "SecurityError"),
-) {
-    const read = Storage.prototype.getItem;
-    return vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
-        if (this === sessionStorage && ids.includes(key)) throw failure;
-        return read.call(this, key);
-    });
-}
-
 test("a fresh initializer refuses the envelope without changing pending bytes and replays only after a successful read", async () => {
     const { workspace } = seedWorkspace();
     const pending = crypto.randomUUID();
@@ -251,7 +240,7 @@ test("a fresh initializer refuses the envelope without changing pending bytes an
     sessionStorage.setItem("workspace", bytes);
     sessionStorage.setItem(pending, tree);
     const failure = new DOMException("workspace read refused", "SecurityError");
-    const refusal = refuseReads(["workspace"], failure);
+    const refusal = refuseStorageReads(["workspace"], failure);
     vi.resetModules();
     const { atoms, load } = await importAtoms();
     const { WorkspaceReadError } = await import("./workspace");
@@ -300,7 +289,7 @@ test("a fresh initializer retains an unreadable pending id, reports once and cac
             treeOwnershipPendingRemovalIds: [unreadable, readable],
         }),
     );
-    const refusal = refuseReads([unreadable]);
+    const refusal = refuseStorageReads([unreadable]);
     vi.resetModules();
     const { atoms, load } = await importAtoms();
 
@@ -345,7 +334,7 @@ async function prepareCloseWithUnreadablePending(priorCount: number, unreadableC
     deny.mockRestore();
     persistError.reportPersistError.mockClear();
     const bytes = sessionStorage.getItem("workspace");
-    const refusal = refuseReads(unreadable);
+    const refusal = refuseStorageReads(unreadable);
     const store = createStore();
     return { workspace, closed, pending, unreadable, tree, atoms, bytes, refusal, store };
 }
