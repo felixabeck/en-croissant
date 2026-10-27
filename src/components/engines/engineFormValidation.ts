@@ -1,5 +1,4 @@
 export type EngineNameEntry = {
-    id: string;
     name: string;
 };
 
@@ -20,12 +19,11 @@ export type EngineFormValidation = {
 export function createEngineFormValidation(
     engines: readonly EngineNameEntry[],
     t: EngineValidationTranslator,
-    editedEngineId?: string,
 ): EngineFormValidation {
     return {
         name: (value) => {
             if (!value) return t("Common.RequireName");
-            if (engines.some((engine) => engine.name === value && engine.id !== editedEngineId)) {
+            if (engines.some((engine) => engine.name === value)) {
                 return t("Common.NameAlreadyUsed");
             }
             return undefined;
