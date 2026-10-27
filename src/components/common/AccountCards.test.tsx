@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionsAtom } from "@/state/atoms";
 import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
 import type { ManagedDatabaseInfo } from "@/utils/db";
+import type { Session } from "@/utils/session";
 
 const mocks = vi.hoisted(() => ({
   removeLichessAccount: vi.fn(),
   notificationsShow: vi.fn(),
+  notifyUnlessCancelled: vi.fn(),
   accountCard: vi.fn(),
   translate: vi.fn((key: string, options?: { reason?: string }) =>
     options?.reason ? `${key} ${options.reason}` : key,
@@ -20,6 +22,9 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationsShow },
+}));
+vi.mock("../files/notifyError", () => ({
+  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: mocks.translate }) }));
 vi.mock("@/utils/chess.com/api", () => ({ getChessComAccount: vi.fn(), getStats: vi.fn() }));
@@ -124,6 +129,14 @@ async function logout() {
   });
 }
 
+async function removeGroup(name: string) {
+  await act(async () => {
+    const button = playerGroup(name).querySelector('button[aria-label="Accounts.Remove"]');
+    if (!button) throw new Error(`Remove button for ${name} not found`);
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -206,7 +219,325 @@ describe("Player session grouping", () => {
   });
 });
 
+describe("Player group account removal", () => {
+  test("revokes the stored handle before dropping the session from the atom and storage", async () => {
+    mocks.removeLichessAccount.mockImplementation(async (handle) => {
+      expect(handle).toBe("native-handle");
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([session]);
+      return {
+        state: "removed",
+        revocation_pending: false,
+        revocation_outcome: "revoked",
+        durability_uncertain: false,
+      };
+    });
+    await renderCards();
+
+    await removeGroup("Player");
+
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
+    expect(mocks.notificationsShow).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  });
+
+  test("drops a handle reported not found without a warning", async () => {
+    mocks.removeLichessAccount.mockResolvedValue({ state: "not_found" });
+    await renderCards();
+
+    await removeGroup("Player");
+
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
+    expect(mocks.notificationsShow).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [true, false, ["Home.Accounts.RevocationPending Lichess.Revocation.Unreachable"]],
+    [false, true, ["Home.Accounts.RemoveDurabilityUncertain"]],
+    [
+      true,
+      true,
+      [
+        "Home.Accounts.RevocationPending Lichess.Revocation.Unreachable",
+        "Home.Accounts.RemoveDurabilityUncertain",
+      ],
+    ],
+  ])("uses card warnings for pending=%s and uncertain=%s", async (pending, uncertain, messages) => {
+    mocks.removeLichessAccount.mockResolvedValue({
+      state: "removed",
+      revocation_pending: pending,
+      revocation_outcome: pending ? "unreachable" : "revoked",
+      durability_uncertain: uncertain,
+    });
+    await renderCards();
+
+    await removeGroup("Player");
+
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
+    expect(mocks.notificationsShow.mock.calls.map(([warning]) => warning)).toEqual(
+      messages.map((message) => ({ message, color: "orange" })),
+    );
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  });
+
+  test("keeps a failed member, reports once, and continues through Chess.com and Lichess siblings", async () => {
+    const failure = new Error("native unavailable");
+    const chessCom = {
+      player: "Player",
+      updatedAt: 1,
+      chessCom: { username: "chess-sibling", stats: {} },
+    };
+    const later = {
+      ...session,
+      lichess: { ...session.lichess, username: "later", handle: "later-handle" },
+    };
+    getDefaultStore().set(sessionsAtom, [session, chessCom, later]);
+    const observedCalls: Array<{
+      handle: string;
+      atomSessions: Session[];
+      storedSessions: unknown | null;
+    }> = [];
+    mocks.removeLichessAccount.mockImplementation(async (handle) => {
+      observedCalls.push({
+        handle,
+        atomSessions: getDefaultStore().get(sessionsAtom),
+        storedSessions: decodeCompressedOrJson(localStorage.getItem("sessions")),
+      });
+      if (handle === "native-handle") {
+        throw failure;
+      }
+      return {
+        state: "removed",
+        revocation_pending: false,
+        revocation_outcome: "revoked",
+        durability_uncertain: false,
+      };
+    });
+    await renderCards();
+
+    await removeGroup("Player");
+
+    expect(mocks.removeLichessAccount.mock.calls).toEqual([["native-handle"], ["later-handle"]]);
+    expect(observedCalls).toEqual([
+      {
+        handle: "native-handle",
+        atomSessions: [session, chessCom, later],
+        storedSessions: [session, chessCom, later],
+      },
+      {
+        handle: "later-handle",
+        atomSessions: [session, later],
+        storedSessions: [session, later],
+      },
+    ]);
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([session]);
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
+    expect(mocks.notificationsShow).not.toHaveBeenCalled();
+  });
+
+  test("preserves another group's matching username and never revokes its handle", async () => {
+    const authenticated = collidingSessions.map((member, i) => ({
+      ...member,
+      lichess: { ...member.lichess, handle: `handle-${i}` },
+    }));
+    getDefaultStore().set(sessionsAtom, authenticated);
+    mocks.removeLichessAccount.mockResolvedValue({ state: "not_found" });
+    await renderCards();
+
+    await removeGroup("bob");
+
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("handle-0");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([authenticated[1]]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([authenticated[1]]);
+  });
+
+  test("preserves a replacement handle published while native removal is pending", async () => {
+    const removal = Promise.withResolvers<{ state: "not_found" }>();
+    mocks.removeLichessAccount.mockReturnValue(removal.promise);
+    await renderCards();
+
+    await removeGroup("Player");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
+    const replacement = {
+      ...session,
+      lichess: { ...session.lichess, handle: "replacement-handle" },
+    };
+    await act(async () => {
+      getDefaultStore().set(sessionsAtom, [replacement]);
+      removal.resolve({ state: "not_found" });
+    });
+
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([replacement]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([replacement]);
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+  });
+
+  test("revokes a later member's original handle and preserves its replacement", async () => {
+    const later = {
+      ...session,
+      lichess: { ...session.lichess, username: "later", handle: "later-handle" },
+    };
+    getDefaultStore().set(sessionsAtom, [session, later]);
+    const removal = Promise.withResolvers<{ state: "not_found" }>();
+    mocks.removeLichessAccount
+      .mockReturnValueOnce(removal.promise)
+      .mockResolvedValue({ state: "not_found" });
+    await renderCards();
+
+    await removeGroup("Player");
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    const replacement = {
+      ...later,
+      lichess: { ...later.lichess, handle: "replacement-handle" },
+    };
+    await act(async () => {
+      getDefaultStore().set(sessionsAtom, [session, replacement]);
+      removal.resolve({ state: "not_found" });
+    });
+
+    expect(mocks.removeLichessAccount.mock.calls).toEqual([["native-handle"], ["later-handle"]]);
+    expect(mocks.removeLichessAccount).not.toHaveBeenCalledWith("replacement-handle");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([replacement]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([replacement]);
+  });
+
+  test("drops the original handle even if its group is renamed during native removal", async () => {
+    const removal = Promise.withResolvers<{ state: "not_found" }>();
+    mocks.removeLichessAccount.mockReturnValue(removal.promise);
+    await renderCards();
+
+    await removeGroup("Player");
+    await act(async () => {
+      getDefaultStore().set(sessionsAtom, (current) =>
+        current.map((member) => ({ ...member, player: "Renamed" })),
+      );
+    });
+    expect(playerGroup("Renamed")).toBeDefined();
+    await act(async () => removal.resolve({ state: "not_found" }));
+
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
+  });
+
+  test.each(["lichess", "chesscom"])(
+    "drops a renamed handle-less %s sibling but preserves one authenticated during the await",
+    async (provider) => {
+      const sibling: Session = {
+        player: "Player",
+        updatedAt: 1,
+        ...(provider === "lichess"
+          ? {
+              lichess: {
+                ...session.lichess,
+                username: "sibling",
+                handle: "",
+              },
+            }
+          : { chessCom: { username: "sibling", stats: {} } }),
+      };
+      const newlyAuthenticated: Session = {
+        ...sibling,
+        ...(sibling.lichess
+          ? { lichess: { ...sibling.lichess, username: "new-login" } }
+          : { chessCom: { username: "new-login", stats: {} } }),
+      };
+      getDefaultStore().set(sessionsAtom, [session, sibling, newlyAuthenticated]);
+      const removal = Promise.withResolvers<{ state: "not_found" }>();
+      mocks.removeLichessAccount.mockReturnValue(removal.promise);
+      await renderCards();
+
+      await removeGroup("Player");
+      const replacement: Session = {
+        ...newlyAuthenticated,
+        player: "Renamed",
+        lichess: {
+          ...session.lichess,
+          username: "new-login",
+          handle: "replacement-handle",
+        },
+      };
+      await act(async () => {
+        getDefaultStore().set(sessionsAtom, [
+          session,
+          { ...sibling, player: "Renamed" },
+          replacement,
+        ]);
+        removal.resolve({ state: "not_found" });
+      });
+
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([replacement]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([replacement]);
+      expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    },
+  );
+});
+
 describe("Lichess account removal", () => {
+  test.each([undefined, ""])(
+    "logs out handle-less cards (%s) without a native call",
+    async (handle) => {
+      const handleless = { ...session, lichess: { ...session.lichess, handle } };
+      getDefaultStore().set(sessionsAtom, [handleless]);
+      await renderCards();
+
+      await logout();
+
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
+      expect(mocks.removeLichessAccount).not.toHaveBeenCalled();
+      expect(mocks.notificationsShow).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([undefined, ""])(
+    "preserves an authenticated same-username session when logging out a handle-less card (%s)",
+    async (handle) => {
+      const handleless = { ...session, lichess: { ...session.lichess, handle } };
+      const authenticated = {
+        ...session,
+        lichess: { ...session.lichess, handle: "kept-handle" },
+      };
+      getDefaultStore().set(sessionsAtom, [handleless, authenticated]);
+      await renderCards();
+
+      await logout();
+
+      expect(getDefaultStore().get(sessionsAtom)).toEqual([authenticated]);
+      expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([authenticated]);
+      expect(mocks.removeLichessAccount).not.toHaveBeenCalled();
+    },
+  );
+
+  test("keeps a replacement handle when the card's logout finishes", async () => {
+    const removal = Promise.withResolvers<{ state: "not_found" }>();
+    mocks.removeLichessAccount.mockReturnValue(removal.promise);
+    await renderCards();
+
+    await logout();
+    const replacement = {
+      ...session,
+      lichess: { ...session.lichess, handle: "replacement-handle" },
+    };
+    await act(async () => {
+      getDefaultStore().set(sessionsAtom, [replacement]);
+      removal.resolve({ state: "not_found" });
+    });
+
+    expect(getDefaultStore().get(sessionsAtom)).toEqual([replacement]);
+    expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([replacement]);
+    expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(mocks.notificationsShow).not.toHaveBeenCalled();
+  });
+
   test.each([
     ["unreachable", "Lichess.Revocation.Unreachable"],
     ["rate_limited", "Lichess.Revocation.RateLimited"],
@@ -315,6 +646,7 @@ describe("Lichess account removal", () => {
     expect(getDefaultStore().get(sessionsAtom)).toEqual([session]);
     expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([session]);
     expect(mocks.notificationsShow).not.toHaveBeenCalled();
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
   });
 });
 

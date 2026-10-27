@@ -2,7 +2,8 @@ import { tauri } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { Divider, Group, ScrollArea, Stack, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconEdit, IconX } from "@tabler/icons-react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
+import type { TFunction } from "i18next";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sessionsAtom } from "@/state/atoms";
@@ -12,9 +13,44 @@ import { findAccountDatabase, type AccountDatabaseListing } from "../home/accoun
 import { getLichessAccount } from "@/utils/lichess/api";
 import { revocationReason, revocationReasonText } from "@/utils/lichess/revocation";
 import { type Session, sessionPlayerName } from "@/utils/session";
+import { notifyUnlessCancelled } from "../files/notifyError";
 import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
 import IconAction from "./IconAction";
+
+async function removeLichessCredential(handle: string | undefined, t: TFunction) {
+  if (!handle) return;
+  const removal = await tauri.removeLichessAccount(handle);
+  if (removal.state === "removed" && removal.revocation_pending) {
+    const reason = revocationReason(removal.revocation_outcome);
+    if (reason)
+      notifications.show({
+        message: t("Home.Accounts.RevocationPending", {
+          reason: revocationReasonText(reason, t),
+          defaultValue: "Local logout completed. {{reason}} Revocation at Lichess is unconfirmed.",
+        }),
+        color: "orange",
+      });
+  }
+  if (removal.state === "removed" && removal.durability_uncertain) {
+    notifications.show({
+      message: t("Home.Accounts.RemoveDurabilityUncertain", {
+        defaultValue:
+          "The account was removed, but the save could not be fully confirmed. Do not retry.",
+      }),
+      color: "orange",
+    });
+  }
+}
+
+async function removeAuthenticatedLichessSession(
+  handle: string,
+  t: TFunction,
+  setSessions: React.Dispatch<React.SetStateAction<Session[]>>,
+) {
+  await removeLichessCredential(handle, t);
+  setSessions((current) => current.filter((s) => s.lichess?.handle !== handle));
+}
 
 function AccountCards({
   listing,
@@ -76,7 +112,7 @@ function PlayerSession({
   listingPending: boolean;
 }) {
   const { t } = useTranslation();
-  const [, setSessions] = useAtom(sessionsAtom);
+  const setSessions = useSetAtom(sessionsAtom);
   const [edit, setEdit] = useState(false);
   const [text, setText] = useState(name);
   useEffect(() => {
@@ -149,9 +185,32 @@ function PlayerSession({
             size="sm"
             variant="subtle"
             color="red"
-            onClick={() =>
-              setSessions((sessions) => sessions.filter((s) => sessionPlayerName(s) !== name))
-            }
+            onClick={async () => {
+              for (const member of sessions) {
+                const handle = member.lichess?.handle;
+                try {
+                  if (handle) {
+                    await removeAuthenticatedLichessSession(handle, t, setSessions);
+                  } else if (member.lichess) {
+                    setSessions((current) =>
+                      current.filter(
+                        (s) =>
+                          s.lichess?.username !== member.lichess?.username || s.lichess?.handle,
+                      ),
+                    );
+                  } else if (member.chessCom) {
+                    setSessions((current) =>
+                      current.filter(
+                        (s) =>
+                          s.chessCom?.username !== member.chessCom?.username || s.lichess?.handle,
+                      ),
+                    );
+                  }
+                } catch (error) {
+                  notifyUnlessCancelled(t("Common.Error"), error);
+                }
+              }
+            }}
           >
             <IconX />
           </IconAction>
@@ -239,34 +298,15 @@ function LichessOrChessCom({
         updatedAt={session.updatedAt}
         total={totalGames}
         logout={async () => {
-          const removal = lichessSession.handle
-            ? await tauri.removeLichessAccount(lichessSession.handle)
-            : null;
-          setSessions((sessions) =>
-            sessions.filter((s) => s.lichess?.username !== lichessSession.username),
-          );
-          if (removal) {
-            if (removal.state === "removed" && removal.revocation_pending) {
-              const reason = revocationReason(removal.revocation_outcome);
-              if (reason)
-                notifications.show({
-                  message: t("Home.Accounts.RevocationPending", {
-                    reason: revocationReasonText(reason, t),
-                    defaultValue:
-                      "Local logout completed. {{reason}} Revocation at Lichess is unconfirmed.",
-                  }),
-                  color: "orange",
-                });
-            }
-            if (removal.state === "removed" && removal.durability_uncertain) {
-              notifications.show({
-                message: t("Home.Accounts.RemoveDurabilityUncertain", {
-                  defaultValue:
-                    "The account was removed, but the save could not be fully confirmed. Do not retry.",
-                }),
-                color: "orange",
-              });
-            }
+          const handle = lichessSession.handle;
+          if (handle) {
+            await removeAuthenticatedLichessSession(handle, t, setSessions);
+          } else {
+            setSessions((sessions) =>
+              sessions.filter(
+                (s) => s.lichess?.username !== lichessSession.username || s.lichess?.handle,
+              ),
+            );
           }
         }}
         reload={async () => {
