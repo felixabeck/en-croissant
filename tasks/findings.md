@@ -12820,13 +12820,20 @@ Plan authorship and original arbitration shared one context. This adopting Codex
 
 ### No e2e journey renders the personal player card, so its narrow-width wrapping is unverified
 
-* **ID:** f-20260927-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260927-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/home/PersonalCard.tsx:77` (player-name `Text`, `wrap-anywhere` since `0e9f3713`), rendered by `src/components/home/Databases.tsx:248` only after `tauri.getPlayersGameInfo` has streamed a player's statistics.
 * **Defect:** during the f-20260829-02 cumulative review, review-root-cause found that a long unbroken player name in the personal card could be cut by the card's `overflow: hidden` Paper at 320px / 200% — the same chain as the account names that fix closed — and `0e9f3713` gave the name the shared `wrap-anywhere` class. review-tests (repair re-check, blocker 99) then noted that no e2e test ever reaches `PersonalPlayerCard`: the Accounts journeys use sessions without a personal database, so reverting the wrap would leave every clipping assertion green.
 * **Fix:** an e2e journey in the 320px / 200% `async-errors` project (German) that mocks a session with a personal database and the `get_players_game_info` progress stream, renders the personal card with a long unbroken player name, asserts the name visible, and runs `assertNoHorizontalOverflow` plus `assertPageNotClipped`.
 * **Open question:** how to mock the streamed `getPlayersGameInfo` progress protocol in `e2e/fixtures.ts` (per-request progress id and events via `__E2E_TAURI__.emit`) without a second, diverging copy of the IPC mock.
 * **Proof:** the new journey passes, and removing `wrap-anywhere` from `PersonalCard.tsx:77` turns it red.
 * **Related:** f-20260829-02 (issue R1 / T4 in `tasks/handoffs/2026-09-27-f-20260829-02-review.md`).
+
+Entry revalidation, 2026-10-27: build to inline.
+
+The filed open question was how to mock the streamed getPlayersGameInfo progress protocol without a second IPC mock. That question is settled by d-20261027-18. The wrap-anywhere name is the Text branch in PersonalCard, reached only from PlayerCard, which awaits the command result. databaseLayoutCommands already supplies that result. The home summary passes setName and renders a Select, so an Accounts journey would not go red if the class were removed.
+
+What still holds: no journey uses an unbroken name, so removing wrap-anywhere from the name Text leaves the existing spaced-name database-files journey green. The remaining work is one async-errors journey on the database player route.
+<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"1b552372cd61d2f17ba6e90e704aee7438f5fea52aae4aea3966fb3f1e228848","header_sha256":"3f471b5e218256ddb43d5c3f04af970f779c033906acbb96904b6d65704b48be","header_status":"open","input_sha256":"e9abbc8d57a6e3c9b60616e0693892508d9cb7155a8100eefe73d1ed5d4d1b88","kind":"mutation-receipt","operation":"a0e8eeab15cf859f0bdf5649383e29cc3dda8f32ea02491c7a35a9f328773cd9","options":{"headers":{"Entry":"inline"},"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
 
 ### Seven test files each carry their own inert ResizeObserver stub
 
