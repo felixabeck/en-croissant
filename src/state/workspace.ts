@@ -305,28 +305,37 @@ function workspaceActionError(cause: Error): Error {
     });
 }
 
-export function pendingTreeRemovalCapacityError(count: number): Error {
+export function pendingTreeRemovalCapacityError(droppedCount: number): Error {
     return new Error(
         i18n.t("Common.PendingTreeRemovalOverflow") ||
             enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"],
         {
             cause: new Error(
-                `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`,
+                `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}; dropped ${droppedCount}`,
             ),
         },
     );
 }
 
-export function pendingPuzzleRemovalCapacityError(count: number): Error {
+export function pendingPuzzleRemovalCapacityError(droppedCount: number): Error {
     return new Error(
         i18n.t("Common.PendingPuzzleRemovalOverflow") ||
             enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"],
         {
             cause: new Error(
-                `Pending legacy puzzle removals exceeded ${MAX_PENDING_PUZZLE_REMOVALS}: ${count}`,
+                `Pending legacy puzzle removals exceeded ${MAX_PENDING_PUZZLE_REMOVALS}; dropped ${droppedCount}`,
             ),
         },
     );
+}
+
+export function reportPendingRemovalOverflow(
+    droppedTreeCount: number,
+    droppedPuzzleCount: number,
+): void {
+    if (droppedTreeCount > 0) reportPersistError(pendingTreeRemovalCapacityError(droppedTreeCount));
+    if (droppedPuzzleCount > 0)
+        reportPersistError(pendingPuzzleRemovalCapacityError(droppedPuzzleCount));
 }
 
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
@@ -603,12 +612,10 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    if (pendingRemovalResult.droppedIds.length > 0)
-        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.droppedIds.length));
-    if (puzzleRemovalResult.droppedKeys.length > 0)
-        reportPersistError(
-            pendingPuzzleRemovalCapacityError(puzzleRemovalResult.droppedKeys.length),
-        );
+    reportPendingRemovalOverflow(
+        pendingRemovalResult.droppedIds.length,
+        puzzleRemovalResult.droppedKeys.length,
+    );
 
     // Kept migrated sources are in the published pending-removal list. This also reclaims
     // unreadable bytes, which ordinary orphan sweeps cannot decode.

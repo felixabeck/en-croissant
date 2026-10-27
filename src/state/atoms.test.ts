@@ -1,5 +1,6 @@
 import { createStore, type Atom } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import enUSCatalogue from "@/translation/en-US.json";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
 import { defaultTree } from "@/utils/treeReducer";
@@ -373,10 +374,14 @@ test("closing keeps the newest 100 intents when all prior targets are unreadable
     });
     expect(sessionStorage.getItem(closed)).toBeNull();
     expect(store.get(atoms.tabsAtom)).toEqual([workspace.tabs[1]]);
+    const message =
+        "ChessFable could not finish deleting every closed board. The newest deletions were kept. Quit ChessFable to discard the leftover saved games.";
+    expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(message);
     expect(persistError.reportPersistError).toHaveBeenLastCalledWith(
         expect.objectContaining({
+            message,
             cause: expect.objectContaining({
-                message: "Pending tree removals exceeded 100: 1",
+                message: "Pending tree removals exceeded 100; dropped 1",
             }),
         }),
     );

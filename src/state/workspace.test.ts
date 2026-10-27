@@ -34,6 +34,11 @@ const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
 vi.mock("./persistError", () => persistError);
 
+const treeOverflowMessage =
+    "ChessFable could not finish deleting every closed board. The newest deletions were kept. Quit ChessFable to discard the leftover saved games.";
+const puzzleOverflowMessage =
+    "ChessFable could not finish deleting every old puzzle session. The newest deletions were kept. Quit ChessFable to discard the leftover puzzle sessions.";
+
 const legacyTab = {
     name: "Legacy",
     value: "42",
@@ -266,7 +271,7 @@ function preparePuzzleRepairOverflow(failPublish: boolean) {
             },
         );
     }
-    const message = enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"];
+    const message = puzzleOverflowMessage;
     const expectedKeys = [...prior.slice(1), fixture.historyKey];
     const reportedWorkspaceBytes: Array<string | null> = [];
     persistError.reportPersistError.mockImplementation((error: Error) => {
@@ -288,8 +293,12 @@ test("puzzle ID repair publishes bounded cleanup before reporting overflow", () 
     expect(loaded.legacyPuzzleRemovalKeys).toEqual(expectedKeys);
     expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual(loaded);
     expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe(puzzleOverflowMessage);
+    expect(enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"]).toBe(
+        puzzleOverflowMessage,
+    );
     expect(errorUnlessCancelled(errors[0])).toEqual({ category: "unexpected", message });
-    expect(errors[0].cause.message).toBe("Pending legacy puzzle removals exceeded 100: 1");
+    expect(errors[0].cause.message).toBe("Pending legacy puzzle removals exceeded 100; dropped 1");
     expect(reportedWorkspaceBytes).toEqual([sessionStorage.getItem(WORKSPACE_STORAGE_KEY)]);
     expect(deserializeStorageValue(reportedWorkspaceBytes[0]!)).toMatchObject({
         legacyPuzzleRemovalKeys: expectedKeys,
@@ -310,6 +319,9 @@ test("puzzle ID repair preserves owners and reports no overflow when publication
     expect(loaded.legacyPuzzleRemovalKeys).toEqual(prior);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(bytes);
     expect(errors).toEqual([]);
+    expect(enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"]).toBe(
+        puzzleOverflowMessage,
+    );
     expect(reportedWorkspaceBytes).toEqual([]);
     expect(sessionStorage.getItem(prior[0]!)).toBe("[]");
     persistError.reportPersistError.mockReset();
@@ -494,15 +506,17 @@ test("uncertain persisted workspace replays exact UUID intents without a tree an
 });
 
 test("legacy cleanup capacity errors keep localized action text and the concrete refusal cause", () => {
-    const expectedMessage =
-        i18n.t("Common.PendingPuzzleRemovalOverflow") ||
-        enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"];
     const translate = vi.spyOn(i18n, "t");
     const error = pendingPuzzleRemovalCapacityError(2);
     expect(translate).toHaveBeenCalledExactlyOnceWith("Common.PendingPuzzleRemovalOverflow");
     expect(error).toBeInstanceOf(Error);
-    expect(error.message).toBe(expectedMessage);
-    expect(error.cause).toEqual(new Error("Pending legacy puzzle removals exceeded 100: 2"));
+    expect(error.message).toBe(puzzleOverflowMessage);
+    expect(enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"]).toBe(
+        puzzleOverflowMessage,
+    );
+    expect(error.cause).toEqual(
+        new Error("Pending legacy puzzle removals exceeded 100; dropped 2"),
+    );
 });
 
 test("history sweeping reports refused enumeration and retries without deleting unrelated UUID-prefixed values", () => {
@@ -1935,7 +1949,7 @@ function prepareMigrationOverflow(failPublish: boolean) {
             },
         );
     }
-    const overflowMessage = enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"];
+    const overflowMessage = treeOverflowMessage;
     const reportedWorkspaceBytes: Array<string | null> = [];
     persistError.reportPersistError.mockImplementation((error: Error) => {
         if (error.message === overflowMessage)
@@ -1956,11 +1970,15 @@ test("legacy ID migration publishes the newest 100 intents before reporting over
     expect(first.treeOwnershipPendingRemovalIds).toEqual([...pendingIds.slice(1), legacyTab.value]);
     expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual(first);
     expect(overflow).toHaveLength(1);
+    expect(overflow[0].message).toBe(treeOverflowMessage);
+    expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(
+        treeOverflowMessage,
+    );
     expect(errorUnlessCancelled(overflow[0])).toEqual({
         category: "unexpected",
         message: overflowMessage,
     });
-    expect(overflow[0].cause.message).toBe("Pending tree removals exceeded 100: 1");
+    expect(overflow[0].cause.message).toBe("Pending tree removals exceeded 100; dropped 1");
     expect(reportedWorkspaceBytes).toEqual([sessionStorage.getItem(WORKSPACE_STORAGE_KEY)]);
     expect(deserializeStorageValue(reportedWorkspaceBytes[0]!)).toMatchObject({
         treeOwnershipPendingRemovalIds: [...pendingIds.slice(1), legacyTab.value],
@@ -1988,6 +2006,9 @@ test("legacy ID migration preserves its envelope and reports no overflow when pu
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
     expect(persistError.reportPersistError).not.toHaveBeenCalledWith(
         expect.objectContaining({ message: overflowMessage }),
+    );
+    expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(
+        treeOverflowMessage,
     );
     expect(reportedWorkspaceBytes).toEqual([]);
     expect(sessionStorage.getItem(pendingIds[0]!)).toBe(tree);
@@ -2030,17 +2051,17 @@ test("pending-removal overflow reports the count after partial cleanup", () => {
 });
 
 test("pending-removal capacity errors have a localized user message and exact cause", () => {
-    const expectedMessage =
-        i18n.t("Common.PendingTreeRemovalOverflow") ||
-        enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"];
     const translate = vi.spyOn(i18n, "t");
     const error = pendingTreeRemovalCapacityError(1);
 
     expect(translate).toHaveBeenCalledExactlyOnceWith("Common.PendingTreeRemovalOverflow");
-    expect(error.message).toBe(expectedMessage);
+    expect(error.message).toBe(treeOverflowMessage);
+    expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(
+        treeOverflowMessage,
+    );
     expect(error.message).not.toBe("");
     expect((error.cause as Error).message).toBe(
-        `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 1`,
+        `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}; dropped 1`,
     );
 });
 

@@ -51,8 +51,7 @@ import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import {
     WORKSPACE_STORAGE_KEY,
     loadWorkspace,
-    pendingTreeRemovalCapacityError,
-    pendingPuzzleRemovalCapacityError,
+    reportPendingRemovalOverflow,
     reconcilePendingTreeRemovals,
     reconcileLegacyPuzzleRemovals,
     sweepLegacyPuzzleKeys,
@@ -143,14 +142,10 @@ const commitWorkspaceAtom = atom(
         };
         const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
         if (!saved) return false;
-        if (pendingRemovalResult.droppedIds.length > 0)
-            reportPersistError(
-                pendingTreeRemovalCapacityError(pendingRemovalResult.droppedIds.length),
-            );
-        if (puzzleRemovals.droppedKeys.length > 0)
-            reportPersistError(
-                pendingPuzzleRemovalCapacityError(puzzleRemovals.droppedKeys.length),
-            );
+        reportPendingRemovalOverflow(
+            pendingRemovalResult.droppedIds.length,
+            puzzleRemovals.droppedKeys.length,
+        );
         set(committedWorkspaceAtom, saved);
         sweepLegacyPuzzleKeys(saved);
         onSaved?.(saved);

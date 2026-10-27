@@ -46,6 +46,11 @@ import { getFileFreshness, setFileFreshness } from "./fileFreshness";
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
 
+const treeOverflowMessage =
+    "ChessFable could not finish deleting every closed board. The newest deletions were kept. Quit ChessFable to discard the leftover saved games.";
+const puzzleOverflowMessage =
+    "ChessFable could not finish deleting every old puzzle session. The newest deletions were kept. Quit ChessFable to discard the leftover puzzle sessions.";
+
 const replacementTabIds = new Set<string>();
 
 async function importFreshAtoms() {
@@ -224,8 +229,11 @@ test.each([
         expect(persistError.reportPersistError).toHaveBeenCalled();
         expect(persistError.reportPersistError).not.toHaveBeenCalledWith(
             expect.objectContaining({
-                message: enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"],
+                message: puzzleOverflowMessage,
             }),
+        );
+        expect(enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"]).toBe(
+            puzzleOverflowMessage,
         );
         expect(persistError.reportPersistError).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -259,7 +267,7 @@ test("background puzzle close publishes the newest 100 cleanup keys before repor
     fresh.initializeWorkspace();
     const store = createStore();
     const expectedKeys = [...prior.slice(1), fixture.historyKey];
-    const message = enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"];
+    const message = puzzleOverflowMessage;
     persistError.reportPersistError.mockClear();
     const reportedWorkspaceBytes: Array<string | null> = [];
     persistError.reportPersistError.mockImplementation((error: Error) => {
@@ -277,13 +285,17 @@ test("background puzzle close publishes the newest 100 cleanup keys before repor
         .map(([error]) => error)
         .filter((error) => error.message === message);
     expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe(puzzleOverflowMessage);
+    expect(enUSCatalogue.translation["Common.PendingPuzzleRemovalOverflow"]).toBe(
+        puzzleOverflowMessage,
+    );
     expect(reportedWorkspaceBytes).toEqual([sessionStorage.getItem(WORKSPACE_STORAGE_KEY)]);
     expect(deserializeStorageValue(reportedWorkspaceBytes[0]!)).toMatchObject({
         tabs: [fixture.retained],
         legacyPuzzleRemovalKeys: expectedKeys,
     });
     expect(errorUnlessCancelled(errors[0])).toEqual({ category: "unexpected", message });
-    expect(errors[0].cause.message).toBe("Pending legacy puzzle removals exceeded 100: 1");
+    expect(errors[0].cause.message).toBe("Pending legacy puzzle removals exceeded 100; dropped 1");
     expect(message).not.toMatch(/try again|reload/i);
     persistError.reportPersistError.mockReset();
 });
@@ -1642,7 +1654,7 @@ async function prepareTreeRemovalOverflow(failure: "throws" | "silent") {
     persistError.reportPersistError.mockClear();
     const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
     const expectedIds = [...pendingIds.slice(1), tabId];
-    const message = enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"];
+    const message = treeOverflowMessage;
     const reportedWorkspaceBytes: Array<string | null> = [];
     persistError.reportPersistError.mockImplementation((error: Error) => {
         if (error.message === message)
@@ -1684,11 +1696,17 @@ test.each(["throws", "silent"] as const)(
             .filter((error) => error.message === message);
         expect(store.get(freshAtoms.tabsAtom)).toEqual([]);
         expect(overflowErrors).toHaveLength(1);
+        expect(overflowErrors[0].message).toBe(treeOverflowMessage);
+        expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(
+            treeOverflowMessage,
+        );
         expect(errorUnlessCancelled(overflowErrors[0])).toEqual({
             category: "unexpected",
             message,
         });
-        expect(overflowErrors[0].cause.message).toBe("Pending tree removals exceeded 100: 1");
+        expect(overflowErrors[0].cause.message).toBe(
+            "Pending tree removals exceeded 100; dropped 1",
+        );
         expect(message).not.toMatch(/try again|reload/i);
         expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
             treeOwnershipPendingRemovalIds: expectedIds,
@@ -1735,6 +1753,9 @@ test("closing preserves the workspace and reports no overflow when the bounded p
     expect(store.get(freshAtoms.tabsAtom)).toEqual([tab]);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
     expect(overflowErrors).toEqual([]);
+    expect(enUSCatalogue.translation["Common.PendingTreeRemovalOverflow"]).toBe(
+        treeOverflowMessage,
+    );
     expect(reportedWorkspaceBytes).toEqual([]);
     expect(sessionStorage.getItem(pendingIds[0]!)).toBe(tree);
     expect(sessionStorage.getItem(tabId)).toBe(tree);
