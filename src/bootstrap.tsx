@@ -7,6 +7,8 @@ import { initializePersistedSessions, SessionSanitizationError } from "./utils/s
 import { setAutoFreeze } from "immer";
 import { I18nextProvider } from "react-i18next";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
+import { WorkspaceReadFailure } from "./components/home/WorkspaceReadFailure";
+import { WorkspaceReadError } from "./state/workspace";
 import { sanitizeRevocationReasons } from "./utils/lichess/revocation";
 import { logFailureSafely, safeFailureContext } from "./platform/errors";
 import { tauri } from "./platform/tauri";
@@ -35,12 +37,40 @@ function logStartupDiagnostic(
  * native account metadata has reconciled into public renderer sessions. */
 export function startApplication(): Promise<void> {
   if (applicationStartup) return applicationStartup;
-  initializeWorkspace();
+  let workspaceReadFailure = false;
+  try {
+    initializeWorkspace();
+  } catch (error) {
+    if (!(error instanceof WorkspaceReadError)) throw error;
+    workspaceReadFailure = true;
+  }
   dayjs.extend(customParseFormat);
   setAutoFreeze(false);
   const container = document.getElementById("app");
   const root = createRoot(container!);
   applicationStartup = (async () => {
+    if (workspaceReadFailure) {
+      try {
+        await initializeI18n();
+      } catch {
+        // The refusal screen also renders with its shipped English fallback.
+      }
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <WorkspaceReadFailure />
+        </I18nextProvider>,
+      );
+      try {
+        await tauri.closeSplashscreen();
+      } catch {
+        await logStartupDiagnostic(
+          "closeSplashscreen",
+          WINDOW_REVEAL_FAILURE,
+          "Startup window reveal failed",
+        );
+      }
+      return;
+    }
     try {
       await tauri.releasePreviousDocumentOperations();
     } catch (error) {

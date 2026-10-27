@@ -2,9 +2,13 @@ import { createStore, type Atom } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import type { Tab } from "./workspaceTypes";
+import { defaultTree } from "@/utils/treeReducer";
+import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import "./atoms";
 
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
+const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
+vi.mock("./persistError", () => persistError);
 const sessionNative = vi.hoisted(() => ({
     listLichessAccounts: vi.fn(),
     migrateLegacyLichessToken: vi.fn(),
@@ -16,6 +20,7 @@ beforeEach(() => {
     vi.resetModules();
     sessionStorage.clear();
     localStorage.clear();
+    persistError.reportPersistError.mockClear();
 });
 
 afterEach(() => {
@@ -197,6 +202,7 @@ test("the first atom write hydrates and persists selection in the same call", as
 test("failed initialization propagates without caching a successful default", async () => {
     const { workspace, bytes } = seedWorkspace();
     const { atoms, load } = await importAtoms();
+    const { WorkspaceReadError } = await import("./workspace");
     const failure = new DOMException("workspace read refused", "SecurityError");
     const originalGetItem = Storage.prototype.getItem;
     const refusal = vi
@@ -206,9 +212,12 @@ test("failed initialization propagates without caching a successful default", as
             return originalGetItem.call(this, key);
         });
 
-    expect(() => atoms.initializeWorkspace()).toThrow(failure);
-    expect(() => atoms.initializeWorkspace()).toThrow(failure);
-    expect(() => createStore().set(atoms.tabsAtom, [])).toThrow(failure);
+    expect(() => atoms.initializeWorkspace()).toThrow(WorkspaceReadError);
+    expect(() => atoms.initializeWorkspace()).toThrow(expect.objectContaining({ cause: failure }));
+    expect(() => createStore().set(atoms.tabsAtom, [])).toThrow(
+        expect.objectContaining({ cause: failure }),
+    );
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
     expect(load).toHaveBeenCalledTimes(3);
     refusal.mockRestore();
     expect(sessionStorage.getItem("workspace")).toBe(bytes);
@@ -219,6 +228,160 @@ test("failed initialization propagates without caching a successful default", as
     expect(atoms.initializeWorkspace()).toBe(initial);
     expect(load).toHaveBeenCalledTimes(4);
 });
+
+function refuseReads(
+    ids: readonly string[],
+    failure = new DOMException("read refused", "SecurityError"),
+) {
+    const read = Storage.prototype.getItem;
+    return vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+        if (this === sessionStorage && ids.includes(key)) throw failure;
+        return read.call(this, key);
+    });
+}
+
+test("a fresh initializer refuses the envelope without changing pending bytes and replays only after a successful read", async () => {
+    const { workspace } = seedWorkspace();
+    const pending = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const bytes = serializeStorageValue({
+        ...workspace,
+        treeOwnershipPendingRemovalIds: [pending],
+    });
+    sessionStorage.setItem("workspace", bytes);
+    sessionStorage.setItem(pending, tree);
+    const failure = new DOMException("workspace read refused", "SecurityError");
+    const refusal = refuseReads(["workspace"], failure);
+    vi.resetModules();
+    const { atoms, load } = await importAtoms();
+    const { WorkspaceReadError } = await import("./workspace");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const remove = vi.spyOn(Storage.prototype, "removeItem");
+
+    expect(() => atoms.initializeWorkspace()).toThrow(WorkspaceReadError);
+    expect(() => atoms.initializeWorkspace()).toThrow(expect.objectContaining({ cause: failure }));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(write).not.toHaveBeenCalled();
+    expect(
+        remove.mock.calls.filter((_, index) => remove.mock.contexts[index] === sessionStorage),
+    ).toEqual([]);
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    refusal.mockRestore();
+    expect(sessionStorage.getItem("workspace")).toBe(bytes);
+    expect(sessionStorage.getItem(pending)).toBe(tree);
+
+    vi.resetModules();
+    const fresh = await importAtoms();
+    const initial = fresh.atoms.initializeWorkspace();
+    expect(initial.treeOwnershipPendingRemovalIds).toEqual([pending]);
+    expect(sessionStorage.getItem(pending)).toBeNull();
+    expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toEqual(initial);
+    expect(fresh.atoms.initializeWorkspace()).toBe(initial);
+    expect(fresh.load).toHaveBeenCalledOnce();
+
+    vi.resetModules();
+    const later = await importAtoms();
+    expect(later.atoms.initializeWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+    expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).not.toHaveProperty(
+        "treeOwnershipPendingRemovalIds",
+    );
+});
+
+test("a fresh initializer retains an unreadable pending id, reports once and caches only that completed snapshot", async () => {
+    const { workspace } = seedWorkspace();
+    const [unreadable, readable] = [crypto.randomUUID(), crypto.randomUUID()];
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(unreadable, tree);
+    sessionStorage.setItem(readable, tree);
+    sessionStorage.setItem(
+        "workspace",
+        serializeStorageValue({
+            ...workspace,
+            treeOwnershipPendingRemovalIds: [unreadable, readable],
+        }),
+    );
+    const refusal = refuseReads([unreadable]);
+    vi.resetModules();
+    const { atoms, load } = await importAtoms();
+
+    const initial = atoms.initializeWorkspace();
+
+    expect(initial.treeOwnershipPendingRemovalIds).toEqual([unreadable, readable]);
+    expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toEqual(initial);
+    expect(refusal.mock.calls.filter(([key]) => key === unreadable)).toHaveLength(1);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    refusal.mockRestore();
+    expect(sessionStorage.getItem(unreadable)).toBe(tree);
+    expect(sessionStorage.getItem(readable)).toBeNull();
+    expect(atoms.initializeWorkspace()).toBe(initial);
+    expect(load).toHaveBeenCalledOnce();
+    expect(sessionStorage.getItem(unreadable)).toBe(tree);
+
+    vi.resetModules();
+    const second = await importAtoms();
+    expect(second.atoms.initializeWorkspace().treeOwnershipPendingRemovalIds).toEqual([unreadable]);
+    expect(sessionStorage.getItem(unreadable)).toBeNull();
+    vi.resetModules();
+    const third = await importAtoms();
+    expect(third.atoms.initializeWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+});
+
+test.each([
+    { priorCount: 1, unreadableCount: 1, succeeds: true },
+    { priorCount: 100, unreadableCount: 1, succeeds: true },
+    { priorCount: 100, unreadableCount: 100, succeeds: false },
+])(
+    "closing with $unreadableCount unreadable of $priorCount pending targets succeeds: $succeeds",
+    async ({ priorCount, unreadableCount, succeeds }) => {
+        const { workspace } = seedWorkspace();
+        const closed = workspace.tabs[0]!.value;
+        const pending = Array.from({ length: priorCount }, () => crypto.randomUUID());
+        const unreadable = pending.slice(0, unreadableCount);
+        const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+        for (const id of [...pending, closed]) sessionStorage.setItem(id, tree);
+        sessionStorage.setItem(
+            "workspace",
+            serializeStorageValue({ ...workspace, treeOwnershipPendingRemovalIds: pending }),
+        );
+        // Preserve prior intents during the initial load, then exercise the later atom commit.
+        const deny = denyStorageRemoval((id) => pending.includes(id));
+        const { atoms } = await importAtoms();
+        atoms.initializeWorkspace();
+        deny.mockRestore();
+        persistError.reportPersistError.mockClear();
+        const bytes = sessionStorage.getItem("workspace");
+        const refusal = refuseReads(unreadable);
+        const store = createStore();
+
+        expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(succeeds);
+
+        expect(persistError.reportPersistError).toHaveBeenCalledTimes(succeeds ? 1 : 2);
+        for (const id of unreadable)
+            expect(refusal.mock.calls.filter(([key]) => key === id)).toHaveLength(1);
+        refusal.mockRestore();
+        for (const id of unreadable) expect(sessionStorage.getItem(id)).toBe(tree);
+        if (succeeds) {
+            expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toMatchObject({
+                treeOwnershipPendingRemovalIds: [...unreadable, closed],
+            });
+            expect(sessionStorage.getItem(closed)).toBeNull();
+            for (const id of pending.slice(unreadableCount))
+                expect(sessionStorage.getItem(id)).toBeNull();
+            expect(store.get(atoms.tabsAtom)).toEqual([workspace.tabs[1]]);
+        } else {
+            expect(sessionStorage.getItem("workspace")).toBe(bytes);
+            expect(sessionStorage.getItem(closed)).toBe(tree);
+            expect(store.get(atoms.tabsAtom)).toEqual(workspace.tabs);
+            expect(persistError.reportPersistError).toHaveBeenLastCalledWith(
+                expect.objectContaining({
+                    cause: expect.objectContaining({
+                        message: "Pending tree removals exceeded 100: 101",
+                    }),
+                }),
+            );
+        }
+    },
+);
 
 test("original path owners are captured before direct atom access repairs legacy storage", async () => {
     const fileTab: Tab = {

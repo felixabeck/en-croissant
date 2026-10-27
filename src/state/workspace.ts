@@ -15,6 +15,12 @@ import {
 import { defaultTree, type TreeState } from "@/utils/treeReducer";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
+export class WorkspaceReadError extends Error {
+    constructor(cause: unknown) {
+        super("Could not read the saved workspace", { cause });
+        this.name = "WorkspaceReadError";
+    }
+}
 const WORKSPACE_VERSION = 1;
 export const LEGACY_WORKSPACE_VERSION = 0;
 
@@ -213,20 +219,35 @@ export function reconcilePendingTreeRemovals(
     priorIds: readonly string[],
     newIds: Iterable<string>,
     retainedIds: ReadonlySet<string>,
-): { ids: string[]; overflowCount: null } | { ids: null; overflowCount: number } {
-    let prior = priorIds.filter(
-        (id) => !retainedIds.has(id) && tabStorage.hasPendingRemovalTarget(id),
-    );
+): { unreadableIds: Set<string> } & (
+    | { ids: string[]; overflowCount: null }
+    | { ids: null; overflowCount: number }
+) {
+    const unreadableIds = new Set<string>();
+    let firstError: unknown;
+    let prior = priorIds.filter((id) => {
+        if (retainedIds.has(id)) return false;
+        try {
+            return tabStorage.hasPendingRemovalTarget(id);
+        } catch (error) {
+            if (unreadableIds.size === 0) firstError = error;
+            unreadableIds.add(id);
+            return true;
+        }
+    });
+    if (unreadableIds.size > 0) reportPersistError(persistStorageWriteError(firstError));
     const additions = [...newIds].filter((id) => !retainedIds.has(id));
     let pending = new Set([...prior, ...additions]);
     if (pending.size > MAX_PENDING_TREE_REMOVALS) {
-        const failedPriorRemovals = tabStorage.removeKnownTreesSafely(prior);
-        prior = prior.filter((id) => failedPriorRemovals.has(id));
+        const failedPriorRemovals = tabStorage.removeKnownTreesSafely(
+            prior.filter((id) => !unreadableIds.has(id)),
+        );
+        prior = prior.filter((id) => failedPriorRemovals.has(id) || unreadableIds.has(id));
         pending = new Set([...prior, ...additions]);
     }
     return pending.size <= MAX_PENDING_TREE_REMOVALS
-        ? { ids: [...pending], overflowCount: null }
-        : { ids: null, overflowCount: pending.size };
+        ? { ids: [...pending], overflowCount: null, unreadableIds }
+        : { ids: null, overflowCount: pending.size, unreadableIds };
 }
 
 /** Old intents already carry durable authority. New keys cannot be removed before publication. */
@@ -340,8 +361,19 @@ export function saveWorkspace(
 export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
     const schemas = createWorkspaceLoadSchemas();
     const { workspaceLiveSchema, legacyWorkspaceSchema, uncertainOwnershipSchema } = schemas;
-    const storedWorkspace = storage.getItem(key);
-    const current = readStoredWorkspaceValue(storage, key);
+    let storedWorkspace: string | null;
+    let legacy: unknown;
+    let current: unknown;
+    try {
+        storedWorkspace = storage.getItem(key);
+        current = decodeCompressedOrJson(storedWorkspace);
+        legacy = current ?? {
+            tabs: readStoredWorkspaceValue(storage, "tabs"),
+            activeTab: readStoredWorkspaceValue(storage, "activeTab"),
+        };
+    } catch (error) {
+        throw new WorkspaceReadError(error);
+    }
     const currentResult = workspaceLiveSchema.safeParse(current);
     const hasAuthoritativeWorkspace = currentResult.success;
     const persistedProtectedTreeIds =
@@ -354,28 +386,52 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const persistedPuzzleRemovals = currentResult.success
         ? (currentResult.data.legacyPuzzleRemovalKeys ?? [])
         : [];
-    const legacy =
-        current ??
-        ({
-            tabs: readStoredWorkspaceValue(storage, "tabs"),
-            activeTab: readStoredWorkspaceValue(storage, "activeTab"),
-        } as const);
     const validMigrationSource = legacyWorkspaceSchema.safeParse(
         storedWorkspace === null ? legacy : current,
     ).success;
-    const legacyStoragePresent =
-        storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
+    let legacyStoragePresent = false;
+    let legacyPresenceReadable = true;
+    try {
+        legacyStoragePresent =
+            storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
+    } catch (error) {
+        legacyPresenceReadable = false;
+        reportPersistError(persistStorageWriteError(error));
+    }
     const plan = planWorkspaceRepair(legacy, schemas);
     const repairedRetainedIds = new Set(plan.workspace.tabs.map(getTabTreeKey));
     const failedAdmissions = tabStorage.replayFailedAdmissions(repairedRetainedIds);
+    const snapshotExclusions = new Set([
+        ...failedAdmissions.markedIds,
+        ...persistedPendingRemovals,
+    ]);
+    const takeOwnershipSnapshot = (): string[] | null => {
+        const snapshot = tabStorage.snapshotStoredTreeKeys(
+            MAX_PROTECTED_TREE_KEYS,
+            MAX_PROTECTED_TREE_KEY_LENGTH,
+            snapshotExclusions,
+        );
+        const enumerableStorage = storage as SyncStringStorage &
+            Partial<Pick<Storage, "length" | "key">>;
+        if (snapshot === null || typeof enumerableStorage.key !== "function") return snapshot;
+        if (persistedPendingRemovals.some((id) => id.length > MAX_PROTECTED_TREE_KEY_LENGTH))
+            return null;
+        // Excluded pending values still consume the snapshot budget without being read or protected.
+        const pendingIds = new Set(persistedPendingRemovals);
+        let presentPendingCount = 0;
+        try {
+            for (let index = 0; index < (enumerableStorage.length ?? 0); index++) {
+                const id = enumerableStorage.key(index);
+                if (id !== null && pendingIds.has(id)) presentPendingCount++;
+            }
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+            return null;
+        }
+        return snapshot.length + presentPendingCount > MAX_PROTECTED_TREE_KEYS ? null : snapshot;
+    };
     const missingWorkspaceTreeSnapshot =
-        storedWorkspace === null && !validMigrationSource
-            ? tabStorage.snapshotStoredTreeKeys(
-                  MAX_PROTECTED_TREE_KEYS,
-                  MAX_PROTECTED_TREE_KEY_LENGTH,
-                  failedAdmissions.markedIds,
-              )
-            : undefined;
+        storedWorkspace === null && !validMigrationSource ? takeOwnershipSnapshot() : undefined;
     const treeOwnershipUncertain =
         uncertainOwnershipSchema.safeParse(current).success ||
         (storedWorkspace !== null && !hasAuthoritativeWorkspace && !validMigrationSource) ||
@@ -398,11 +454,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             persistedProtectedTreeIds ??
             (missingWorkspaceTreeSnapshot !== undefined
                 ? missingWorkspaceTreeSnapshot
-                : tabStorage.snapshotStoredTreeKeys(
-                      MAX_PROTECTED_TREE_KEYS,
-                      MAX_PROTECTED_TREE_KEY_LENGTH,
-                      failedAdmissions.markedIds,
-                  )) ??
+                : takeOwnershipSnapshot()) ??
             undefined;
         if (protectedTreeIds !== undefined) {
             const protectedWithoutFailedAdmissions = protectedTreeIds.filter(
@@ -536,12 +588,15 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
 
     // Every migrated source is in the published pending-removal list. This also reclaims
     // unreadable bytes, which ordinary orphan sweeps cannot decode.
-    const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
+    const failedKnownRemovals = tabStorage.removeKnownTreesSafely(
+        pendingRemovalIds.filter((id) => !pendingRemovalResult.unreadableIds.has(id)),
+    );
     if (hasAuthoritativeWorkspace || validMigrationSource) sweepLegacyPuzzleKeys(plan.workspace);
     else
         for (const historyKey of plan.workspace.legacyPuzzleRemovalKeys ?? [])
             removeLegacyPuzzleKey(historyKey);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
+    for (const id of pendingRemovalResult.unreadableIds) failedKnownRemovals.add(id);
 
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
         sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedKnownRemovals);
@@ -554,7 +609,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             failedKnownRemovals,
         );
     }
-    for (const legacyKey of ["tabs", "activeTab"]) {
+    for (const legacyKey of legacyPresenceReadable ? ["tabs", "activeTab"] : []) {
         try {
             storage.removeItem(legacyKey);
         } catch (error) {

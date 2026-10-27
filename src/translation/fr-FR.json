@@ -982,6 +982,7 @@
     "Startup.StorageFailure.Revoked": "Un accès Lichess enregistré n’a pas pu être supprimé du stockage local. Cet accès ne fonctionne plus sur Lichess. Vous pourrez vous reconnecter une fois ChessFable démarré. Réessayez de supprimer l’accès enregistré.",
     "Startup.StorageFailure.Title": "ChessFable n’a pas pu démarrer",
     "Startup.StorageFailure.TryAgain": "Réessayer",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable n’a pas pu lire l’espace de travail enregistré et l’a laissé inchangé. Réessayez pour le lire une nouvelle fois.",
     "Tab.Actions": "Actions de l’onglet",
     "Tab.Close": "Fermer l’onglet",
     "Tab.CloseWithoutSaving": "Fermer sans enregistrer",

@@ -973,6 +973,7 @@
     "Startup.StorageFailure.Revoked": "En lagret Lichess-pålogging kunne ikke fjernes fra lokal lagring. Denne påloggingen fungerer ikke lenger hos Lichess. Du kan logge på igjen når ChessFable starter. Prøv igjen for å fjerne den lagrede påloggingen.",
     "Startup.StorageFailure.Title": "ChessFable kunne ikke starte",
     "Startup.StorageFailure.TryAgain": "Prøv igjen",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable kunne ikke lese det lagrede arbeidsområdet og lot det stå uendret. Prøv igjen for å lese det én gang til.",
     "Tab.Actions": "Fanehandlinger",
     "Tab.Close": "Lukk fane",
     "Tab.CloseWithoutSaving": "Lukk uten å lagre",

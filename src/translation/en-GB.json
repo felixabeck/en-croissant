@@ -973,6 +973,7 @@
     "Startup.StorageFailure.Revoked": "A saved Lichess sign-in could not be removed from local storage. This sign-in no longer works at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in.",
     "Startup.StorageFailure.Title": "ChessFable could not start",
     "Startup.StorageFailure.TryAgain": "Try again",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable could not read its saved workspace and left it unchanged. Try again to read it once more.",
     "Tab.Actions": "Tab actions",
     "Tab.Close": "Close tab",
     "Tab.CloseWithoutSaving": "Close without saving",

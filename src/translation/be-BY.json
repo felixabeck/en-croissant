@@ -991,6 +991,7 @@
     "Startup.StorageFailure.Revoked": "Не ўдалося выдаліць захаваныя даныя ўваходу ў Lichess з лакальнага сховішча. Гэтыя даныя ўваходу больш не працуюць на Lichess. Вы зможаце ўвайсці зноў пасля запуску ChessFable. Паспрабуйце зноў выдаліць захаваныя даныя ўваходу.",
     "Startup.StorageFailure.Title": "ChessFable не змог запусціцца",
     "Startup.StorageFailure.TryAgain": "Паспрабаваць яшчэ раз",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable не змог прачытаць захаваную працоўную прастору і пакінуў яе без змен. Паспрабуйце яшчэ раз, каб прачытаць яе зноў.",
     "Tab.Actions": "Дзеянні з укладкай",
     "Tab.Close": "Закрыць укладку",
     "Tab.CloseWithoutSaving": "Закрыць без захавання",

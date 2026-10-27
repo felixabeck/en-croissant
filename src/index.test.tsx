@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
+import { WorkspaceReadFailure } from "./components/home/WorkspaceReadFailure";
 import i18n from "./i18n";
 import "./bootstrap";
 
@@ -43,6 +44,7 @@ vi.mock("./state/engineCompletions", () => ({
 vi.mock("./hooks/downloadJobs", () => ({ initializeDownloadFailures }));
 vi.mock("./state/atoms", () => ({ initializeWorkspace }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
+vi.mock("./components/home/WorkspaceReadFailure", () => ({ WorkspaceReadFailure: () => null }));
 vi.mock("./platform/errors", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./platform/errors")>()),
   logFailureSafely,
@@ -154,7 +156,7 @@ test("awaits the previous-document sweep before sessions, i18n and rendering", a
   expect(renderedChild().type).toBe(App);
 });
 
-test("a refused synchronous workspace initialization prevents bootstrap and rendering", async () => {
+test("an unexpected synchronous workspace exception propagates without caching startup", async () => {
   const failure = new DOMException("workspace read refused", "SecurityError");
   initializeWorkspace.mockImplementationOnce(() => {
     throw failure;
@@ -172,6 +174,64 @@ test("a refused synchronous workspace initialization prevents bootstrap and rend
   expect(render).not.toHaveBeenCalled();
   await startApplication();
   expect(createRoot).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])(
+  "a workspace read refusal renders and reveals one retry screen even when i18n rejects: %s",
+  async (i18nRejects) => {
+    const { WorkspaceReadError } = await import("./state/workspace");
+    initializeWorkspace.mockImplementation(() => {
+      throw new WorkspaceReadError(new DOMException("read refused", "SecurityError"));
+    });
+    if (i18nRejects) initializeI18n.mockRejectedValueOnce(new Error("locale load failed"));
+    const sessions = await import("./utils/session");
+    vi.mocked(sessions.initializePersistedSessions).mockClear();
+    const { startApplication } = await import("./bootstrap");
+
+    const startup = startApplication();
+    expect(startApplication()).toBe(startup);
+    await expect(startup).resolves.toBeUndefined();
+    expect(startApplication()).toBe(startup);
+
+    expect(initializeWorkspace).toHaveBeenCalledOnce();
+    expect(createRoot).toHaveBeenCalledOnce();
+    expect(initializeI18n).toHaveBeenCalledOnce();
+    expect(render).toHaveBeenCalledOnce();
+    expect(renderedChild().type).toBe(WorkspaceReadFailure);
+    expect(renderedChild().type).not.toBe(App);
+    expect(closeSplashscreen).toHaveBeenCalledExactlyOnceWith();
+    expect(initializeI18n.mock.invocationCallOrder[0]).toBeLessThan(
+      render.mock.invocationCallOrder[0]!,
+    );
+    expect(render.mock.invocationCallOrder[0]).toBeLessThan(
+      closeSplashscreen.mock.invocationCallOrder[0]!,
+    );
+    expect(releasePreviousDocumentOperations).not.toHaveBeenCalled();
+    expect(sessions.initializePersistedSessions).not.toHaveBeenCalled();
+    expect(initializeDownloadFailures).not.toHaveBeenCalled();
+    expect(initializePathOwners).not.toHaveBeenCalled();
+    expect(initializeEngineCompletions).not.toHaveBeenCalled();
+    expect(logFailureSafely).not.toHaveBeenCalled();
+  },
+);
+
+test("a workspace refusal logs the existing splash-close diagnostic when reveal fails", async () => {
+  const { WorkspaceReadError } = await import("./state/workspace");
+  initializeWorkspace.mockImplementationOnce(() => {
+    throw new WorkspaceReadError(new Error("read refused"));
+  });
+  closeSplashscreen.mockRejectedValueOnce(new Error("reveal failed"));
+  const { startApplication } = await import("./bootstrap");
+  await expect(startApplication()).resolves.toBeUndefined();
+  expect(renderedChild().type).toBe(WorkspaceReadFailure);
+  expect(logFailureSafely).toHaveBeenCalledExactlyOnceWith(
+    "StartupWindowRevealError",
+    {
+      operation: "closeSplashscreen",
+      primaryFailure: { category: "unexpected", message: "StartupWindowRevealError" },
+    },
+    "Startup window reveal failed",
+  );
 });
 
 test("logs a rejected previous-document sweep and still renders the application", async () => {

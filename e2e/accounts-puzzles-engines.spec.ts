@@ -1286,6 +1286,52 @@ test("accounts-puzzles-engines: retains unsaved public cards and retries only th
     expect(diagnostics.join("\n")).not.toContain(token);
 });
 
+test("accounts-puzzles-engines: workspace-read-refusal preserves saved bytes and offers startup retry", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const tabId = "a4d280db-5d3b-4806-807d-7d3637c318a4";
+    const storedWorkspace = serializeStorageValue({
+        version: 1,
+        tabs: [
+            { name: "Saved workspace", value: tabId, type: "new", gameOrigin: { kind: "none" } },
+        ],
+        activeTab: tabId,
+    });
+    await page.addInitScript((workspace) => {
+        localStorage.setItem("i18nextLng", "en-US");
+        sessionStorage.setItem("workspace", workspace);
+        const originalGetItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function (key) {
+            if (this === sessionStorage && key === "workspace")
+                throw new DOMException("workspace read refused", "SecurityError");
+            return originalGetItem.call(this, key);
+        };
+    }, storedWorkspace);
+    await mockScenario({ commands: {} });
+    await page.goto("/");
+
+    await expect(
+        page.getByRole("heading", { name: "ChessFable could not start", level: 1, exact: true }),
+    ).toBeVisible();
+    await expect(
+        page.getByText(
+            "ChessFable could not read its saved workspace and left it unchanged. Try again to read it once more.",
+            { exact: true },
+        ),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation")).toHaveCount(0);
+    await expect(page.getByRole("link")).toHaveCount(0);
+    // Named storage access observes the bytes without calling the refused getItem method.
+    expect(await page.evaluate(() => sessionStorage["workspace"])).toBe(storedWorkspace);
+    const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(invocations.some(({ command }) => command === "close_splashscreen")).toBe(true);
+    await capture("workspace-read-refusal");
+    await expect(page).toHaveScreenshot("workspace-read-refusal.png", { fullPage: true });
+});
+
 test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
     page,
     mockScenario,

@@ -973,6 +973,7 @@
     "Startup.StorageFailure.Revoked": "Eine gespeicherte Lichess-Anmeldung konnte nicht aus dem lokalen Speicher entfernt werden. Diese Anmeldung funktioniert bei Lichess nicht mehr. Du kannst dich wieder anmelden, sobald ChessFable startet. Versuche erneut, die gespeicherte Anmeldung zu entfernen.",
     "Startup.StorageFailure.Title": "ChessFable konnte nicht starten",
     "Startup.StorageFailure.TryAgain": "Erneut versuchen",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable konnte den gespeicherten Arbeitsbereich nicht lesen und hat ihn unverändert gelassen. Versuche es erneut, um ihn noch einmal zu lesen.",
     "Tab.Actions": "Tab-Aktionen",
     "Tab.Close": "Tab schließen",
     "Tab.CloseWithoutSaving": "Ohne Speichern schließen",

@@ -1,4 +1,5 @@
 import { Button, Container, MantineProvider, Stack, Text, Title } from "@mantine/core";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { appCssVariablesResolver, createAppTheme } from "@/styles/theme";
 import enUS from "@/translation/en-US.json";
@@ -35,6 +36,20 @@ export function StartupStorageFailure({
         enUS.translation["Startup.StorageFailure.NotRevoked"];
 
   return (
+    <StartupFailureLayout>
+      <Text>{explanation}</Text>
+      {!allRevoked &&
+        unresolvedReasons.map((reason) => (
+          <Text key={reason}>{revocationReasonText(reason, t)}</Text>
+        ))}
+    </StartupFailureLayout>
+  );
+}
+
+/** Internal layout shared by the two startup refusal screens. */
+export function StartupFailureLayout({ children }: { children: ReactNode }) {
+  const { t } = useTranslation(undefined, { useSuspense: false });
+  return (
     <MantineProvider
       cssVariablesResolver={appCssVariablesResolver}
       defaultColorScheme="dark"
@@ -46,11 +61,7 @@ export function StartupStorageFailure({
             {t("Startup.StorageFailure.Title", {}) ||
               enUS.translation["Startup.StorageFailure.Title"]}
           </Title>
-          <Text>{explanation}</Text>
-          {!allRevoked &&
-            unresolvedReasons.map((reason) => (
-              <Text key={reason}>{revocationReasonText(reason, t)}</Text>
-            ))}
+          {children}
           <Button onClick={() => window.location.reload()}>
             {t("Startup.StorageFailure.TryAgain", {}) ||
               enUS.translation["Startup.StorageFailure.TryAgain"]}

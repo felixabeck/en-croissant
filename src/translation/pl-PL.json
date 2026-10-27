@@ -991,6 +991,7 @@
     "Startup.StorageFailure.Revoked": "Nie udało się usunąć zapisanego logowania do Lichess z pamięci lokalnej. To logowanie nie działa już na Lichess. Możesz zalogować się ponownie po uruchomieniu ChessFable. Spróbuj ponownie usunąć zapisane logowanie.",
     "Startup.StorageFailure.Title": "Nie udało się uruchomić ChessFable",
     "Startup.StorageFailure.TryAgain": "Spróbuj ponownie",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable nie mógł odczytać zapisanego obszaru roboczego i pozostawił go bez zmian. Spróbuj ponownie, aby odczytać go jeszcze raz.",
     "Tab.Actions": "Działania karty",
     "Tab.Close": "Zamknij kartę",
     "Tab.CloseWithoutSaving": "Zamknij bez zapisywania",

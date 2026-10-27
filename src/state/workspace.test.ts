@@ -25,6 +25,7 @@ import {
     pendingPuzzleRemovalCapacityError,
     reconcileLegacyPuzzleRemovals,
     reconcilePendingTreeRemovals,
+    WorkspaceReadError,
 } from "./workspace";
 
 const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) }));
@@ -42,6 +43,134 @@ const legacyTab = {
 function loadStoredWorkspace() {
     return loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
 }
+
+function refuseStorageRead(
+    refusedKey: string,
+    failure = new DOMException("read refused", "SecurityError"),
+) {
+    const read = Storage.prototype.getItem;
+    return vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+        if (this === sessionStorage && key === refusedKey) throw failure;
+        return read.call(this, key);
+    });
+}
+
+function expectLegacyContentRefusal(key: "tabs" | "activeTab") {
+    sessionStorage.clear();
+    const tabs = serializeStorageValue([legacyTab]);
+    const active = serializeStorageValue(legacyTab.value);
+    sessionStorage.setItem("tabs", tabs);
+    sessionStorage.setItem("activeTab", active);
+    const failure = new DOMException("legacy content refused", "SecurityError");
+    const refusal = refuseStorageRead(key, failure);
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const remove = vi.spyOn(Storage.prototype, "removeItem");
+
+    expect(loadStoredWorkspace).toThrow(WorkspaceReadError);
+    expect(loadStoredWorkspace).toThrow(expect.objectContaining({ cause: failure }));
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    refusal.mockRestore();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem("tabs")).toBe(tabs);
+    expect(sessionStorage.getItem("activeTab")).toBe(active);
+}
+
+test("a refused legacy tabs content read leaves activeTab and every byte untouched", () => {
+    expectLegacyContentRefusal("tabs");
+});
+
+test("a refused legacy activeTab content read leaves tabs and every byte untouched", () => {
+    expectLegacyContentRefusal("activeTab");
+});
+
+test.each(["tabs", "activeTab"])(
+    "a refused legacy %s presence read keeps both keys beside an authoritative workspace",
+    (key) => {
+        sessionStorage.clear();
+        const workspace = defaultWorkspace();
+        sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
+        // With tabs absent, the activeTab presence check is reached independently.
+        const legacyKey = key === "tabs" ? "tabs" : "activeTab";
+        sessionStorage.setItem(legacyKey, "legacy bytes");
+        const refusal = refuseStorageRead(key);
+        const remove = vi.spyOn(Storage.prototype, "removeItem");
+
+        expect(loadStoredWorkspace()).toEqual(workspace);
+        expect(remove.mock.calls.flat()).not.toContain("tabs");
+        expect(remove.mock.calls.flat()).not.toContain("activeTab");
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+        refusal.mockRestore();
+        expect(sessionStorage.getItem(legacyKey)).toBe("legacy bytes");
+    },
+);
+
+test("one unreadable pending id is reported once, retained and excluded while other pending trees and orphans are reclaimed", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    const [unreadable, readable, orphan] = Array.from({ length: 3 }, () => crypto.randomUUID());
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    for (const id of [unreadable, readable, orphan]) sessionStorage.setItem(id, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            ...workspace,
+            treeOwnershipPendingRemovalIds: [unreadable, readable],
+        }),
+    );
+    const refusal = refuseStorageRead(unreadable);
+
+    const loaded = loadStoredWorkspace();
+
+    expect(loaded.treeOwnershipPendingRemovalIds).toEqual([unreadable, readable]);
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual(loaded);
+    expect(refusal.mock.calls.filter(([key]) => key === unreadable)).toHaveLength(1);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    refusal.mockRestore();
+    expect(sessionStorage.getItem(unreadable)).toBe(tree);
+    expect(sessionStorage.getItem(readable)).toBeNull();
+    expect(sessionStorage.getItem(orphan)).toBeNull();
+
+    expect(loadStoredWorkspace().treeOwnershipPendingRemovalIds).toEqual([unreadable]);
+    expect(sessionStorage.getItem(unreadable)).toBeNull();
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+        treeOwnershipPendingRemovalIds: [unreadable],
+    });
+    expect(loadStoredWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).not.toHaveProperty(
+        "treeOwnershipPendingRemovalIds",
+    );
+});
+
+test("a fresh ownership snapshot excludes pending ids before their single refused read", () => {
+    sessionStorage.clear();
+    const workspace = defaultWorkspace();
+    const unreadable = crypto.randomUUID();
+    const other = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(unreadable, tree);
+    sessionStorage.setItem(other, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            ...workspace,
+            treeOwnershipUncertain: true,
+            treeOwnershipPendingRemovalIds: [unreadable],
+        }),
+    );
+    const refusal = refuseStorageRead(unreadable);
+
+    const loaded = loadStoredWorkspace();
+
+    expect(loaded.treeOwnershipProtectedIds).toEqual([other]);
+    expect(loaded.treeOwnershipPendingRemovalIds).toEqual([unreadable]);
+    expect(refusal.mock.calls.filter(([key]) => key === unreadable)).toHaveLength(1);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    refusal.mockRestore();
+    expect(sessionStorage.getItem(unreadable)).toBe(tree);
+    expect(sessionStorage.getItem(other)).toBe(tree);
+});
 
 function puzzleRepairFixture() {
     sessionStorage.clear();
@@ -1775,7 +1904,11 @@ test("pending-removal overflow reports the count after partial cleanup", () => {
     );
 
     deny.mockRestore();
-    expect(result).toEqual({ ids: null, overflowCount: MAX_PENDING_TREE_REMOVALS + 2 });
+    expect(result).toEqual({
+        ids: null,
+        overflowCount: MAX_PENDING_TREE_REMOVALS + 2,
+        unreadableIds: new Set(),
+    });
     expect(sessionStorage.getItem(priorIds[0]!)).toBeNull();
     expect(sessionStorage.getItem(priorIds[1]!)).toBe(tree);
 });
@@ -1806,7 +1939,7 @@ test("pending-removal reconciliation excludes retained IDs and leaves an exact-c
 
     const result = reconcilePendingTreeRemovals(priorIds, [retainedId], new Set([retainedId]));
 
-    expect(result).toEqual({ ids: priorIds, overflowCount: null });
+    expect(result).toEqual({ ids: priorIds, overflowCount: null, unreadableIds: new Set() });
     expect(removeItem).not.toHaveBeenCalled();
     removeItem.mockRestore();
 });
@@ -1827,6 +1960,7 @@ test("pending-removal reconciliation accepts exact capacity after one successful
     expect(result).toEqual({
         ids: [...priorIds.slice(1), "new-tree"],
         overflowCount: null,
+        unreadableIds: new Set(),
     });
     expect(sessionStorage.getItem(priorIds[0]!)).toBeNull();
 });

@@ -982,6 +982,7 @@
     "Startup.StorageFailure.Revoked": "Impossibile rimuovere un accesso Lichess salvato dalla memoria locale. Questo accesso non funziona più su Lichess. Potrai accedere di nuovo quando ChessFable si avvierà. Riprova a rimuovere l’accesso salvato.",
     "Startup.StorageFailure.Title": "ChessFable non ha potuto avviarsi",
     "Startup.StorageFailure.TryAgain": "Riprova",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable non ha potuto leggere l’area di lavoro salvata e l’ha lasciata invariata. Riprova per leggerla un’altra volta.",
     "Tab.Actions": "Azioni della scheda",
     "Tab.Close": "Chiudi scheda",
     "Tab.CloseWithoutSaving": "Chiudi senza salvare",

@@ -982,6 +982,7 @@
     "Startup.StorageFailure.Revoked": "No se pudo eliminar un inicio de sesión de Lichess del almacenamiento local. Este inicio de sesión ya no funciona en Lichess. Podrás volver a iniciar sesión cuando ChessFable arranque. Inténtalo de nuevo para eliminar el inicio de sesión guardado.",
     "Startup.StorageFailure.Title": "ChessFable no pudo iniciarse",
     "Startup.StorageFailure.TryAgain": "Intentar de nuevo",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable no pudo leer el espacio de trabajo guardado y lo dejó sin cambios. Inténtalo de nuevo para leerlo otra vez.",
     "Tab.Actions": "Acciones de pestaña",
     "Tab.Close": "Cerrar pestaña",
     "Tab.CloseWithoutSaving": "Cerrar sin guardar",

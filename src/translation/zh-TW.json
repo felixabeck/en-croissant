@@ -964,6 +964,7 @@
     "Startup.StorageFailure.Revoked": "無法從本機儲存空間移除已儲存的 Lichess 登入資訊。此登入資訊在 Lichess 上已失效。ChessFable 啟動後，你可以重新登入。請重試以移除已儲存的登入資訊。",
     "Startup.StorageFailure.Title": "ChessFable 無法啟動",
     "Startup.StorageFailure.TryAgain": "重試",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable 無法讀取已儲存的工作區，因此維持其不變。請重試以再次讀取。",
     "Tab.Actions": "分頁操作",
     "Tab.Close": "關閉分頁",
     "Tab.CloseWithoutSaving": "不儲存並關閉",

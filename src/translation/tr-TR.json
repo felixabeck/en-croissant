@@ -973,6 +973,7 @@
     "Startup.StorageFailure.Revoked": "Kaydedilmiş bir Lichess girişi yerel depolamadan kaldırılamadı. Bu giriş artık Lichess’te çalışmıyor. ChessFable başladıktan sonra yeniden giriş yapabilirsiniz. Kaydedilmiş girişi kaldırmak için yeniden deneyin.",
     "Startup.StorageFailure.Title": "ChessFable başlatılamadı",
     "Startup.StorageFailure.TryAgain": "Tekrar dene",
+    "Startup.WorkspaceReadFailure.Explanation": "ChessFable kayıtlı çalışma alanını okuyamadı ve değiştirmeden bıraktı. Bir kez daha okumak için tekrar dene.",
     "Tab.Actions": "Sekme işlemleri",
     "Tab.Close": "Sekmeyi kapat",
     "Tab.CloseWithoutSaving": "Kaydetmeden kapat",

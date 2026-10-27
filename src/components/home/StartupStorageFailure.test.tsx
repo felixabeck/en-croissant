@@ -9,6 +9,7 @@ import { appCssVariablesResolver, createAppTheme } from "@/styles/theme";
 import enUS from "@/translation/en-US.json";
 import type { RevocationReason } from "@/utils/lichess/revocation";
 import { StartupStorageFailure } from "./StartupStorageFailure";
+import { WorkspaceReadFailure } from "./WorkspaceReadFailure";
 
 vi.mock("@/styles/theme", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/styles/theme")>();
@@ -69,6 +70,59 @@ const reasonKeys = [
   "Lichess.Revocation.Rejected",
   "Lichess.Revocation.Unconfirmed",
 ] as const;
+
+test.each(Object.entries(catalogues))(
+  "renders the workspace refusal from the shipped %s catalogue without credential copy",
+  async (path, catalogue) => {
+    const locale = path.split("/").at(-1)!.replace(".json", "");
+    const i18n = createInstance();
+    await i18n.init({
+      lng: locale,
+      fallbackLng: false,
+      keySeparator: false,
+      resources: { [locale]: catalogue },
+    });
+    await renderWorkspaceFailure(i18n);
+    expect(catalogue.translation["Startup.WorkspaceReadFailure.Explanation"]).toBeTruthy();
+    expect(Array.from(host.querySelectorAll("p"), (p) => p.textContent)).toEqual([
+      catalogue.translation["Startup.WorkspaceReadFailure.Explanation"],
+    ]);
+    expect(host.querySelector("h1")?.textContent).toBe(
+      catalogue.translation["Startup.StorageFailure.Title"],
+    );
+    expect(host.querySelector("button")?.textContent).toBe(
+      catalogue.translation["Startup.StorageFailure.TryAgain"],
+    );
+  },
+);
+
+async function renderWorkspaceFailure(i18n: I18n) {
+  await act(async () =>
+    root.render(
+      <I18nextProvider i18n={i18n}>
+        <WorkspaceReadFailure />
+      </I18nextProvider>,
+    ),
+  );
+}
+
+test("the workspace refusal uses the English fallback before i18n initializes and reloads", async () => {
+  const i18n = createInstance();
+  await renderWorkspaceFailure(i18n);
+  await renderWorkspaceFailure(i18n);
+  expect(host.querySelector("h1")?.textContent).toBe("ChessFable could not start");
+  expect(Array.from(host.querySelectorAll("p"), (p) => p.textContent)).toEqual([
+    "ChessFable could not read its saved workspace and left it unchanged. Try again to read it once more.",
+  ]);
+  expect(host.querySelectorAll("button")).toHaveLength(1);
+  const button = host.querySelector("button");
+  expect(button?.textContent).toBe("Try again");
+  const reload = vi.fn();
+  vi.stubGlobal("window", { location: { reload } });
+  await act(async () => button?.click());
+  expect(reload).toHaveBeenCalledExactlyOnceWith();
+  vi.unstubAllGlobals();
+});
 
 test.each(Object.entries(catalogues))(
   "uses the shipped %s catalogue with fallback disabled",
