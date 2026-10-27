@@ -17,7 +17,7 @@ import {
 import type { TreeState } from "../src/utils/treeReducer";
 import type { Locator, Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
-import bundledEngineCatalog from "../src/catalogs/engines.json";
+import bundledEngineCatalog from "../src/catalogs/engines.json" with { type: "json" };
 
 for (const layout of ["desktop", "narrow"] as const) {
     test(`accounts-puzzles-engines: saved catalog portraits survive reload ${layout}`, async ({
