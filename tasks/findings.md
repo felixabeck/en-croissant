@@ -14001,7 +14001,7 @@ Handled. issue_download_destination, issue_database_workspace and issue_file_wor
 
 ### A move carrying `$1 $2` displays "!?", indistinguishable from the single `$5` glyph
 
-* **ID:** f-20261003-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261003-03 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/common/MoveCell.tsx:69` (`props.annotations.join("")`), fed by `nagGlyphs` through `src/components/common/GameNotation.tsx:312`; the same join builds the eval-chart label in `src/components/common/EvalChart.tsx:107`.
 * **Defect:** The move cell concatenates every glyph a move carries without a separator. A move with `$1` (!) and `$2` (?) therefore reads "!?", which is exactly the glyph of `$5` (interesting move); `$1 $3` reads "!!!" and `$2 $4` reads "???". Observed 2026-10-03 in the real window (`pnpm verify:app`, seeded `2. d4 $1 $2`): the notation showed `d4!?` in the `!` colour. The saved PGN is correct (`d4! $2`), so this is display only. It predates f-20261001-12: the old glyph tree stored `["!", "?"]` and joined them the same way.
 * **Why it matters:** The notation misstates the annotation for any move with two move-quality NAGs, and nothing distinguishes it from `$5`.
@@ -14012,6 +14012,9 @@ Handled. issue_download_destination, issue_database_workspace and issue_file_wor
 
 * **Context:** the NAG model this display builds on — raw codes in `TreeNode.nags`, the `nagGlyphs` projection, and why codes without a glyph stay hidden — is recorded in `tasks/handoffs/2026-10-01-lossless-nags-review.md` and `d-20261003-15`..`d-20261003-20`. Load that handoff before planning this finding; it inherits no open review issue from it.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fc7369631b7c1ccb4caa9e85089701df6abde8fb0c76a03771fb8a661dddf263","input_sha256":"6920a9c2850f9e51a678946fd250643f3b2795d703052700fb7ef236bd2a6697","kind":"mutation-receipt","operation":"fa717ef3f43fd93d71045c1bdbf3acd91718fd08ad71e7e81e82aa84e8a07c39","options":{"section":null},"request_id_sha256":null,"results":["f-20261003-03"],"target":"f-20261003-03","v":1} -->
+
+Handled. The move list and the eval chart join projected NAG glyphs with one ASCII space through `formatNagGlyphs`, so a node carrying `[1, 2]` reads `! ?` and a node carrying `[5]` stays `!?`. The same space keeps `=` and `∞` from drawing the compensation glyph `=∞`. Colour and the chart dot stay on the first projected glyph. The board hint and the PGN writer are unchanged (`e4! $2`). Decision `d-20261027-22`. Commit `eb4e94ca`. Revert proof: with the formatter stashed, the new GameNotation and EvalChart rows failed on the old concatenated text (`e4!?`, `e4!!!`, `e4???`, `e4=∞`) and the formatter tests failed because `formatNagGlyphs` was absent; restoring the formatter made both files pass (112 tests).
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"92caf14b34c395a1f0f3ab0d9efd15a48e087a85eed4dd8737370e62cd901bf2","header_sha256":"842b85460f3678c19ca1be4577c58552f60d23896f4e01989f4e3ec3fb6a79d9","header_status":"handled","input_sha256":"7465a05c8cf88ddc4afe84c623e53e876a6cd18f5ba9bd52063cc811b39e1beb","kind":"mutation-receipt","operation":"2dfb95ef90afea59d2eaac2a97459ae9d89e589106b4e33f28347afdba793c29","options":{"section":null},"request_id_sha256":null,"results":["f-20261003-03"],"target":"f-20261003-03","v":1} -->
 
 ---
 
