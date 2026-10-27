@@ -10205,3 +10205,17 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Decided by:** Codex independent lane, authorized technical choice. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e971000973ceab3771302f05f17feeed650860e6caea94ad3220429c55019514","input_sha256":"c7ddb9a6c12314c386e2ee4f957aad5d418169ff045cb5927c07f83e941602ea","kind":"mutation-receipt","operation":"32717e76bba858dfbd67a25ff94a78ee14140ba8215c5ca161b973d3ea8f4587","options":{"section":null},"request_id_sha256":null,"results":["d-20261026-13"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-27 — recorded through the decisions lock
+
+### d-20261027-02 — How should native metadata verification select a moving File type option?
+
+* **Question:** Does f-20261008-01 require a metadata persistence change or a correction to native verifier pointer targeting?
+* **Governs:** f-20261008-01
+* **Chosen:** Correct the verifier's targeting through one shared reachable, stable coordinate helper and bind Repertoire to the clicked File type control's owned listbox. Require that same control to accept Repertoire before Confirm or filter observation. Preserve real native pointer actions, product transitions, all four original end assertions, independent filename observation, failure collection and existing deadlines. Preserve game-opening disabled and selection observations through the shared helper.
+* **Rejected:** A product metadata change without a product failure, arbitrary sleeps, longer deadlines, disabling transitions, synthetic selection, retrying a failed journey until green, or duplicating the existing stability implementation.
+* **Reason:** The original 20-case focused run reproduced the exact two failed checks in cases7/12/20. Raw trusted events show the measured Repertoire point receiving a Game click as the modal moves. The original Confirm probe already shows Game and native persistence writes that value. The current controlled Select and native sidecar path agree with these events. The corrected 20 independent cases all pass the original four checks and show Repertoire before Confirm. These focused observations retain the reduced-fixture and observer-overhead limits, and do not replace full native verification or semantic control proof.
+* **Reversal path:** Replace this targeting policy only with equivalent real WebKitGTK proof that preserves one intended native click, correct ownership and accepted value before submission, the independent file invariants and game-opening behavior. Remove the disposable focused runner after canonical evidence is retained. No new permanent tool, gate, service or product contract is introduced.
+* **Decided by:** Codex independent lane, authorized technical choice. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"26041e4fdf73cd3d2429861626874439f797b358bb37eefeb29fc9d26a142f06","input_sha256":"d35349ed965eada27b1ea33f8d304e98b4ae8bfdb37101f9877e5ead3516cd65","kind":"mutation-receipt","operation":"e2d38917a855f0f567e9a6b8a09fe3e1b764bcc9bdb21976fd09fd596567b91a","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-02"],"target":"decisions-ledger","v":1} -->
