@@ -2664,7 +2664,8 @@ pub struct StartupPathOwners {
     pub trusted_families: Vec<PathOwnerFamily>,
 }
 
-/// Maximum number of IDs accepted in one trusted attachment-owner request in normal state.
+/// Floor on `authority_id_input_limit()` before retained-ID headroom is added.
+/// `MAX_OWNER_UNKNOWN_IDS` headroom is added only to the raw retained-ID list.
 const MAX_AUTHORITY_REQUEST_IDS: usize = MAX_AUTHORITY_IDS;
 
 /// Stale-renderer allowance on a raw retained-ID list for startup path-owner reconciliation
@@ -14083,6 +14084,439 @@ pub(crate) mod portable_tests {
         );
         assert_ne!(first.modified, second.modified);
     }
+
+    pub(crate) fn attachment_resource(
+        authority: &mut PathAuthority,
+        path: &Path,
+    ) -> EngineResourceHandle {
+        fs::write(path, b"resource").unwrap();
+        let grant = authority
+            .grant_dialog(
+                path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
+            .unwrap()
+    }
+
+    #[test]
+    fn attachment_validation_and_loaded_provisional_startup_sweep_are_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = attachment_resource(&mut authority, &path);
+        let before = fs::read(&registry).unwrap();
+        let unknown = PathRef {
+            id: "unknown".into(),
+        };
+        assert!(authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![unknown.clone()],
+            })
+            .is_ok());
+        assert_eq!(fs::read(&registry).unwrap(), before);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![unknown],
+                startup: false,
+            })
+            .unwrap();
+        assert_eq!(fs::read(&registry).unwrap(), before);
+
+        let ordinary_path = dir.path().join("ordinary.pgn");
+        fs::write(&ordinary_path, b"*").unwrap();
+        let ordinary = authority
+            .migrate_legacy_os_path(
+                ordinary_path.into_os_string(),
+                "ordinary",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let before_nonattachment = fs::read(&registry).unwrap();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![ordinary.id],
+                startup: false,
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read(&registry).unwrap(), before_nonattachment);
+
+        drop(authority);
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        assert!(!reloaded.persistent.contains_key(&handle.id.id));
+
+        let fresh_path = dir.path().join("fresh.nnue");
+        let fresh = attachment_resource(&mut reloaded, &fresh_path);
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        assert!(reloaded.persistent.contains_key(&fresh.id.id));
+    }
+
+    #[test]
+    fn attachment_action_validation_matrix_preserves_memory_and_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let resource_path = dir.path().join("resource.nnue");
+        let ordinary_path = dir.path().join("ordinary.pgn");
+        fs::write(&ordinary_path, b"*").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let attachment = attachment_resource(&mut authority, &resource_path);
+        let ordinary = authority
+            .migrate_legacy_os_path(
+                ordinary_path.into_os_string(),
+                "ordinary",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let before = fs::read(&registry).unwrap();
+        let persistent_before = authority.persistent.clone();
+        let provisional_before = authority.provisional_attachments.clone();
+        let retired_before = authority.retired_attachments.clone();
+        let cleanup_before = authority.image_cleanup.clone();
+        let assert_unchanged = |authority: &PathAuthority| {
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert!(authority.persistent == persistent_before);
+            assert_eq!(authority.provisional_attachments, provisional_before);
+            assert!(authority.retired_attachments == retired_before);
+            assert_eq!(authority.image_cleanup, cleanup_before);
+        };
+        let oversized_retained = (0..=authority
+            .authority_id_input_limit()
+            .saturating_add(MAX_OWNER_UNKNOWN_IDS))
+            .map(|index| PathRef {
+                id: format!("oversized-{index}"),
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: oversized_retained,
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        let oversized_abandoned = (0..=authority.authority_id_input_limit())
+            .map(|index| PathRef {
+                id: format!("oversized-{index}"),
+            })
+            .collect();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: oversized_abandoned,
+                startup: false,
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![],
+                startup: true,
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![PathRef {
+                    id: "unknown-retained".into(),
+                }],
+            })
+            .unwrap();
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![ordinary.id.clone()],
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![ordinary.id],
+                startup: false,
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(authority.persistent.contains_key(&attachment.id.id));
+    }
+
+    #[test]
+    fn stale_retained_attachment_id_keeps_named_live_attachment_and_sweeps_the_omitted_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let first = attachment_resource(&mut authority, &dir.path().join("first.nnue"));
+        let second = attachment_resource(&mut authority, &dir.path().join("second.nnue"));
+        let ordinary_path = dir.path().join("ordinary.pgn");
+        fs::write(&ordinary_path, b"*").unwrap();
+        let ordinary = authority
+            .migrate_legacy_os_path(
+                ordinary_path.into_os_string(),
+                "ordinary",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        drop(authority);
+        let mut reloaded = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let unknown = PathRef {
+            id: "unknown-retained".into(),
+        };
+        let assert_unknown_absent = |authority: &PathAuthority| {
+            assert!(!authority.persistent.contains_key(&unknown.id));
+            assert!(!authority.retired_attachments.contains_key(&unknown.id));
+            assert!(!authority.provisional_attachments.contains(&unknown.id));
+            assert!(!authority.image_cleanup.contains_key(&unknown.id));
+        };
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![first.id.clone(), unknown.clone()],
+            })
+            .unwrap();
+        assert!(reloaded.persistent.contains_key(&first.id.id));
+        assert!(reloaded.persistent.contains_key(&second.id.id));
+        assert_unknown_absent(&reloaded);
+
+        reloaded.provisional_attachments.insert(first.id.id.clone());
+        reloaded.image_cleanup.insert(
+            first.id.id.clone(),
+            reloaded
+                .persistent
+                .get(&first.id.id)
+                .expect("live attachment")
+                .stored
+                .clone(),
+        );
+        let before = fs::read(&registry).unwrap();
+        let persistent_before = reloaded.persistent.clone();
+        let provisional_before = reloaded.provisional_attachments.clone();
+        let retired_before = reloaded.retired_attachments.clone();
+        let cleanup_before = reloaded.image_cleanup.clone();
+        assert!(matches!(
+            reloaded.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![first.id.clone(), ordinary.id, unknown.clone()],
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read(&registry).unwrap(), before);
+        assert!(reloaded.persistent == persistent_before);
+        assert_eq!(reloaded.provisional_attachments, provisional_before);
+        assert!(reloaded.retired_attachments == retired_before);
+        assert_eq!(reloaded.image_cleanup, cleanup_before);
+
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![first.id.clone(), unknown.clone()]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        assert!(reloaded.persistent.contains_key(&first.id.id));
+        assert!(!reloaded.retired_attachments.contains_key(&first.id.id));
+        assert!(!reloaded.persistent.contains_key(&second.id.id));
+        assert!(reloaded.retired_attachments.contains_key(&second.id.id));
+        assert_unknown_absent(&reloaded);
+    }
+
+    #[test]
+    fn stale_attachment_raw_cap_admits_unknown_ids_up_to_existing_headroom() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        authority.save().unwrap();
+        let before = fs::read(&registry).unwrap();
+        let persistent_before = authority.persistent.clone();
+        let provisional_before = authority.provisional_attachments.clone();
+        let retired_before = authority.retired_attachments.clone();
+        let cleanup_before = authority.image_cleanup.clone();
+        let assert_unchanged = |authority: &PathAuthority| {
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert!(authority.persistent == persistent_before);
+            assert_eq!(authority.provisional_attachments, provisional_before);
+            assert!(authority.retired_attachments == retired_before);
+            assert_eq!(authority.image_cleanup, cleanup_before);
+        };
+        let unknown_ids = |limit| {
+            (0..=limit)
+                .map(|index| PathRef {
+                    id: format!("unknown-{index}"),
+                })
+                .collect()
+        };
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: unknown_ids(authority.authority_id_input_limit()),
+            })
+            .unwrap();
+        assert_unchanged(&authority);
+        let exact_cap = authority
+            .authority_id_input_limit()
+            .saturating_add(MAX_OWNER_UNKNOWN_IDS);
+        let exact_cap_ids = (0..exact_cap)
+            .map(|index| PathRef {
+                id: format!("unknown-{index}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(exact_cap_ids.len(), exact_cap);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: exact_cap_ids,
+            })
+            .unwrap();
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: unknown_ids(
+                    authority
+                        .authority_id_input_limit()
+                        .saturating_add(MAX_OWNER_UNKNOWN_IDS)
+                ),
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+    }
+
+    #[test]
+    fn retired_attachment_is_durably_readopted_and_cleanup_only_id_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert!(!authority.persistent.contains_key(&image.id.id));
+        assert!(authority.retired_attachments.contains_key(&image.id.id));
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+        let unknown = PathRef {
+            id: "unknown-retained".into(),
+        };
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone(), unknown.clone()],
+            })
+            .unwrap();
+        assert!(authority.persistent.contains_key(&image.id.id));
+        assert!(!authority.retired_attachments.contains_key(&image.id.id));
+        assert!(!authority.image_cleanup.contains_key(&image.id.id));
+        assert!(!authority.persistent.contains_key(&unknown.id));
+        assert!(!authority.retired_attachments.contains_key(&unknown.id));
+        assert!(!authority.provisional_attachments.contains(&unknown.id));
+        assert!(!authority.image_cleanup.contains_key(&unknown.id));
+        drop(authority);
+        let reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reopened.persistent.contains_key(&image.id.id));
+        assert!(!reopened.image_cleanup.contains_key(&image.id.id));
+
+        for prepare in [true, false] {
+            let mut f = EngineImageCleanupFixture::new();
+            assert_eq!(
+                f.authority
+                    .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
+                    .diagnostic(),
+                "recorded"
+            );
+            let id = f.authority.image_cleanup.keys().next().unwrap().clone();
+            let cleanup_before = f.authority.image_cleanup.clone();
+            assert!(!f.authority.persistent.contains_key(&id));
+            assert!(!f.authority.retired_attachments.contains_key(&id));
+            let retained_ids = vec![PathRef { id: id.clone() }];
+            let action = if prepare {
+                EngineAttachmentAction::Prepare { retained_ids }
+            } else {
+                EngineAttachmentAction::Reconcile {
+                    retained_ids: Some(retained_ids),
+                    abandoned_ids: vec![],
+                    startup: false,
+                }
+            };
+            f.authority.reconcile_engine_attachments(action).unwrap();
+            assert_eq!(f.authority.image_cleanup, cleanup_before);
+            assert!(!f.authority.persistent.contains_key(&id));
+            assert!(!f.authority.retired_attachments.contains_key(&id));
+            assert!(!f.authority.provisional_attachments.contains(&id));
+        }
+    }
+
+    #[test]
+    fn stale_only_startup_snapshot_retires_omitted_loaded_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let first = attachment_resource(&mut authority, &dir.path().join("first.nnue"));
+        let second = attachment_resource(&mut authority, &dir.path().join("second.nnue"));
+        drop(authority);
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        let unknown = PathRef {
+            id: "unknown-retained".into(),
+        };
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![unknown.clone()]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        for attachment in [first, second] {
+            assert!(!reloaded.persistent.contains_key(&attachment.id.id));
+            assert!(reloaded.retired_attachments.contains_key(&attachment.id.id));
+        }
+        assert!(!reloaded.persistent.contains_key(&unknown.id));
+        assert!(!reloaded.retired_attachments.contains_key(&unknown.id));
+        assert!(!reloaded.provisional_attachments.contains(&unknown.id));
+        assert!(!reloaded.image_cleanup.contains_key(&unknown.id));
+    }
 }
 
 #[cfg(unix)]
@@ -14091,7 +14525,7 @@ mod tests {
     use super::database_test_support::replace_parent_with_same_inode_hard_link;
     use super::portable_tests::{
         active_app_owned_test_root, authority, authority_at, get_or_create_app_owned_test_root,
-        set_active_app_owned_test_root, EngineImageCleanupFixture, TestClock,
+        set_active_app_owned_test_root, TestClock,
     };
     use super::resolved::file_identity;
     use super::*;
@@ -25846,20 +26280,7 @@ mod tests {
     }
 
     fn attachment_resource(authority: &mut PathAuthority, path: &Path) -> EngineResourceHandle {
-        fs::write(path, b"resource").unwrap();
-        let grant = authority
-            .grant_dialog(
-                path,
-                "resource",
-                PathClass::SingleDialogGrant,
-                PathOperation::EngineResourceRead,
-                Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        authority
-            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
-            .unwrap()
+        portable_tests::attachment_resource(authority, path)
     }
 
     #[test]
@@ -26067,394 +26488,6 @@ mod tests {
             .resolve(&handle.id, PathOperation::EngineResourceRead, &[])
             .is_err());
         assert_eq!(fs::read(path).unwrap(), b"resource");
-    }
-
-    #[test]
-    fn attachment_validation_and_loaded_provisional_startup_sweep_are_atomic() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("network.nnue");
-        let registry = dir.path().join("registry.json");
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let handle = attachment_resource(&mut authority, &path);
-        let before = fs::read(&registry).unwrap();
-        let unknown = PathRef {
-            id: "unknown".into(),
-        };
-        assert!(authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![unknown.clone()],
-            })
-            .is_ok());
-        assert_eq!(fs::read(&registry).unwrap(), before);
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: None,
-                abandoned_ids: vec![unknown],
-                startup: false,
-            })
-            .unwrap();
-        assert_eq!(fs::read(&registry).unwrap(), before);
-
-        let ordinary_path = dir.path().join("ordinary.pgn");
-        fs::write(&ordinary_path, b"*").unwrap();
-        let ordinary = authority
-            .migrate_legacy_os_path(
-                ordinary_path.into_os_string(),
-                "ordinary",
-                PathClass::PersistentFile,
-                vec![PathOperation::ReadPgn],
-            )
-            .unwrap();
-        let before_nonattachment = fs::read(&registry).unwrap();
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: None,
-                abandoned_ids: vec![ordinary.id],
-                startup: false,
-            }),
-            Err(Error::InvalidInput(_))
-        ));
-        assert_eq!(fs::read(&registry).unwrap(), before_nonattachment);
-
-        drop(authority);
-        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
-        reloaded
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![]),
-                abandoned_ids: vec![],
-                startup: true,
-            })
-            .unwrap();
-        assert!(!reloaded.persistent.contains_key(&handle.id.id));
-
-        let fresh_path = dir.path().join("fresh.nnue");
-        let fresh = attachment_resource(&mut reloaded, &fresh_path);
-        reloaded
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![]),
-                abandoned_ids: vec![],
-                startup: true,
-            })
-            .unwrap();
-        assert!(reloaded.persistent.contains_key(&fresh.id.id));
-    }
-
-    #[test]
-    fn attachment_action_validation_matrix_preserves_memory_and_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("registry.json");
-        let resource_path = dir.path().join("resource.nnue");
-        let ordinary_path = dir.path().join("ordinary.pgn");
-        fs::write(&ordinary_path, b"*").unwrap();
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let attachment = attachment_resource(&mut authority, &resource_path);
-        let ordinary = authority
-            .migrate_legacy_os_path(
-                ordinary_path.into_os_string(),
-                "ordinary",
-                PathClass::PersistentFile,
-                vec![PathOperation::ReadPgn],
-            )
-            .unwrap();
-        let before = fs::read(&registry).unwrap();
-        let persistent_before = authority.persistent.clone();
-        let provisional_before = authority.provisional_attachments.clone();
-        let retired_before = authority.retired_attachments.clone();
-        let cleanup_before = authority.image_cleanup.clone();
-        let assert_unchanged = |authority: &PathAuthority| {
-            assert_eq!(fs::read(&registry).unwrap(), before);
-            assert!(authority.persistent == persistent_before);
-            assert_eq!(authority.provisional_attachments, provisional_before);
-            assert!(authority.retired_attachments == retired_before);
-            assert_eq!(authority.image_cleanup, cleanup_before);
-        };
-        let oversized_retained = (0..=authority
-            .authority_id_input_limit()
-            .saturating_add(MAX_OWNER_UNKNOWN_IDS))
-            .map(|index| PathRef {
-                id: format!("oversized-{index}"),
-            })
-            .collect::<Vec<_>>();
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: oversized_retained,
-            }),
-            Err(Error::ResourceLimit(_))
-        ));
-        assert_unchanged(&authority);
-        let oversized_abandoned = (0..=authority.authority_id_input_limit())
-            .map(|index| PathRef {
-                id: format!("oversized-{index}"),
-            })
-            .collect();
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![]),
-                abandoned_ids: oversized_abandoned,
-                startup: false,
-            }),
-            Err(Error::ResourceLimit(_))
-        ));
-        assert_unchanged(&authority);
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: None,
-                abandoned_ids: vec![],
-                startup: true,
-            }),
-            Err(Error::ResourceLimit(_))
-        ));
-        assert_unchanged(&authority);
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![PathRef {
-                    id: "unknown-retained".into(),
-                }],
-            })
-            .unwrap();
-        assert_unchanged(&authority);
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![ordinary.id.clone()],
-            }),
-            Err(Error::InvalidInput(_))
-        ));
-        assert_unchanged(&authority);
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: None,
-                abandoned_ids: vec![ordinary.id],
-                startup: false,
-            }),
-            Err(Error::InvalidInput(_))
-        ));
-        assert_unchanged(&authority);
-        assert!(authority.persistent.contains_key(&attachment.id.id));
-    }
-
-    #[test]
-    fn stale_retained_attachment_id_keeps_named_live_attachment_and_sweeps_the_omitted_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("registry.json");
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let first = attachment_resource(&mut authority, &dir.path().join("first.nnue"));
-        let second = attachment_resource(&mut authority, &dir.path().join("second.nnue"));
-        let ordinary_path = dir.path().join("ordinary.pgn");
-        fs::write(&ordinary_path, b"*").unwrap();
-        let ordinary = authority
-            .migrate_legacy_os_path(
-                ordinary_path.into_os_string(),
-                "ordinary",
-                PathClass::PersistentFile,
-                vec![PathOperation::ReadPgn],
-            )
-            .unwrap();
-        drop(authority);
-        let mut reloaded = PathAuthority::open(registry.clone(), vec![]).unwrap();
-        let unknown = PathRef {
-            id: "unknown-retained".into(),
-        };
-        let assert_unknown_absent = |authority: &PathAuthority| {
-            assert!(!authority.persistent.contains_key(&unknown.id));
-            assert!(!authority.retired_attachments.contains_key(&unknown.id));
-            assert!(!authority.provisional_attachments.contains(&unknown.id));
-            assert!(!authority.image_cleanup.contains_key(&unknown.id));
-        };
-        reloaded
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![first.id.clone(), unknown.clone()],
-            })
-            .unwrap();
-        assert!(reloaded.persistent.contains_key(&first.id.id));
-        assert!(reloaded.persistent.contains_key(&second.id.id));
-        assert_unknown_absent(&reloaded);
-
-        let before = fs::read(&registry).unwrap();
-        let persistent_before = reloaded.persistent.clone();
-        let provisional_before = reloaded.provisional_attachments.clone();
-        let retired_before = reloaded.retired_attachments.clone();
-        let cleanup_before = reloaded.image_cleanup.clone();
-        assert!(matches!(
-            reloaded.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![first.id.clone(), ordinary.id, unknown.clone()],
-            }),
-            Err(Error::InvalidInput(_))
-        ));
-        assert_eq!(fs::read(&registry).unwrap(), before);
-        assert!(reloaded.persistent == persistent_before);
-        assert_eq!(reloaded.provisional_attachments, provisional_before);
-        assert!(reloaded.retired_attachments == retired_before);
-        assert_eq!(reloaded.image_cleanup, cleanup_before);
-
-        reloaded
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![first.id.clone(), unknown.clone()]),
-                abandoned_ids: vec![],
-                startup: true,
-            })
-            .unwrap();
-        assert!(reloaded.persistent.contains_key(&first.id.id));
-        assert!(!reloaded.retired_attachments.contains_key(&first.id.id));
-        assert!(!reloaded.persistent.contains_key(&second.id.id));
-        assert!(reloaded.retired_attachments.contains_key(&second.id.id));
-        assert_unknown_absent(&reloaded);
-    }
-
-    #[test]
-    fn stale_attachment_raw_cap_admits_unknown_ids_up_to_existing_headroom() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("registry.json");
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        authority.save().unwrap();
-        let before = fs::read(&registry).unwrap();
-        let persistent_before = authority.persistent.clone();
-        let provisional_before = authority.provisional_attachments.clone();
-        let retired_before = authority.retired_attachments.clone();
-        let cleanup_before = authority.image_cleanup.clone();
-        let assert_unchanged = |authority: &PathAuthority| {
-            assert_eq!(fs::read(&registry).unwrap(), before);
-            assert!(authority.persistent == persistent_before);
-            assert_eq!(authority.provisional_attachments, provisional_before);
-            assert!(authority.retired_attachments == retired_before);
-            assert_eq!(authority.image_cleanup, cleanup_before);
-        };
-        let unknown_ids = |limit| {
-            (0..=limit)
-                .map(|index| PathRef {
-                    id: format!("unknown-{index}"),
-                })
-                .collect()
-        };
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: unknown_ids(authority.authority_id_input_limit()),
-            })
-            .unwrap();
-        assert_unchanged(&authority);
-        assert!(matches!(
-            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: unknown_ids(
-                    authority
-                        .authority_id_input_limit()
-                        .saturating_add(MAX_OWNER_UNKNOWN_IDS)
-                ),
-            }),
-            Err(Error::ResourceLimit(_))
-        ));
-        assert_unchanged(&authority);
-    }
-
-    #[test]
-    fn retired_attachment_is_durably_readopted_and_cleanup_only_id_is_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("registry.json");
-        let image_dir = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::EngineImages,
-        )
-        .unwrap();
-        let leaf = uuid::Uuid::new_v4().to_string();
-        let (_, identity) = image_dir
-            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
-                file.write_all(b"image").map_err(Error::from)
-            })
-            .unwrap();
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let image = authority
-            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
-            .unwrap();
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![image.id.clone()],
-            })
-            .unwrap();
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![]),
-                abandoned_ids: vec![],
-                startup: false,
-            })
-            .unwrap();
-        assert!(!authority.persistent.contains_key(&image.id.id));
-        assert!(authority.retired_attachments.contains_key(&image.id.id));
-        assert!(authority.image_cleanup.contains_key(&image.id.id));
-        let unknown = PathRef {
-            id: "unknown-retained".into(),
-        };
-        authority
-            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
-                retained_ids: vec![image.id.clone(), unknown.clone()],
-            })
-            .unwrap();
-        assert!(authority.persistent.contains_key(&image.id.id));
-        assert!(!authority.retired_attachments.contains_key(&image.id.id));
-        assert!(!authority.image_cleanup.contains_key(&image.id.id));
-        assert!(!authority.persistent.contains_key(&unknown.id));
-        assert!(!authority.retired_attachments.contains_key(&unknown.id));
-        assert!(!authority.provisional_attachments.contains(&unknown.id));
-        assert!(!authority.image_cleanup.contains_key(&unknown.id));
-        drop(authority);
-        let reopened = PathAuthority::open(registry, vec![]).unwrap();
-        assert!(reopened.persistent.contains_key(&image.id.id));
-        assert!(!reopened.image_cleanup.contains_key(&image.id.id));
-
-        for prepare in [true, false] {
-            let mut f = EngineImageCleanupFixture::new();
-            assert_eq!(
-                f.authority
-                    .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
-                    .diagnostic(),
-                "recorded"
-            );
-            let id = f.authority.image_cleanup.keys().next().unwrap().clone();
-            let cleanup_before = f.authority.image_cleanup.clone();
-            assert!(!f.authority.persistent.contains_key(&id));
-            assert!(!f.authority.retired_attachments.contains_key(&id));
-            let retained_ids = vec![PathRef { id: id.clone() }];
-            let action = if prepare {
-                EngineAttachmentAction::Prepare { retained_ids }
-            } else {
-                EngineAttachmentAction::Reconcile {
-                    retained_ids: Some(retained_ids),
-                    abandoned_ids: vec![],
-                    startup: false,
-                }
-            };
-            f.authority.reconcile_engine_attachments(action).unwrap();
-            assert_eq!(f.authority.image_cleanup, cleanup_before);
-            assert!(!f.authority.persistent.contains_key(&id));
-            assert!(!f.authority.retired_attachments.contains_key(&id));
-            assert!(!f.authority.provisional_attachments.contains(&id));
-        }
-    }
-
-    #[test]
-    fn stale_only_startup_snapshot_retires_omitted_loaded_attachments() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("registry.json");
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let first = attachment_resource(&mut authority, &dir.path().join("first.nnue"));
-        let second = attachment_resource(&mut authority, &dir.path().join("second.nnue"));
-        drop(authority);
-        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
-        let unknown = PathRef {
-            id: "unknown-retained".into(),
-        };
-        reloaded
-            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
-                retained_ids: Some(vec![unknown.clone()]),
-                abandoned_ids: vec![],
-                startup: true,
-            })
-            .unwrap();
-        for attachment in [first, second] {
-            assert!(!reloaded.persistent.contains_key(&attachment.id.id));
-            assert!(reloaded.retired_attachments.contains_key(&attachment.id.id));
-        }
-        assert!(!reloaded.persistent.contains_key(&unknown.id));
-        assert!(!reloaded.retired_attachments.contains_key(&unknown.id));
-        assert!(!reloaded.provisional_attachments.contains(&unknown.id));
-        assert!(!reloaded.image_cleanup.contains_key(&unknown.id));
     }
 
     #[test]
