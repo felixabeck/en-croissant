@@ -10300,3 +10300,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Source tracing and the read-only probe establish that the consuming FnOnce destroys the original File capture before the cleanup hook. The observed equal-tuple failure does not establish a production leak. The Linux API experiment distinguishes independent lock observation from shared-description duplication and demonstrates a false old comparison under deliberate descriptor reuse, without claiming the historical full-suite event was reproduced. Reuse existing primitives and keep all cancellation, error precedence, lease, progress and directory assertions. Plan review I1 required behavioral observer/callback teardown proof and independent omission controls, closed explicitly in r2. Actual archive-payload proof remains required and is not inferred from the API experiment. Reversal path: replace only this test witness with equivalently demonstrated early/late ownership and normal/error/unwind teardown coverage, removing its observer-specific fixture tests together.
 * **Decided by:** Codex, autonomously under the independent lane authorization. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"51e9672f5cf3244e681fcada262edd5fe2c3c6c7bceaae9c9f67fd61d288c617","input_sha256":"c35a223ba5d895ee21568a0eb3277aa5af9a92aa19a449192ae517dcd4da1924","kind":"mutation-receipt","operation":"cd4c358ba2855f7f32080409015dcd051467d2a14e401fe80b1781b52cf9c971","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261027-11 — What does startup show when the workspace envelope cannot be read?
+
+* **Question:** What does startup show when the workspace key, or the legacy keys that would replace it, cannot be read?
+* **Chosen:** Throw `WorkspaceReadError`, leave every stored byte untouched, cache nothing, and render `WorkspaceReadFailure` with a reload. No sweep and no `setItem`.
+* **Rejected:** Returning `defaultWorkspace()` without writing it. A later successful save of that in-memory default would replace the unread envelope. `d-20261009-11` also forbids caching a failed load as the successful snapshot. Keeping today's uncaught throw leaves startup with no mounted error.
+* **Reason:** The finding requires a report and a retry, and the persisted-state rule forbids inventing a workspace over a refused read. Reload retries `initializeWorkspace` in a new document. Reversal: a later decision that a refused envelope read has a non-destructive editable workspace, with a save barrier that cannot write the default over unread bytes, can replace `WorkspaceReadError` and this screen.
+* **Governs:** f-20261008-03
+* **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** -
+
+### d-20261027-12 — What happens when a pending-removal target cannot be read?
+
+* **Question:** What do `commitWorkspaceAtom` and `loadWorkspace` do when `hasPendingRemovalTarget` throws for a prior id?
+* **Chosen:** Keep the id, skip removal of that id on this pass, exclude it from the fresh ownership snapshot and from the load's orphan sweep, report once per reconcile, and let the rest of the commit or load proceed. The published list is the reconciled set from before removal. Absence on a later load drops the intent.
+* **Rejected:** Treating the throw as absence, which drops the intent and can leave the tree with no retry. Aborting the whole commit or calling `refuseRepair` rolls back unrelated work and still does not answer whether the target exists.
+* **Reason:** `d-20261008-09` ends the intent only for an absent value. The marker-read test already keeps an unread id and reports once. Reversal: restore the uncaught `hasPendingRemovalTarget` filter in `reconcilePendingTreeRemovals` and drop the unreadable ids from its result.
+* **Governs:** f-20261008-03
+* **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** -
+
+### d-20261027-13 — Where is the single report for a refused workspace read?
+
+* **Question:** Where is the single report for a refused workspace read?
+* **Chosen:** An envelope read refusal is the startup screen and not a toast. A legacy presence refusal and an unreadable pending id are one `reportPersistError` each per call. Two classes in one load may report twice.
+* **Rejected:** A toast for the envelope refusal before the notification provider exists, and collapsing the legacy presence refusal with the pending-id refusal into one error.
+* **Reason:** The startup screen is the mounted report for the case that currently prevents any window from mounting. The other two classes already have a mounted notification path. Reversal: route the envelope refusal through `reportPersistError` as well only if a mounted provider is shown to display that toast on this path.
+* **Governs:** f-20261008-03
+* **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"a005599e6aa323216bc9a75bfc045784fb3dcfdcb369a5c6f354c32c1822e3e5","input_sha256":"4139389dd90d6b8fea293201e0aa0c3140bc983f2a040a7829d1742917ee22b6","kind":"mutation-receipt","operation":"2c367a71cfaa08d086c86ccb0f576a8cf732fed021ae584f9a0acf0cb759464e","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-11","d-20261027-12","d-20261027-13"],"target":"decisions-ledger","v":1} -->
