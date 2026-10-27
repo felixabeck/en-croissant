@@ -6457,7 +6457,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** DatabaseFileTarget::path() plus object, length and mtime of the mapped sidecar descriptor plus IndexSource. Invalidation takes &DatabaseFileTarget and matches the database path or object.
 * **Rejected:** A counted infra canonicalisation primitive moves the reach but keeps the TOCTOU window. Object-only and path-only invalidation each regress an existing eviction case.
 * **Reason:** Removes all six pathname reaches and binds identity to the mapped object, following d-20260928-05. The identity probe remains the linearization point from d-20260929-03. Construction moves before mapping, making d-20261005-06's post-map construction failure impossible without changing its invalidation counter mechanism. Reversal path: restore the path constructor and canonicalising invalidation and re-pin R5.
-* **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
+* **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** d-20261027-26
 
 ### d-20261008-16 — Propagate preferred-sidecar descriptor stamp failures
 
@@ -6476,7 +6476,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Stale initial entries name functions with no pins. Removing the machinery would allow future pins without its guard.
 * **Reason:** The migration removes every counted reach. Reversal path: re-add a justified entry to both arrays with its hash.
 * **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"c8ec077be39f3bc74df648f1f4f2f43103e2d85994edaecf46d4fd36bad10b23","input_sha256":"745deee6684e14c3a95a827b9dfbbf7537d38e99f14455be0f130c61721eda62","kind":"mutation-receipt","operation":"80c51acb591a739caa15490ba945b5aa0e14480c076137b864e07e357b07c3ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-15","d-20261008-16","d-20261008-17"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"15f6d66040d647d581a26e466d36337153d5a4dcc9ad5d5ac6fd84c3d19f83ca","input_sha256":"745deee6684e14c3a95a827b9dfbbf7537d38e99f14455be0f130c61721eda62","kind":"mutation-receipt","operation":"80c51acb591a739caa15490ba945b5aa0e14480c076137b864e07e357b07c3ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-15","d-20261008-16","d-20261008-17"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261008-18 — Which mechanism makes responsive breakpoints follow the app font scale?
 
