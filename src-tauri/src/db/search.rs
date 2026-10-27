@@ -1135,36 +1135,25 @@ mod descriptor_identity_tests {
         }
     }
 
-    #[test]
-    fn generation_object_agreement_rejects_different_object_after_wait() {
+    fn assert_generation_object_rejected(expected_message: &'static str) {
         let (_dir, _app, _handle, target, _source) = descriptor_fixture();
         let (_other_dir, _other_app, _other_handle, other_target, _other_source) =
             descriptor_fixture();
         assert_ne!(other_target.identity(), target.identity());
 
-        let result = require_generation_object(
-            &other_target,
-            target.identity(),
-            "database changed while waiting for search generation",
-        );
+        let result = require_generation_object(&other_target, target.identity(), expected_message);
         assert!(matches!(result, Err(Error::Conflict(message))
-            if message == "database changed while waiting for search generation"));
+            if message == expected_message));
+    }
+
+    #[test]
+    fn generation_object_agreement_rejects_different_object_after_wait() {
+        assert_generation_object_rejected("database changed while waiting for search generation");
     }
 
     #[test]
     fn generation_object_agreement_rejects_different_object_before_generation() {
-        let (_dir, _app, _handle, target, _source) = descriptor_fixture();
-        let (_other_dir, _other_app, _other_handle, other_target, _other_source) =
-            descriptor_fixture();
-        assert_ne!(other_target.identity(), target.identity());
-
-        let result = require_generation_object(
-            &other_target,
-            target.identity(),
-            "database changed before search generation",
-        );
-        assert!(matches!(result, Err(Error::Conflict(message))
-            if message == "database changed before search generation"));
+        assert_generation_object_rejected("database changed before search generation");
     }
 
     #[test]
