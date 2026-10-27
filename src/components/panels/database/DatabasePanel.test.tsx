@@ -123,8 +123,7 @@ describe("explorer game failure catalogues", () => {
         expect(template.trim()).not.toBe("");
         expect(template).toContain("{{games}}");
         expect(instance.t(key, { games })).toBe(template.replace("{{games}}", games));
-        if (locale.startsWith("en-")) expect(template).toBe(templates[key]);
-        else expect(template).not.toBe(templates[key]);
+        expect(template === templates[key]).toBe(locale.startsWith("en-"));
       }
       expect(translation[keys[0]]).not.toBe(translation[keys[1]]);
     },
@@ -440,7 +439,7 @@ describe("DatabasePanel", () => {
       const stats = selectedPanel("stats");
       expect(stats.textContent).not.toContain("Board.Database.GamesIncomplete");
       expect(stats.textContent).not.toContain("Board.Database.GamesFailed");
-      if (moves.length > 0) expect(stats.textContent).toContain("e4");
+      expect(stats.textContent?.includes("e4") ?? false).toBe(moves.length > 0);
     },
   );
 
