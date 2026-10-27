@@ -1649,44 +1649,17 @@ async function reachableStableCoordinates(
   );
 }
 
-async function filesRowCoordinates(
-  session,
-  name,
-  timeoutMs = FILES_PROBE_TIMEOUT_MS,
-  stable = false,
-) {
-  if (stable)
-    return reachableStableCoordinates(
-      session,
-      `${name} stable Files row`,
-      `document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']')`,
-      [name],
-      {
-        timeoutMs,
-        leftInset: 60,
-        beforeProbe: () => showLibraryOverview(session).catch(() => false),
-      },
-    );
-  return waitFor(
+async function filesRowCoordinates(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS) {
+  return reachableStableCoordinates(
+    session,
     `${name} Files row`,
-    async () => {
-      await showLibraryOverview(session).catch(() => false);
-      return session
-        .execute(
-          `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
-           if (!row) return false;
-           row.scrollIntoView({ block: 'center' });
-           const box = row.getBoundingClientRect();
-           if (box.width <= 0 || box.height <= 0) return false;
-           const x = Math.round(box.left + Math.min(60, box.width / 2));
-           const y = Math.round(box.top + box.height / 2);
-           if (document.elementFromPoint(x, y)?.closest('[role="treeitem"]') !== row) return false;
-           return { x, y };`,
-          [name],
-        )
-        .catch(() => false);
+    `document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']')`,
+    [name],
+    {
+      timeoutMs,
+      leftInset: 60,
+      beforeProbe: () => showLibraryOverview(session).catch(() => false),
     },
-    { timeoutMs },
   );
 }
 
@@ -4783,12 +4756,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
       .sort();
     if (existsSync(filesMetadataInfoPath))
       throw new Error("the metadata fixture already has a sidecar");
-    const row = await filesRowCoordinates(
-      session,
-      filesMetadataRowName,
-      FILES_PROBE_TIMEOUT_MS,
-      true,
-    );
+    const row = await filesRowCoordinates(session, filesMetadataRowName, FILES_PROBE_TIMEOUT_MS);
     await clickAt(session, row.x, row.y);
     await clickMetadataControl(
       "the FileCard Edit metadata control",
