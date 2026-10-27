@@ -17,6 +17,77 @@ import {
 import type { TreeState } from "../src/utils/treeReducer";
 import type { Locator, Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import bundledEngineCatalog from "../src/catalogs/engines.json";
+
+for (const layout of ["desktop", "narrow"] as const) {
+    test(`accounts-puzzles-engines: saved catalog portraits survive reload ${layout}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertNoHorizontalOverflow,
+    }) => {
+        // Resolve the actual bundled URL, even for a build unlike the mocked host's platform.
+        const catalogEngine = bundledEngineCatalog.find(
+            (entry) => entry.os === "windows" && entry.bmi2 && entry.image,
+        )!;
+        const savedEngine = {
+            type: "local",
+            id: "saved-catalog-engine",
+            legacyAssessment: null,
+            name: "Saved catalog engine",
+            version: catalogEngine.version,
+            filename: "saved-engine",
+            handle: { id: { id: "saved-catalog-binary" }, kind: "engine" },
+            downloadLink: catalogEngine.downloadLink,
+            settings: [],
+        };
+        if (layout === "narrow") await page.setViewportSize({ width: 320, height: 900 });
+        await page.addInitScript(
+            (engines) => {
+                if (localStorage.getItem("engines") === null)
+                    localStorage.setItem("engines", engines);
+                localStorage.setItem("font-size", "100");
+                localStorage.setItem("i18nextLng", "en-US");
+            },
+            serializeStorageValue([savedEngine]),
+        );
+        await mockScenario({
+            commands: {
+                file_exists: { result: true },
+                verify_signed_bytes: { result: null },
+            },
+        });
+        await page.goto("/engines?selected=0");
+        const card = page
+            .getByRole("button", { pressed: true })
+            .filter({ hasText: savedEngine.name });
+        const editor = page.getByRole("button", { name: "Select image", exact: true });
+        const assertPortraits = async () => {
+            for (const surface of [card, editor]) {
+                const image = surface.getByRole("img", { name: savedEngine.name, exact: true });
+                await expect(image).toHaveAttribute("src", catalogEngine.image);
+                await expect(image).toBeVisible();
+                await expect
+                    .poll(() =>
+                        image.evaluate(
+                            (node: HTMLImageElement) => node.complete && node.naturalWidth > 0,
+                        ),
+                    )
+                    .toBe(true);
+            }
+        };
+        await assertPortraits();
+        await assertNoHorizontalOverflow();
+        await capture(`saved-catalog-portraits-${layout}`);
+        const saved = await page.evaluate(() => localStorage.getItem("engines"));
+        await preserveStorageForReload(page);
+        await assertPortraits();
+        expect(await page.evaluate(() => localStorage.getItem("engines"))).toBe(saved);
+        await assertNoHorizontalOverflow();
+        if (layout === "narrow") await editor.scrollIntoViewIfNeeded();
+        await capture(`saved-catalog-portraits-reloaded-${layout}`);
+    });
+}
 
 const rootPermissionError = {
     tag: "backend-error" as const,

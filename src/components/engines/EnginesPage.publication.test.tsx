@@ -44,6 +44,7 @@ vi.mock("@/platform/tauri", async (importOriginal) => {
     tauri: {
       ...actual.tauri,
       fileExists: vi.fn().mockResolvedValue(true),
+      verifySignedBytes: vi.fn().mockResolvedValue(undefined),
       getEngineConfig: mocks.config,
       issueEngineBinary: mocks.binary,
       reconcileEngineAttachments: mocks.reconcile,

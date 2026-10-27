@@ -20,7 +20,6 @@ import {
   TextInput,
   ThemeIcon,
   Title,
-  UnstyledButton,
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import AppModal from "../common/AppModal";
@@ -64,11 +63,11 @@ import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import GoModeInput from "../common/GoModeInput";
-import LocalImage from "../common/LocalImage";
 import OpenFolderButton from "../common/OpenFolderButton";
 import LinesSlider from "../panels/analysis/LinesSlider";
 import AddEngine from "./AddEngine";
 import UpgradeEngineModal from "./UpgradeEngineModal";
+import EnginePortrait from "./EnginePortrait";
 import classes from "./EnginesPage.module.css";
 
 const COMPACT_ENGINES_WIDTH_EM = 62;
@@ -517,35 +516,26 @@ function EngineSettings({
             </Group>
           </Stack>
           <Center className={classes.portrait} w={compact ? "100%" : undefined}>
-            {engine.imageHandle ? (
-              <UnstyledButton
-                type="button"
-                onClick={changeImage}
-                aria-label={t("Engines.Settings.SelectImage")}
-              >
-                <LocalImage
-                  image={engine.imageHandle}
-                  alt={engine.name}
-                  mah="10rem"
-                  maw="100%"
-                  fit="contain"
-                />
-              </UnstyledButton>
-            ) : (
-              <IconAction
-                label={t("Engines.Settings.SelectImage")}
-                size="10rem"
-                variant="subtle"
-                styles={{
-                  root: {
-                    border: "1px dashed",
-                  },
-                }}
-                onClick={changeImage}
-              >
-                <IconPhotoPlus size="2.5rem" />
-              </IconAction>
-            )}
+            <EnginePortrait
+              engine={engine}
+              imageProps={{ mah: "10rem", maw: "100%", fit: "contain" }}
+              selectImage={{ label: t("Engines.Settings.SelectImage"), onClick: changeImage }}
+              fallback={
+                <IconAction
+                  label={t("Engines.Settings.SelectImage")}
+                  size="10rem"
+                  variant="subtle"
+                  styles={{
+                    root: {
+                      border: "1px dashed",
+                    },
+                  }}
+                  onClick={changeImage}
+                >
+                  <IconPhotoPlus size="2.5rem" />
+                </IconAction>
+              }
+            />
           </Center>
         </Group>
         <Divider variant="dashed" label={t("Engines.Settings.SearchSettings")} />
@@ -886,19 +876,11 @@ export function EngineName({ engine, compact = false }: { engine: Engine; compac
 
   return (
     <Group wrap={compact ? "wrap" : "nowrap"} miw={0} className={classes.engineName}>
-      {engine.imageHandle ? (
-        <LocalImage
-          image={engine.imageHandle}
-          alt={engine.name}
-          h="2.5rem"
-          fit="contain"
-          flex={0}
-        />
-      ) : engine.type !== "local" ? (
-        <IconCloud size="2.5rem" />
-      ) : (
-        <IconCpu size="2.5rem" />
-      )}
+      <EnginePortrait
+        engine={engine}
+        imageProps={{ h: "2.5rem", fit: "contain", flex: 0 }}
+        fallback={engine.type !== "local" ? <IconCloud size="2.5rem" /> : <IconCpu size="2.5rem" />}
+      />
       <Stack gap={0} miw={0}>
         <Text
           fw="bold"
