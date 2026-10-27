@@ -127,6 +127,8 @@
     "Board.Database.ExplorerAuthRequired1": "Per utilizzare l'explorer di Lichess è richiesta l'autenticazione. Aggiungi un account",
     "Board.Database.ExplorerAuthRequired2": "Lichess con OAuth per continuare.",
     "Board.Database.Games": "Partite",
+    "Board.Database.GamesFailed": "Impossibile caricare le partite: {{games}}",
+    "Board.Database.GamesIncomplete": "Impossibile caricare queste partite: {{games}}",
     "Board.Database.LichessAll": "Lichess tutto",
     "Board.Database.LichessMaster": "Maestri Lichess",
     "Board.Database.Local": "Locale",

@@ -222,9 +222,14 @@ describe("convertToNormalized", () => {
         });
 
         const normalized = await convertToNormalized(dummyGames);
-        expect(normalized).toHaveLength(2);
-        expect(normalized[0].id).toBe(0);
-        expect(normalized[1].id).toBe(3);
+        expect(normalized.games).toHaveLength(2);
+        expect(normalized.games[0].id).toBe(0);
+        expect(normalized.games[1].id).toBe(3);
+        expect(normalized.failures).toHaveLength(2);
+        expect(normalized.failures.map(({ item, index }) => ({ item, index }))).toEqual([
+            { item: dummyGames[1], index: 1 },
+            { item: dummyGames[2], index: 2 },
+        ]);
         expect(mocks.logError).toHaveBeenCalledTimes(2);
         expect(mocks.logError).toHaveBeenNthCalledWith(
             1,
@@ -234,6 +239,17 @@ describe("convertToNormalized", () => {
             2,
             expect.stringContaining("Lichess game normalization item 2 failed"),
         );
+    });
+
+    test("returns empty failure metadata when every game succeeds", async () => {
+        mocks.getPublicLichessJson.mockResolvedValue(`[White "P"]\n[Black "O"]\n\n1. e4 e5 *`);
+        mocks.lexPgn.mockResolvedValue([]);
+
+        const normalized = await convertToNormalized([dummyGames[0]]);
+
+        expect(normalized.games).toHaveLength(1);
+        expect(normalized.failures).toEqual([]);
+        expect(mocks.logError).not.toHaveBeenCalled();
     });
 
     test("checkpoint 2: abort signal after getLichessGame PGN fetch before parsePGN rejects without diagnostic", async () => {

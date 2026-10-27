@@ -127,6 +127,8 @@
     "Board.Database.ExplorerAuthRequired1": "Lichess Explorer now requires authentication. Add a Lichess account with OAuth in the",
     "Board.Database.ExplorerAuthRequired2": "page to continue.",
     "Board.Database.Games": "Games",
+    "Board.Database.GamesFailed": "Could not load games: {{games}}",
+    "Board.Database.GamesIncomplete": "Could not load these games: {{games}}",
     "Board.Database.LichessAll": "Lichess All",
     "Board.Database.LichessMaster": "Lichess Masters",
     "Board.Database.Local": "Local",

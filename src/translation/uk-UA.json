@@ -127,6 +127,8 @@
     "Board.Database.ExplorerAuthRequired1": "Для Lichess Explorer тепер потрібна автентифікація. Додайте обліковий запис Lichess через OAuth на",
     "Board.Database.ExplorerAuthRequired2": "сторінці, щоб продовжити.",
     "Board.Database.Games": "Ігри",
+    "Board.Database.GamesFailed": "Не вдалося завантажити партії: {{games}}",
+    "Board.Database.GamesIncomplete": "Не вдалося завантажити ці партії: {{games}}",
     "Board.Database.LichessAll": "Lichess: усі",
     "Board.Database.LichessMaster": "Lichess: майстри",
     "Board.Database.Local": "Локально",

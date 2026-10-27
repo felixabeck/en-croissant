@@ -21,6 +21,9 @@ import type { DatabaseHandle } from "@/bindings";
 import { type DatabaseList, type ManagedDatabaseInfo } from "@/utils/db";
 import { DATABASE_LIST_KEY } from "@/hooks/useDatabaseList";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { catalogueI18n, shippedCatalogues } from "@/tests/catalogues";
+import type { SupportedLocale } from "@/i18n";
+import { formatNumber } from "@/utils/format";
 
 const mocks = vi.hoisted(() => ({
   logError: vi.fn(),
@@ -34,7 +37,15 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      [
+        key,
+        ...Object.entries(options ?? {})
+          .filter(([name]) => name !== "defaultValue")
+          .map(([, value]) => value),
+      ].join(" "),
+  }),
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -93,6 +104,32 @@ globalThis.ResizeObserver = MockResizeObserver;
 
 // DataTable checks an empty media query for columns without a visibility restriction.
 installMatchMediaStub({ matches: (query) => query === "" });
+
+describe("explorer game failure catalogues", () => {
+  const templates = {
+    "Board.Database.GamesIncomplete": "Could not load these games: {{games}}",
+    "Board.Database.GamesFailed": "Could not load games: {{games}}",
+  };
+
+  test.each(shippedCatalogues())(
+    "$locale translates both messages without fallback",
+    async ({ locale, translation }) => {
+      const instance = await catalogueI18n(locale as SupportedLocale);
+      const games = "W0 - B0, W1 - B1";
+      const keys = Object.keys(templates) as (keyof typeof templates)[];
+      for (const key of keys) {
+        const template = translation[key];
+        expect(typeof template).toBe("string");
+        expect(template.trim()).not.toBe("");
+        expect(template).toContain("{{games}}");
+        expect(instance.t(key, { games })).toBe(template.replace("{{games}}", games));
+        if (locale.startsWith("en-")) expect(template).toBe(templates[key]);
+        else expect(template).not.toBe(templates[key]);
+      }
+      expect(translation[keys[0]]).not.toBe(translation[keys[1]]);
+    },
+  );
+});
 
 describe("DatabasePanel", () => {
   let container: HTMLDivElement;
@@ -224,25 +261,31 @@ describe("DatabasePanel", () => {
     expect(mocks.logError).not.toHaveBeenCalled();
   });
 
-  test("ordinary network/parser failure retains successful siblings and produces diagnostic", async () => {
-    mocks.getLichessGames.mockResolvedValue(mockExplorerData);
-    mocks.getPublicLichessJson.mockImplementation(async ({ game_id }: { game_id: string }) => {
-      if (game_id === "g0") throw new Error("Connection failed");
-      return `[White "W1"]\n[Black "B1"]\n\n1. d4 d5 *`;
-    });
-    mocks.lexPgn.mockResolvedValue([]);
+  test.each(["lch_all", "lch_master"] as const)(
+    "%s: ordinary failure retains siblings, openings and failure metadata",
+    async (type) => {
+      const fetcher = type === "lch_all" ? mocks.getLichessGames : mocks.getMasterGames;
+      fetcher.mockResolvedValue(mockExplorerData);
+      mocks.getPublicLichessJson.mockImplementation(async ({ game_id }: { game_id: string }) => {
+        if (game_id === "g0") throw new Error("Connection failed");
+        return `[White "W1"]\n[Black "B1"]\n\n1. d4 d5 *`;
+      });
+      mocks.lexPgn.mockResolvedValue([]);
 
-    const result = await fetchOpening(
-      { type: "lch_all", fen: "startpos", options: {} as any, handle: "token-1" },
-      "tab-1",
-    );
+      const result = await fetchOpening(
+        { type, fen: "startpos", options: {} as any, handle: "token-1" },
+        "tab-1",
+      );
 
-    expect(result.openings).toHaveLength(1);
-    expect(result.games).toHaveLength(1);
-    expect(result.games[0].id).toBe(1);
-    expect(mocks.logError).toHaveBeenCalledOnce();
-    expect(mocks.logError).toHaveBeenCalledWith(expect.stringContaining("item 0 failed"));
-  });
+      expect(result.openings).toEqual([{ move: "e4", white: 50, black: 40, draw: 10 }]);
+      expect(result.games).toHaveLength(1);
+      expect(result.games[0].id).toBe(1);
+      expect(result.gameFailures).toHaveLength(1);
+      expect(result.gameFailures![0].item.id).toBe("g0");
+      expect(mocks.logError).toHaveBeenCalledOnce();
+      expect(mocks.logError).toHaveBeenCalledWith(expect.stringContaining("item 0 failed"));
+    },
+  );
 
   const validSession = {
     lichess: {
@@ -320,6 +363,140 @@ describe("DatabasePanel", () => {
       );
     });
   }
+
+  function selectedPanel(value: "games" | "stats") {
+    const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (element) =>
+        element.textContent === `Board.Database.${value === "games" ? "Games" : "Stats"}`,
+    );
+    expect(tab?.getAttribute("aria-selected")).toBe("true");
+    const panel = document.getElementById(tab!.getAttribute("aria-controls")!);
+    expect(container.contains(panel)).toBe(true);
+    expect(panel?.getAttribute("role")).toBe("tabpanel");
+    return panel!;
+  }
+
+  async function mountExplorer(
+    data = mockExplorerData,
+    rejectedIds = ["g0"],
+    diagnostic = "sample-fetch-diagnostic",
+  ) {
+    const store = createJotaiStore();
+    store.set(tabsAtom, [validTab]);
+    store.set(activeTabAtom, tabId);
+    store.set(dbTypeFamily(tabId), "lch_all");
+    store.set(dbTabFamily(tabId), "games");
+    store.set(sessionsAtom, [validSession]);
+    mocks.getLichessGames.mockResolvedValue(data);
+    mocks.getPublicLichessJson.mockImplementation(async ({ game_id }: { game_id: string }) => {
+      if (rejectedIds.includes(game_id)) throw new Error(diagnostic);
+      return `[White "W1"]\n[Black "B1"]\n\n1. d4 d5 *`;
+    });
+    mocks.lexPgn.mockResolvedValue([
+      { type: "Header", value: { tag: "White", value: "W1" } },
+      { type: "Header", value: { tag: "Black", value: "B1" } },
+    ]);
+    await renderPanel(store, {
+      provider: () => new Map(),
+      dedupingInterval: 0,
+      shouldRetryOnError: false,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+    });
+    return store;
+  }
+
+  function expectMatches(panel: HTMLElement, count: number) {
+    const nodes = Array.from(panel.querySelectorAll("p")).filter((node) =>
+      node.textContent?.startsWith("Board.Database.Matches"),
+    );
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].textContent).toBe(`Board.Database.Matches ${formatNumber(count)}`);
+  }
+
+  test.each([
+    { label: "opening totals", moves: mockExplorerData.moves, count: 100 },
+    { label: "no moves", moves: [], count: 2 },
+  ])(
+    "mounted partial failure: $label retains the survivor and counts returned games",
+    async ({ moves, count }) => {
+      const diagnostic = "partial-fetch-private-diagnostic";
+      const store = await mountExplorer({ ...mockExplorerData, moves }, ["g0"], diagnostic);
+      const panel = selectedPanel("games");
+      expect(panel.textContent).toContain("Board.Database.GamesIncomplete W0 - B0");
+      expect(
+        Array.from(panel.querySelectorAll("tbody tr")).some((row) =>
+          row.textContent?.includes("W1"),
+        ),
+      ).toBe(true);
+      expect(panel.querySelector(".mantine-datatable-empty-state[data-active]")).toBeNull();
+      expect(panel.textContent).not.toContain("Board.Database.GamesFailed");
+      expect(panel.textContent).not.toContain(diagnostic);
+      expectMatches(panel, count);
+
+      await act(async () => {
+        store.set(dbTabFamily(tabId), "stats");
+      });
+      const stats = selectedPanel("stats");
+      expect(stats.textContent).not.toContain("Board.Database.GamesIncomplete");
+      expect(stats.textContent).not.toContain("Board.Database.GamesFailed");
+      if (moves.length > 0) expect(stats.textContent).toContain("e4");
+    },
+  );
+
+  test("mounted all failed: names every game without an empty games table or raw diagnostic", async () => {
+    const diagnostic = "all-fetch-private-diagnostic";
+    await mountExplorer(mockExplorerData, ["g0", "g1"], diagnostic);
+    const panel = selectedPanel("games");
+    expect(panel.textContent).toContain("Board.Database.GamesFailed W0 - B0, W1 - B1");
+    expect(panel.textContent).not.toContain("Board.Database.GamesIncomplete");
+    expect(panel.textContent).not.toContain("No games found");
+    expect(panel.querySelector("table")).toBeNull();
+    expect(panel.textContent).not.toContain(diagnostic);
+    expectMatches(panel, 100);
+  });
+
+  test("mounted empty explorer list: keeps the genuine empty state and opening Matches total", async () => {
+    await mountExplorer({ ...mockExplorerData, topGames: [] }, []);
+    const panel = selectedPanel("games");
+    expect(panel.textContent).toContain("No games found");
+    expect(panel.querySelector(".mantine-datatable-empty-state[data-active]")).not.toBeNull();
+    expect(panel.textContent).not.toContain("Board.Database.GamesIncomplete");
+    expect(panel.textContent).not.toContain("Board.Database.GamesFailed");
+    expectMatches(panel, 100);
+  });
+
+  test.each([
+    { white: "  ", black: "\t", expected: "g0" },
+    { white: "  Solo White  ", black: "  ", expected: "Solo White" },
+    { white: "  ", black: "  Solo Black  ", expected: "Solo Black" },
+  ])(
+    "mounted failed labels: trims names and falls back without separators ($expected)",
+    async ({ white, black, expected }) => {
+      const diagnostic = "label-fetch-private-diagnostic";
+      const game = mockExplorerData.topGames[0];
+      await mountExplorer(
+        {
+          ...mockExplorerData,
+          topGames: [
+            {
+              ...game,
+              white: { ...game.white, name: white },
+              black: { ...game.black, name: black },
+            },
+          ],
+        },
+        ["g0"],
+        diagnostic,
+      );
+      const panel = selectedPanel("games");
+      expect(panel.querySelector('[role="alert"]')?.textContent).toBe(
+        `Board.Database.GamesFailed ${expected}`,
+      );
+      expect(panel.textContent).not.toContain(diagnostic);
+      expect(panel.textContent).not.toContain("No games found");
+    },
+  );
 
   async function mountLocal() {
     const store = createJotaiStore();

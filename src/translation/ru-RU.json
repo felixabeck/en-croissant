@@ -127,6 +127,8 @@
     "Board.Database.ExplorerAuthRequired1": "Для Lichess Explorer теперь требуется аутентификация. Добавьте учётную запись Lichess с OAuth на",
     "Board.Database.ExplorerAuthRequired2": "странице, чтобы продолжить.",
     "Board.Database.Games": "Игры",
+    "Board.Database.GamesFailed": "Не удалось загрузить партии: {{games}}",
+    "Board.Database.GamesIncomplete": "Не удалось загрузить эти партии: {{games}}",
     "Board.Database.LichessAll": "Lichess Все",
     "Board.Database.LichessMaster": "Lichess Мастера",
     "Board.Database.Local": "Локальная",

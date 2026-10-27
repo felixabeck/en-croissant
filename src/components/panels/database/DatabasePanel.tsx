@@ -20,7 +20,7 @@ import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { useDatabaseList } from "@/hooks/useDatabaseList";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
-import { type DatabaseHandle } from "@/bindings";
+import { type DatabaseHandle, type NormalizedGame } from "@/bindings";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
   dbTabFamily,
@@ -83,6 +83,12 @@ function sortOpenings(openings: Opening[]) {
   return openings.sort((a, b) => b.black + b.draw + b.white - (a.black + a.draw + a.white));
 }
 
+type OpeningData = {
+  openings: Opening[];
+  games: NormalizedGame[];
+  gameFailures?: Awaited<ReturnType<typeof convertToNormalized>>["failures"];
+};
+
 export async function fetchOnlineOpening<T>(
   fetcher: (fen: string, options: T, handle: string) => Promise<PositionData>,
   fen: string,
@@ -94,6 +100,7 @@ export async function fetchOnlineOpening<T>(
   if (signal?.aborted) {
     throw new DOMException("Cancellation", "AbortError");
   }
+  const normalized = await convertToNormalized(data.topGames || data.recentGames || [], { signal });
   return {
     openings: data.moves.map((move) => ({
       move: move.san,
@@ -101,11 +108,16 @@ export async function fetchOnlineOpening<T>(
       black: move.black,
       draw: move.draws,
     })),
-    games: await convertToNormalized(data.topGames || data.recentGames || [], { signal }),
+    games: normalized.games,
+    gameFailures: normalized.failures,
   };
 }
 
-export async function fetchOpening(db: DBType, tab: string, signal?: AbortSignal) {
+export async function fetchOpening(
+  db: DBType,
+  tab: string,
+  signal?: AbortSignal,
+): Promise<OpeningData> {
   return match(db)
     .with({ type: "lch_all" }, async ({ fen, options, handle }) =>
       fetchOnlineOpening(getLichessGames, fen, options, handle, signal),
@@ -233,6 +245,16 @@ function DatabasePanel() {
     (acc, curr) => acc + curr.black + curr.white + curr.draw,
     0,
   );
+  const reportedGameCount =
+    (openingData?.games.length ?? 0) + (openingData?.gameFailures?.length ?? 0);
+  const matches = Math.max(grandTotal || 0, reportedGameCount);
+  const failedGames = openingData?.gameFailures
+    ?.map(({ item }) => {
+      const names = [item.white.name.trim(), item.black.name.trim()].filter(Boolean);
+      return names.join(" - ") || item.id;
+    })
+    .join(", ");
+  const hasGameFailures = (openingData?.gameFailures?.length ?? 0) > 0;
 
   const header = (
     <>
@@ -268,7 +290,7 @@ function DatabasePanel() {
         {tabType !== "options" && (
           <Text style={{ whiteSpace: "nowrap" }}>
             {t("Board.Database.Matches", {
-              matches: formatNumber(Math.max(grandTotal || 0, openingData?.games.length || 0)),
+              matches: formatNumber(matches),
             })}
           </Text>
         )}
@@ -318,11 +340,26 @@ function DatabasePanel() {
           missingExplorerAuthentication={missingExplorerAuthentication}
           hasReferenceDatabase={!!effectiveReferenceDatabase}
         >
-          <GamesTable
-            games={openingData?.games || []}
-            loading={isLoading}
-            databasePath={dbType.type === "local" ? dbType.options.path : null}
-          />
+          {hasGameFailures && (
+            <Alert color="yellow" style={{ flexShrink: 0 }}>
+              {openingData?.games.length
+                ? t("Board.Database.GamesIncomplete", {
+                    defaultValue: "Could not load these games: {{games}}",
+                    games: failedGames,
+                  })
+                : t("Board.Database.GamesFailed", {
+                    defaultValue: "Could not load games: {{games}}",
+                    games: failedGames,
+                  })}
+            </Alert>
+          )}
+          {(!hasGameFailures || !!openingData?.games.length) && (
+            <GamesTable
+              games={openingData?.games || []}
+              loading={isLoading}
+              databasePath={dbType.type === "local" ? dbType.options.path : null}
+            />
+          )}
         </PanelWithError>
         <PanelWithError
           value="options"

@@ -127,6 +127,8 @@
     "Board.Database.ExplorerAuthRequired1": "Lichess Explorer requiert désormais une authentification. Ajoutez un compte Lichess avec OAuth dans la",
     "Board.Database.ExplorerAuthRequired2": "page pour continuer.",
     "Board.Database.Games": "Parties",
+    "Board.Database.GamesFailed": "Impossible de charger les parties : {{games}}",
+    "Board.Database.GamesIncomplete": "Impossible de charger ces parties : {{games}}",
     "Board.Database.LichessAll": "Lichess entier",
     "Board.Database.LichessMaster": "Lichess Maîtres",
     "Board.Database.Local": "Local",

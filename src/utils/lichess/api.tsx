@@ -21,7 +21,7 @@ import {
   type LichessGamesOptions,
   type MasterGamesOptions,
 } from "@/utils/lichess/explorer";
-import { collectSequential } from "@/utils/collectSequential";
+import { collectSequential, type SequentialFailure } from "@/utils/collectSequential";
 import { countMainPly } from "@/utils/treeReducer";
 
 export const MIN_DATE = new Date(1952, 0, 1);
@@ -193,8 +193,8 @@ type PositionGames = {
 export async function convertToNormalized(
   data: PositionGames,
   options?: { signal?: AbortSignal },
-): Promise<NormalizedGame[]> {
-  const { values } = await collectSequential(
+): Promise<{ games: NormalizedGame[]; failures: SequentialFailure<PositionGames[number]>[] }> {
+  const { values, failures } = await collectSequential(
     data,
     async (game, i) => {
       const pgn = await getLichessGame(game.id);
@@ -216,7 +216,7 @@ export async function convertToNormalized(
     },
     { signal: options?.signal, operation: "Lichess game normalization" },
   );
-  return values;
+  return { games: values, failures };
 }
 
 export type PositionData = {
