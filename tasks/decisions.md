@@ -10492,3 +10492,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Before `set-trailer` ran, d-20261015-24 and d-20261015-27 had Superseded-by `-` and still required refusing overflow. d-20261027-28 recorded that state in the present tense. The trailers were then set, so that sentence is no longer true and must not be what a later session reads. This supersedes only that present-tense sentence. The exact-key list, the cap of 100, replay under uncertain ownership, UUID retired owners, retained-owner protection, and the single registry survive and are restated here. Overflow stays with d-20261027-27. Reversal of the overflow half uses d-20261027-27's reversal path. Reversal of the restated exact-key half still requires equivalent cold-document retry authority, or retirement of legacy migration and all outstanding intents.
 * **Decided by:** Grok, autonomously under full auto, drain session f279e909-abf7-49e1-addc-82d4c37eeff2 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"78a8610ac2e6f18fc14feaaa727ba2abc87bb530d88559234524d251c666538e","input_sha256":"9c72db8248f7224b43b93d6e25237c59e30b490e88a7c73ca39419a0f72faf89","kind":"mutation-receipt","operation":"26de919158c23ad286851871bd86582b62609292b86c09335c122afae912c9d0","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-29"],"target":"decisions-ledger","v":1} -->
+
+### d-20261027-30 — Which safe typed discriminator distinguishes a database admission conflict?
+
+* **Question:** Which safe typed discriminator distinguishes a database admission conflict from other per-database load failures?
+* **Governs:** f-20261009-03
+* **Chosen:** Optional ErrorPayload.databaseAdmission, omitted unless the conflict's inner string is exactly one of the two owned admission constants (`database is open through another directory`, `database is open through another name`), in which case serialization sends true. The renderer copies the flag only when the payload value is exactly true and selects the admission copy only from that flag.
+* **Rejected:** Matching either Display string in TypeScript; adding an AppErrorCategory or an ErrorCategory; adding an Error variant; reusing nameTaken; using RootFailure::Changed; two different user sentences for directory versus name.
+* **Reason:** d-20261018-02 and d-20260904-06 already settle this shape. d-20261011-02 left this panel out of the admission-policy task. d-20261012-02 keeps cross-kind conflicts on the ordinary conflict presentation. Both admission sentences recover when the other binding is released (d-20261011-01). Reversal: a later reviewed contract that still avoids renderer message matching and still withholds the flag from every non-admission conflict.
+* **Decided by:** Grok, full auto, drain session 8d8cca4e-043d-4b21-ab83-22d1895f0bff, adopted plan for f-20261009-03 · **Superseded-by:** -
+
+### d-20261027-31 — Does the selected-error panel change for permission, missing, and generic failures?
+
+* **Question:** Does the selected-error panel change for permission, missing, and generic database load failures?
+* **Governs:** f-20261009-03
+* **Chosen:** No. Corruption guidance stays on those entries. Only an exact admission flag replaces the detail body.
+* **Rejected:** Dropping the corruption description from permission and missing entries in the same change.
+* **Reason:** The finding says to keep ordinary corruption guidance where it is appropriate. Those entries already have their own reason strings, and the lost distinction is the admission case. Reversal: a later product decision that changes permission or missing guidance on its own evidence.
+* **Decided by:** Grok, full auto, drain session 8d8cca4e-043d-4b21-ab83-22d1895f0bff, adopted plan for f-20261009-03 · **Superseded-by:** -
+
+### d-20261027-32 — Does the database admission detail gain a Retry button?
+
+* **Question:** Does the selected database admission detail gain a Retry button?
+* **Governs:** f-20261009-03
+* **Chosen:** No new control. The recovery sentence says the database can be opened again after the other use ends. Revisiting the library already re-reads metadata.
+* **Rejected:** A Retry button on this panel only.
+* **Reason:** The finding asks the user to understand when retrying can work. The account alert already has its own retry for a different failure. A new control is a separate interaction. Reversal: a later product decision that asks for a control on this panel.
+* **Decided by:** Grok, full auto, drain session 8d8cca4e-043d-4b21-ab83-22d1895f0bff, adopted plan for f-20261009-03 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"901c14bae9f71fe642c1b47d041bcce524b60ba4d046fe4ad37d3b0bead2ac5d","input_sha256":"e2b69e00801881f0e1135170add662382da135fe171d8311a44f359beeda69f2","kind":"mutation-receipt","operation":"cd90c60a85a3cb2a3004d6f2096f2c3af2f5cbdd08c978cce2e3a0dd4f36b2d7","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-30","d-20261027-31","d-20261027-32"],"target":"decisions-ledger","v":1} -->
