@@ -422,6 +422,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         try {
             for (let index = 0; index < (enumerableStorage.length ?? 0); index++) {
                 const id = enumerableStorage.key(index);
+                // Stryker disable next-line ConditionalExpression: null is never a member of the pending-id set, so replacing the null check with true is equivalent
                 const isPendingId = id !== null && pendingIds.has(id);
                 if (isPendingId) presentPendingCount++;
             }

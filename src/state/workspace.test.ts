@@ -1949,11 +1949,7 @@ test("pending-removal reconciliation excludes retained prior IDs and keeps other
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
     for (const id of [retainedId, pendingId]) sessionStorage.setItem(id, tree);
 
-    const result = reconcilePendingTreeRemovals(
-        [retainedId, pendingId],
-        [],
-        new Set([retainedId]),
-    );
+    const result = reconcilePendingTreeRemovals([retainedId, pendingId], [], new Set([retainedId]));
 
     expect(result).toEqual({ ids: [pendingId], overflowCount: null, unreadableIds: new Set() });
     expect(sessionStorage.getItem(retainedId)).toBe(tree);
@@ -1980,7 +1976,10 @@ test("pending-removal reconciliation reports the first unreadable error and reta
 
     expect(result).toEqual({ ids, overflowCount: null, unreadableIds: new Set(ids) });
     expect(persistError.reportPersistError).toHaveBeenCalledOnce();
-    expect(persistError.reportPersistError).toHaveBeenCalledWith(firstError);
+    expect(persistError.reportPersistError.mock.calls[0][0]).toBe(firstError);
+    expect(persistError.reportPersistError.mock.calls[0][0].message).toBe(
+        "first pending read refused",
+    );
     read.mockRestore();
     for (const id of ids) expect(sessionStorage.getItem(id)).toBe(tree);
 });
@@ -2072,10 +2071,7 @@ test("protects exactly the documented number of stored trees under a broken enve
     sessionStorage.clear();
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    const treeIds = Array.from(
-        { length: MAX_PROTECTED_TREE_KEYS },
-        (_, index) => `tree-${index}`,
-    );
+    const treeIds = Array.from({ length: MAX_PROTECTED_TREE_KEYS }, (_, index) => `tree-${index}`);
     for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
 
     const workspace = loadStoredWorkspace();
@@ -2088,10 +2084,7 @@ test("a present pending tree counts toward the ownership snapshot capacity", () 
     sessionStorage.clear();
     const pendingId = crypto.randomUUID();
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    const treeIds = Array.from(
-        { length: MAX_PROTECTED_TREE_KEYS },
-        (_, index) => `tree-${index}`,
-    );
+    const treeIds = Array.from({ length: MAX_PROTECTED_TREE_KEYS }, (_, index) => `tree-${index}`);
     for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
     sessionStorage.setItem(pendingId, tree);
     sessionStorage.setItem(
@@ -2189,10 +2182,7 @@ test("an empty ownership walk does not count a pending ID beyond its length", ()
     sessionStorage.clear();
     const pendingId = crypto.randomUUID();
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    const treeIds = Array.from(
-        { length: MAX_PROTECTED_TREE_KEYS },
-        (_, index) => `tree-${index}`,
-    );
+    const treeIds = Array.from({ length: MAX_PROTECTED_TREE_KEYS }, (_, index) => `tree-${index}`);
     for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
     sessionStorage.setItem(
         WORKSPACE_STORAGE_KEY,
