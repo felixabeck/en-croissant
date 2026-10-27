@@ -6863,6 +6863,218 @@ mod tests {
         assert!(state.operations.wait_for_drain(Duration::ZERO).unwrap());
     }
 
+    struct ArchivePayloadTestState {
+        active: bool,
+        #[cfg(target_os = "linux")]
+        observer: Option<std::fs::File>,
+    }
+
+    /// One test owns its keyed callbacks and independent payload description on every exit.
+    struct ArchivePayloadTestOwner {
+        target: PathBuf,
+        state: Arc<Mutex<ArchivePayloadTestState>>,
+    }
+
+    impl ArchivePayloadTestOwner {
+        fn new(target: PathBuf) -> Self {
+            Self {
+                target,
+                state: Arc::new(Mutex::new(ArchivePayloadTestState {
+                    active: true,
+                    #[cfg(target_os = "linux")]
+                    observer: None,
+                })),
+            }
+        }
+
+        fn on_created(&self, observe: impl FnOnce() + Send + 'static) {
+            #[cfg(target_os = "linux")]
+            let state = self.state.clone();
+            ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().insert(
+                self.target.clone(),
+                Box::new(move |_file| {
+                    observe();
+                    #[cfg(target_os = "linux")]
+                    {
+                        let mut state = state.lock().unwrap();
+                        if !state.active {
+                            return;
+                        }
+                        use crate::infra::fs::{
+                            lock_advisory_file, AdvisoryLockError, AdvisoryLockMode,
+                        };
+                        use std::os::fd::AsRawFd;
+
+                        lock_advisory_file(_file, AdvisoryLockMode::NonBlocking).unwrap();
+                        // Reopen only while the original is live. A clone would share its lock.
+                        let observer = std::fs::File::options()
+                            .read(true)
+                            .write(true)
+                            .open(format!("/proc/self/fd/{}", _file.as_raw_fd()))
+                            .unwrap();
+                        assert_eq!(
+                            crate::infra::path_authority::opened_file_identity(&observer).unwrap(),
+                            crate::infra::path_authority::opened_file_identity(_file).unwrap(),
+                            "observer must bind to the live actual payload"
+                        );
+                        let contention =
+                            lock_advisory_file(&observer, AdvisoryLockMode::NonBlocking);
+                        assert!(
+                            matches!(contention, Err(AdvisoryLockError::HeldElsewhere(_))),
+                            "independent live payload observer must contend: {contention:?}"
+                        );
+                        assert!(state.observer.replace(observer).is_none());
+                    }
+                }),
+            );
+        }
+    }
+
+    impl Drop for ArchivePayloadTestOwner {
+        fn drop(&mut self) {
+            // Recover poisoned test state without a second panic during assertion unwinding.
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.active = false;
+            #[cfg(target_os = "linux")]
+            drop(state.observer.take());
+            drop(state);
+            let created = ARCHIVE_PAYLOAD_CREATED_HOOKS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&self.target);
+            let network = ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&self.target);
+            let cleanup = ARCHIVE_PAYLOAD_CLEANUP_HOOKS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&self.target);
+            // Drop captures outside the registries, just as dispatch invokes them outside locks.
+            drop((created, network, cleanup));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_archive_payload_description_released(file: &std::fs::File, message: &str) {
+        use crate::infra::fs::{
+            lock_advisory_file, retry_until_lock_released, AdvisoryLockError, AdvisoryLockMode,
+        };
+
+        retry_until_lock_released(|| {
+            match lock_advisory_file(file, AdvisoryLockMode::NonBlocking) {
+                Ok(()) => Some(Ok(())),
+                Err(AdvisoryLockError::HeldElsewhere(_)) => None,
+                Err(AdvisoryLockError::Io(error)) => Some(Err(error)),
+            }
+        })
+        .unwrap_or_else(|| panic!("{message}"))
+        .unwrap_or_else(|error| panic!("payload release observation I/O failure: {error}"));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_archive_payload_owner_teardown(exit: &str) {
+        use crate::infra::fs::{lock_advisory_file, AdvisoryLockError, AdvisoryLockMode};
+        use std::os::fd::AsRawFd;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("payload-owner");
+        let original = tempfile::tempfile().unwrap();
+        let owner = ArchivePayloadTestOwner::new(target.clone());
+        owner.on_created(|| {});
+        run_archive_payload_created_hook(&target, &original);
+        let state = owner.state.clone();
+        let checker = {
+            let state = state.lock().unwrap();
+            let observer = state.observer.as_ref().unwrap();
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(format!("/proc/self/fd/{}", observer.as_raw_fd()))
+                .unwrap()
+        };
+        drop(original);
+        {
+            let state = state.lock().unwrap();
+            assert_archive_payload_description_released(
+                state.observer.as_ref().unwrap(),
+                "teardown setup original release",
+            );
+        }
+        assert!(matches!(
+            lock_advisory_file(&checker, AdvisoryLockMode::NonBlocking),
+            Err(AdvisoryLockError::HeldElsewhere(_))
+        ));
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let created = callbacks.clone();
+        ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().insert(
+            target.clone(),
+            Box::new(move |_| {
+                created.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        for hooks in [
+            &ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS,
+            &ARCHIVE_PAYLOAD_CLEANUP_HOOKS,
+        ] {
+            let callbacks = callbacks.clone();
+            hooks.lock().unwrap().insert(
+                target.clone(),
+                Box::new(move |_| {
+                    callbacks.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+        }
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owner = owner;
+            match exit {
+                "normal" => Ok(()),
+                "error" => Err("deliberate early body error"),
+                "unwind" => panic!("deliberate body unwind"),
+                _ => unreachable!(),
+            }
+        }));
+        match exit {
+            "normal" => assert_eq!(body.unwrap(), Ok(())),
+            "error" => assert_eq!(body.unwrap(), Err("deliberate early body error")),
+            "unwind" => assert!(body.is_err()),
+            _ => unreachable!(),
+        }
+        // These observations are outside the deliberately failing body. Keep state alive so
+        // a missing explicit disposal cannot accidentally pass through the last Arc dropping.
+        assert_archive_payload_description_released(
+            &checker,
+            "post-exit observer description must be released",
+        );
+        run_archive_payload_created_hook(&target, &checker);
+        run_path_hook(&ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS, &target);
+        run_path_hook(&ARCHIVE_PAYLOAD_CLEANUP_HOOKS, &target);
+        assert_eq!(
+            callbacks.load(Ordering::SeqCst),
+            0,
+            "post-exit pending callbacks must not execute"
+        );
+        drop(state);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn archive_staging_authority_observer_teardown_normal() {
+        assert_archive_payload_owner_teardown("normal");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn archive_staging_authority_observer_teardown_error() {
+        assert_archive_payload_owner_teardown("error");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn archive_staging_authority_observer_teardown_unwind() {
+        assert_archive_payload_owner_teardown("unwind");
+    }
+
     async fn assert_archive_terminal_cleanup_waits_for_admission(network_failure: bool) {
         let _exclusive_gateway_test = ARCHIVE_GATEWAY_TEST_LOCK.lock().await;
         let dir = tempdir().unwrap();
@@ -6884,31 +7096,17 @@ mod tests {
         state.pgn_path_authority.install(authority).unwrap();
         let target = engine_root.join("installed");
         let runtime_thread = std::thread::current().id();
+        let payload_owner = ArchivePayloadTestOwner::new(target.clone());
         let created = Arc::new(AtomicBool::new(false));
         let creation_observed = created.clone();
-        #[cfg(target_os = "linux")]
-        let descriptor = Arc::new(Mutex::new(None));
-        #[cfg(target_os = "linux")]
-        let created_descriptor = descriptor.clone();
-        ARCHIVE_PAYLOAD_CREATED_HOOKS.lock().unwrap().insert(
-            target.clone(),
-            Box::new(move |_file| {
-                assert_ne!(
-                    std::thread::current().id(),
-                    runtime_thread,
-                    "payload creation must leave the runtime worker"
-                );
-                #[cfg(target_os = "linux")]
-                {
-                    use std::os::fd::AsRawFd;
-                    *created_descriptor.lock().unwrap() = Some((
-                        _file.as_raw_fd(),
-                        crate::infra::path_authority::opened_file_identity(_file).unwrap(),
-                    ));
-                }
-                creation_observed.store(true, Ordering::SeqCst);
-            }),
-        );
+        payload_owner.on_created(move || {
+            assert_ne!(
+                std::thread::current().id(),
+                runtime_thread,
+                "payload creation must leave the runtime worker"
+            );
+            creation_observed.store(true, Ordering::SeqCst);
+        });
         let (network_done_tx, network_done_rx) = tokio::sync::oneshot::channel();
         ARCHIVE_PAYLOAD_NETWORK_DONE_HOOKS.lock().unwrap().insert(
             target.clone(),
@@ -6924,21 +7122,32 @@ mod tests {
             release: Some(cleanup_release_tx),
         };
         #[cfg(target_os = "linux")]
-        let cleanup_descriptor = descriptor.clone();
-        ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().insert(target, Box::new(move |_| {
-            assert_ne!(std::thread::current().id(), runtime_thread, "terminal payload cleanup must leave the runtime worker");
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::fs::MetadataExt;
-                let (fd, identity) = cleanup_descriptor.lock().unwrap().unwrap();
-                if let Ok(metadata) = std::fs::metadata(format!("/proc/self/fd/{fd}")) {
-                    assert_ne!((metadata.dev(), metadata.ino()), identity, "terminal worker must destroy the actual anonymous payload before reporting cleanup");
+        let cleanup_observer = payload_owner.state.clone();
+        ARCHIVE_PAYLOAD_CLEANUP_HOOKS.lock().unwrap().insert(
+            target,
+            Box::new(move |_| {
+                assert_ne!(
+                    std::thread::current().id(),
+                    runtime_thread,
+                    "terminal payload cleanup must leave the runtime worker"
+                );
+                #[cfg(target_os = "linux")]
+                {
+                    let observer = cleanup_observer.lock().unwrap().observer.take().unwrap();
+                    assert_archive_payload_description_released(
+                        &observer,
+                        "terminal cleanup must release the original payload description",
+                    );
+                    // Acquisition proves original-description release, not physical inode destruction.
+                    drop(observer);
                 }
-            }
-            cleanup_observed.store(true, Ordering::SeqCst);
-            let _ = cleanup_entered_tx.send(());
-            cleanup_release_rx.recv_timeout(Duration::from_secs(5)).expect("terminal cleanup release");
-        }));
+                cleanup_observed.store(true, Ordering::SeqCst);
+                let _ = cleanup_entered_tx.send(());
+                cleanup_release_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("terminal cleanup release");
+            }),
+        );
         let app = test_progress_app();
         let (mut command, cancellation) = spawn_accepted_archive(
             state.clone(),
@@ -7007,13 +7216,15 @@ mod tests {
         );
         #[cfg(target_os = "linux")]
         {
-            use std::os::unix::fs::MetadataExt;
-            let (fd, identity) = descriptor.lock().unwrap().unwrap();
-            let metadata = std::fs::metadata(format!("/proc/self/fd/{fd}")).unwrap();
-            assert_eq!(
-                (metadata.dev(), metadata.ino()),
-                identity,
-                "queued cleanup must retain its actual payload descriptor"
+            use crate::infra::fs::{lock_advisory_file, AdvisoryLockError, AdvisoryLockMode};
+            let state = payload_owner.state.lock().unwrap();
+            let contention = lock_advisory_file(
+                state.observer.as_ref().unwrap(),
+                AdvisoryLockMode::NonBlocking,
+            );
+            assert!(
+                matches!(contention, Err(AdvisoryLockError::HeldElsewhere(_))),
+                "queued cleanup must retain the original payload description: {contention:?}"
             );
         }
         drop(holder_guards);
