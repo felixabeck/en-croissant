@@ -244,11 +244,11 @@ pub(crate) fn load_search_index_cancellable(
     let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
     let (read_target, invalidation_snapshot, db_identity, expected_source) = probe_attempt()?;
-    if read_target.identity() != generation_object {
-        return Err(Error::Conflict(
-            "database changed while waiting for search generation".into(),
-        ));
-    }
+    require_generation_object(
+        &read_target,
+        generation_object,
+        "database changed while waiting for search generation",
+    )?;
     if let Some((identity, index)) =
         open_valid_preferred(&read_target, &expected_source, cancellation)?
     {
@@ -275,11 +275,11 @@ pub(crate) fn load_search_index_cancellable(
             PathOperation::DatabaseMutate
         },
     )?;
-    if mutate_target.identity() != generation_object {
-        return Err(Error::Conflict(
-            "database changed before search generation".into(),
-        ));
-    }
+    require_generation_object(
+        &mutate_target,
+        generation_object,
+        "database changed before search generation",
+    )?;
     let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
     let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
     search_cache.invalidate_database(&mutate_target);
@@ -337,6 +337,17 @@ pub(crate) fn load_search_index_cancellable(
         invalidation_snapshot,
         cancellation,
     )
+}
+
+fn require_generation_object(
+    target: &DatabaseFileTarget,
+    expected_object: (u64, u64),
+    failure_message: &'static str,
+) -> Result<(), Error> {
+    if target.identity() != expected_object {
+        return Err(Error::Conflict(failure_message.into()));
+    }
+    Ok(())
 }
 
 fn open_valid_preferred(
@@ -1101,6 +1112,59 @@ mod descriptor_identity_tests {
             SearchIndexChunk::default(),
         );
         (dir, app, handle, target, source)
+    }
+
+    #[test]
+    fn generation_object_agreement_accepts_equal_authority_bound_objects() {
+        let (_dir, app, handle, target, _source) = descriptor_fixture();
+        let state = app.state::<AppState>();
+        let resolved = super::super::resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        assert_eq!(resolved.identity(), target.identity());
+        for failure_message in [
+            "database changed while waiting for search generation",
+            "database changed before search generation",
+        ] {
+            assert!(
+                require_generation_object(&resolved, target.identity(), failure_message).is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn generation_object_agreement_rejects_different_object_after_wait() {
+        let (_dir, _app, _handle, target, _source) = descriptor_fixture();
+        let (_other_dir, _other_app, _other_handle, other_target, _other_source) =
+            descriptor_fixture();
+        assert_ne!(other_target.identity(), target.identity());
+
+        let result = require_generation_object(
+            &other_target,
+            target.identity(),
+            "database changed while waiting for search generation",
+        );
+        assert!(matches!(result, Err(Error::Conflict(message))
+            if message == "database changed while waiting for search generation"));
+    }
+
+    #[test]
+    fn generation_object_agreement_rejects_different_object_before_generation() {
+        let (_dir, _app, _handle, target, _source) = descriptor_fixture();
+        let (_other_dir, _other_app, _other_handle, other_target, _other_source) =
+            descriptor_fixture();
+        assert_ne!(other_target.identity(), target.identity());
+
+        let result = require_generation_object(
+            &other_target,
+            target.identity(),
+            "database changed before search generation",
+        );
+        assert!(matches!(result, Err(Error::Conflict(message))
+            if message == "database changed before search generation"));
     }
 
     #[test]
@@ -2867,6 +2931,8 @@ mod tests {
 
     #[test]
     fn changed_database_after_generation_wait_is_rejected_without_publication() {
+        // Authority refuses the replacement before the object-agreement guards.
+        // This integration proves rejection and no publication, not those guards.
         let (dir, app, handle, database) = loader_test_case(vec![
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,

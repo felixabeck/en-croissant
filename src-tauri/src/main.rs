@@ -226,7 +226,9 @@ impl SearchIndexIdentity {
         Self::from_opened_sidecar(&target, source, &file)
     }
 
-    fn matches_database(&self, parent: Option<(u64, u64)>, object: (u64, u64)) -> bool {
+    // A simultaneous replacement and spelling change can leave cached entries
+    // under the old object and sidecar. Invalidate the whole parent to cover them.
+    fn matches_invalidation_scope(&self, parent: Option<(u64, u64)>, object: (u64, u64)) -> bool {
         parent.is_none_or(|parent| self.parent_object == parent || self.source.object == object)
     }
 }
@@ -453,12 +455,15 @@ impl SearchCache {
         self.results
             .lock()
             .expect("search result cache poisoned")
-            .retain(|key, _| !key.identity.matches_database(parent, target.identity()));
+            .retain(|key, _| {
+                !key.identity
+                    .matches_invalidation_scope(parent, target.identity())
+            });
         let evicted = self
             .indexes
             .lock()
             .expect("search index cache poisoned")
-            .retain(|identity, _| !identity.matches_database(parent, target.identity()));
+            .retain(|identity, _| !identity.matches_invalidation_scope(parent, target.identity()));
         drop(evicted);
     }
 }
