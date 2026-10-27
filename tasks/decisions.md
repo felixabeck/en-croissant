@@ -10317,7 +10317,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Treating the throw as absence, which drops the intent and can leave the tree with no retry. Aborting the whole commit or calling `refuseRepair` rolls back unrelated work and still does not answer whether the target exists.
 * **Reason:** `d-20261008-09` ends the intent only for an absent value. The marker-read test already keeps an unread id and reports once. Reversal: restore the uncaught `hasPendingRemovalTarget` filter in `reconcilePendingTreeRemovals` and drop the unreadable ids from its result.
 * **Governs:** f-20261008-03
-* **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** -
+* **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** d-20261027-16
 
 ### d-20261027-13 — Where is the single report for a refused workspace read?
 
@@ -10327,7 +10327,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The startup screen is the mounted report for the case that currently prevents any window from mounting. The other two classes already have a mounted notification path. Reversal: route the envelope refusal through `reportPersistError` as well only if a mounted provider is shown to display that toast on this path.
 * **Governs:** f-20261008-03
 * **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, local plan review round 5 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"a005599e6aa323216bc9a75bfc045784fb3dcfdcb369a5c6f354c32c1822e3e5","input_sha256":"4139389dd90d6b8fea293201e0aa0c3140bc983f2a040a7829d1742917ee22b6","kind":"mutation-receipt","operation":"2c367a71cfaa08d086c86ccb0f576a8cf732fed021ae584f9a0acf0cb759464e","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-11","d-20261027-12","d-20261027-13"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"5fe144983302b220c0fd012978799ccd94db2a681daba2deb65460bcf92cc3f2","input_sha256":"4139389dd90d6b8fea293201e0aa0c3140bc983f2a040a7829d1742917ee22b6","kind":"mutation-receipt","operation":"2c367a71cfaa08d086c86ccb0f576a8cf732fed021ae584f9a0acf0cb759464e","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-11","d-20261027-12","d-20261027-13"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261027-14 — The refused-workspace startup screen exceeds the gzip entry ceiling by 34 bytes. Cut the screen or raise the ceiling?
 
