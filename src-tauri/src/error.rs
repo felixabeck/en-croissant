@@ -156,7 +156,7 @@ pub struct ErrorPayload {
     pub root_failure: Option<RootFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
-    pub engine_failure: Option<crate::engine::EngineTerminalSnapshot>,
+    pub engine_failure: Option<Box<crate::engine::EngineTerminalSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub remote_http_rejection: Option<RemoteHttpRejection>,
@@ -1056,7 +1056,7 @@ impl Error {
             category: self.category(),
             message: self.to_string(),
             root_failure: self.root_failure(),
-            engine_failure: self.engine_failure_snapshot().cloned(),
+            engine_failure: self.engine_failure_snapshot().cloned().map(Box::new),
             remote_http_rejection: self.remote_http_rejection(),
             name_taken:
                 matches!(self, Self::Conflict(message) if message == WORKSPACE_FILE_NAME_TAKEN)
