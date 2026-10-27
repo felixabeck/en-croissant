@@ -10241,3 +10241,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** add an explicit unknown-id list to the command and prune those ids from owner documents before `setItem`, with the same prepare-before-write proof and with retired in-memory ids still readopted rather than pruned. A second reversal of this question parks it.
 * **Decided by:** Grok, full auto, session 9a14069d-2996-489d-b1c3-ef7e62dea04d, drain run 93f3da77-42b8-4edd-bb3c-bae8106349d6, records review of d-20261027-03 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2773c23b2109937a4b6885171f93fef08ced591706c7c3b559babfc8c379663b","input_sha256":"c073c4ae12ebe176d43ec0edeb1f087a07a08d395d2d614cbdba375c6765bf46","kind":"mutation-receipt","operation":"d9a1cfc6c6ec48ffb3b90bb94a8e74dc86c780460e850a9e6b19d36723d05f44","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261027-05 — How should the explorer Games tab mark games whose PGN fetch or parse failed?
+
+* **Question:** How should the explorer Games tab mark games whose PGN fetch or parse failed?
+* **Governs:** f-20261007-10
+* **Chosen:** A yellow Alert on the Games tab only, naming every failed game. Partial failure: the notice above the games that loaded, key `Board.Database.GamesIncomplete`, English "Could not load these games: {{games}}". Every game failed: do not render the games table; key `Board.Database.GamesFailed`, English "Could not load games: {{games}}". A genuinely empty explorer list keeps "No games found" and shows no notice.
+* **Rejected:** An anonymous count; a toast; failing the whole explorer request; one shared sentence for both the partial and the all-failed states; translating `GamesTable`'s existing "No games found".
+* **Reason:** `d-20261008-03` already chose a named warning over successful data, and a distinct "could not load" state instead of "No games found" when nothing succeeded. Two keys let the proof distinguish the states. One sentence is enough because the only fact is the list of names. The explorer sample is at most 4 or 15 games, so naming each one matches the home precedent. Reversal: remove the notice from `DatabasePanel.tsx` and delete `Board.Database.GamesIncomplete` and `Board.Database.GamesFailed`.
+* **Decided by:** Grok, autonomously under full auto, adopting the reviewed plan for f-20261007-10 · **Superseded-by:** -
+
+### d-20261027-06 — Should Matches keep counting explorer games whose PGN did not load?
+
+* **Question:** Should Matches keep counting explorer games whose PGN did not load?
+* **Governs:** f-20261007-10
+* **Chosen:** Yes, as the floor under the opening-move total. The floor is loaded games plus `gameFailures`. A larger opening total is unchanged. Failures are not subtracted from that total.
+* **Rejected:** Showing only games that loaded when that count is the floor; adding failed games on top of an opening total that is already larger; changing Matches for local search.
+* **Reason:** Matches is not a games-table count. The opening statistics are the number the header shows whenever moves were returned, and those statistics did not fail. The floor exists so a position with games and no move rows still shows how many games the explorer returned. Dropping a failed PGN from that floor would repeat the defect the finding names. Reversal: restore the floor to `openingData?.games.length` in `DatabasePanel.tsx`.
+* **Decided by:** Grok, autonomously under full auto, adopting the reviewed plan for f-20261007-10 · **Superseded-by:** -
+
+### d-20261027-07 — Which database types publish `gameFailures`?
+
+* **Question:** Which database types publish `gameFailures`?
+* **Governs:** f-20261007-10
+* **Chosen:** `lch_all` and `lch_master`, because they share `fetchOnlineOpening`. Local search does not. One mounted `lch_all` test covers the notice. One `lch_master` `fetchOpening` assertion checks that a failure is returned, so a later type branch cannot drop it silently.
+* **Rejected:** A second mounted master UI test; changing local search.
+* **Reason:** The panel does not branch the games list on database type. The return field is the only master-specific contract. Reversal: stop setting `gameFailures` on the master branch of `fetchOpening`.
+* **Decided by:** Grok, autonomously under full auto, adopting the reviewed plan for f-20261007-10 · **Superseded-by:** -
+
+### d-20261027-08 — What text names a game that did not load?
+
+* **Question:** What text names a game that did not load?
+* **Governs:** f-20261007-10
+* **Chosen:** Trimmed explorer `white.name` and `black.name`, joined with `" - "` when both are non-empty, the one non-empty side alone, otherwise the explorer `id`. Labels join with `", "` in collector index order. No ratings and no raw error text. No `describe` callback and no renumbering of survivor ids.
+* **Rejected:** Parsed PGN headers (they are absent when parse failed); ratings; the raw failure message; a `describe` callback that would change the existing log substring.
+* **Reason:** The explorer object is what the request returned for that game. The collector log already identifies the index, and the current tests match `item N failed` without a parenthetical. Reversal: change the label rule in the Games-tab notice.
+* **Decided by:** Grok, autonomously under full auto, adopting the reviewed plan for f-20261007-10 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"43e6d368352f9ede091c835742fd2efaded1329389efa5a01e788587e9634d21","input_sha256":"5c4c446a6e6e3de477eb0dcdd4685564aae4ea3d84f38289c8ae1e616f7a063a","kind":"mutation-receipt","operation":"ec9a4b11cde3866c07a7064581a0ec3a75c3c90cbac338e6c1f215baa6be128a","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-05","d-20261027-06","d-20261027-07","d-20261027-08"],"target":"decisions-ledger","v":1} -->
