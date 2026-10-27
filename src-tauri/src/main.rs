@@ -182,7 +182,7 @@ fn estimated_search_result_bytes(value: &SearchResult) -> usize {
 /// A cache identity bound to the authorized database and mapped sidecar descriptor.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SearchIndexIdentity {
-    pub database: PathBuf,
+    parent_object: (u64, u64),
     sidecar_object: (u64, u64),
     source: IndexSource,
     length: u64,
@@ -202,7 +202,7 @@ impl SearchIndexIdentity {
         let sidecar_object = crate::infra::path_authority::opened_file_identity(file)?;
         let metadata = file.metadata()?;
         Ok(Self {
-            database: target.path().to_path_buf(),
+            parent_object: search_parent_identity(target)?,
             sidecar_object,
             source,
             length: metadata.len(),
@@ -226,14 +226,25 @@ impl SearchIndexIdentity {
         Self::from_opened_sidecar(&target, source, &file)
     }
 
-    fn matches_database(&self, target: &crate::infra::path_authority::DatabaseFileTarget) -> bool {
-        self.database == target.path() || self.source.object == target.identity()
+    fn matches_database(&self, parent: Option<(u64, u64)>, object: (u64, u64)) -> bool {
+        parent.is_none_or(|parent| self.parent_object == parent || self.source.object == object)
     }
+}
+
+fn search_parent_identity(
+    target: &crate::infra::path_authority::DatabaseFileTarget,
+) -> Result<(u64, u64), Error> {
+    #[cfg(test)]
+    if FAIL_NEXT_SEARCH_PARENT_IDENTITY.with(|fail| fail.replace(false)) {
+        return Err(io::Error::other("injected search parent metadata failure").into());
+    }
+    crate::infra::path_authority::opened_file_identity(target.parent())
 }
 
 #[cfg(test)]
 std::thread_local! {
     static FAIL_NEXT_SIDECAR_STAMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_SEARCH_PARENT_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -321,8 +332,8 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedSearchCache<K, V> {
 pub(crate) struct SearchCache {
     results: Mutex<BoundedSearchCache<SearchResultKey, CachedSearchResult>>,
     indexes: Mutex<BoundedSearchCache<SearchIndexIdentity, MmapSearchIndex>>,
-    collisions: KeyedLocks<(GameQuery, PathBuf), parking_lot::Mutex<()>>,
-    generation_locks: KeyedLocks<PathBuf, parking_lot::Mutex<()>>,
+    collisions: KeyedLocks<(GameQuery, (u64, u64)), parking_lot::Mutex<()>>,
+    generation_locks: KeyedLocks<(u64, u64), parking_lot::Mutex<()>>,
     /// Global invalidation sequence: one atomic, no per-database registry. A load of
     /// another database may skip caching once when any database is invalidated.
     invalidation_counter: AtomicU64,
@@ -417,16 +428,16 @@ impl SearchCache {
     pub(crate) fn collision_lock(
         &self,
         query: GameQuery,
-        database: PathBuf,
-    ) -> KeyedLockLease<'_, (GameQuery, PathBuf), parking_lot::Mutex<()>> {
-        self.collisions.lease((query, database))
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> KeyedLockLease<'_, (GameQuery, (u64, u64)), parking_lot::Mutex<()>> {
+        self.collisions.lease((query, target.identity()))
     }
 
     pub(crate) fn generation_lock(
         &self,
-        index: PathBuf,
-    ) -> KeyedLockLease<'_, PathBuf, parking_lot::Mutex<()>> {
-        self.generation_locks.lease(index)
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> KeyedLockLease<'_, (u64, u64), parking_lot::Mutex<()>> {
+        self.generation_locks.lease(target.identity())
     }
 
     /// Invalidates before eviction so publication under the indexes mutex either
@@ -437,15 +448,17 @@ impl SearchCache {
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) {
         self.invalidation_counter.fetch_add(1, Ordering::SeqCst);
+        // Failure to narrow an optional cache operation must evict conservatively.
+        let parent = search_parent_identity(target).ok();
         self.results
             .lock()
             .expect("search result cache poisoned")
-            .retain(|key, _| !key.identity.matches_database(target));
+            .retain(|key, _| !key.identity.matches_database(parent, target.identity()));
         let evicted = self
             .indexes
             .lock()
             .expect("search index cache poisoned")
-            .retain(|identity, _| !identity.matches_database(target));
+            .retain(|identity, _| !identity.matches_database(parent, target.identity()));
         drop(evicted);
     }
 }
@@ -2575,13 +2588,13 @@ mod search_cache_tests {
         assert_eq!(registry(cache).len(), 0);
     }
 
-    fn generation_registry(cache: &SearchCache) -> &KeyedLocks<PathBuf, parking_lot::Mutex<()>> {
+    fn generation_registry(cache: &SearchCache) -> &KeyedLocks<(u64, u64), parking_lot::Mutex<()>> {
         &cache.generation_locks
     }
 
     fn collision_registry(
         cache: &SearchCache,
-    ) -> &KeyedLocks<(GameQuery, PathBuf), parking_lot::Mutex<()>> {
+    ) -> &KeyedLocks<(GameQuery, (u64, u64)), parking_lot::Mutex<()>> {
         &cache.collisions
     }
 
@@ -2636,7 +2649,8 @@ mod search_cache_tests {
         )
         .unwrap();
         assert_ne!(first, second);
-        assert_ne!(first.database, second.database);
+        assert_ne!(first.source.object, second.source.object);
+        assert_eq!(first.parent_object, second.parent_object);
     }
 
     #[test]
@@ -2683,7 +2697,10 @@ mod search_cache_tests {
         let target =
             crate::infra::path_authority::DatabaseFileTarget::for_test_path(&database).unwrap();
         assert_ne!(identity.source.object, target.identity());
-        assert_eq!(identity.database, target.path());
+        assert_eq!(
+            identity.parent_object,
+            search_parent_identity(&target).unwrap()
+        );
         cache.invalidate_database(&target);
         assert!(
             cache.get_index(&identity).is_none(),
@@ -2698,12 +2715,17 @@ mod search_cache_tests {
     #[test]
     fn invalidation_matches_the_database_object_through_a_hard_link() {
         let (directory, cache, database, identity, key) = invalidation_fixture();
-        let alias = directory.path().join("alias.db");
+        let other_parent = directory.path().join("other-parent");
+        std::fs::create_dir(&other_parent).unwrap();
+        let alias = other_parent.join("alias.db");
         std::fs::hard_link(&database, &alias).unwrap();
         let target =
             crate::infra::path_authority::DatabaseFileTarget::for_test_path(&alias).unwrap();
         assert_eq!(identity.source.object, target.identity());
-        assert_ne!(identity.database, target.path());
+        assert_ne!(
+            identity.parent_object,
+            search_parent_identity(&target).unwrap()
+        );
         cache.invalidate_database(&target);
         assert!(
             cache.get_index(&identity).is_none(),
@@ -2718,12 +2740,17 @@ mod search_cache_tests {
     #[test]
     fn invalidation_keeps_another_database_object_at_another_path() {
         let (directory, cache, _database, identity, key) = invalidation_fixture();
-        let other = directory.path().join("other.db");
+        let other_parent = directory.path().join("other-parent");
+        std::fs::create_dir(&other_parent).unwrap();
+        let other = other_parent.join("other.db");
         std::fs::write(&other, b"other").unwrap();
         let target =
             crate::infra::path_authority::DatabaseFileTarget::for_test_path(&other).unwrap();
         assert_ne!(identity.source.object, target.identity());
-        assert_ne!(identity.database, target.path());
+        assert_ne!(
+            identity.parent_object,
+            search_parent_identity(&target).unwrap()
+        );
         cache.invalidate_database(&target);
         assert!(
             cache.get_index(&identity).is_some(),
@@ -2744,40 +2771,282 @@ mod search_cache_tests {
     ) {
         let directory = tempdir().unwrap();
         let database = directory.path().join("cached.db");
-        std::fs::write(&database, b"database").unwrap();
-        let preferred = db::get_index_path(&database);
-        SearchIndexChunk::default().write_to(&preferred).unwrap();
-        let source = IndexSource::from_database(&database, 0).unwrap();
-        let identity = SearchIndexIdentity::for_test_database(&database, source).unwrap();
-        let index = MmapSearchIndex::open(&preferred).unwrap();
-        let key = SearchResultKey::new(GameQuery::new(), identity.clone());
         let cache = SearchCache::default();
-        cache.insert_index(identity.clone(), index, cache.invalidation_snapshot());
-        cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
+        let (identity, key) = seed_database(&cache, &database);
         (directory, cache, database, identity, key)
     }
 
+    fn seed_database(
+        cache: &SearchCache,
+        database: &Path,
+    ) -> (SearchIndexIdentity, SearchResultKey) {
+        std::fs::write(database, b"database").unwrap();
+        let preferred = db::get_index_path(database);
+        let source = IndexSource::from_database(database, 0).unwrap();
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, source.clone())
+            .unwrap()
+            .expect_durable();
+        let identity = SearchIndexIdentity::for_test_database(database, source).unwrap();
+        let index = MmapSearchIndex::open(&preferred).unwrap();
+        let key = SearchResultKey::new(GameQuery::new(), identity.clone());
+        cache.insert_index(identity.clone(), index, cache.invalidation_snapshot());
+        cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
+        (identity, key)
+    }
+
     #[test]
-    fn generation_lock_is_shared_only_for_the_same_index_path() {
-        let cache = SearchCache::default();
-        let first = cache.generation_lock(PathBuf::from("one.ecsi"));
-        let same = cache.generation_lock(PathBuf::from("one.ecsi"));
-        let other = cache.generation_lock(PathBuf::from("two.ecsi"));
+    fn invalidation_matches_replacement_with_changed_spelling_and_keeps_readers() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        let reader = cache.get_index(&identity).unwrap();
+        let snapshot = cache.invalidation_snapshot();
+        std::fs::rename(&database, directory.path().join("old.db")).unwrap();
+        let replacement = directory.path().join("CACHED.db");
+        std::fs::write(&replacement, b"replacement").unwrap();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&replacement).unwrap();
+        assert_ne!(identity.source.object, target.identity());
+        assert_ne!(database.file_name(), replacement.file_name());
+        cache.invalidate_database(&target);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "changed object and spelling must evict index"
+        );
+        assert!(
+            cache.get_result(&key).is_none(),
+            "changed object and spelling must evict result"
+        );
+        assert_eq!(
+            reader.source(),
+            &identity.source,
+            "readers retain the mapped generation"
+        );
+        cache.insert_index(identity.clone(), reader, snapshot);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "late insertion must remain uncached"
+        );
+    }
+
+    #[test]
+    fn invalidation_evicts_other_objects_in_the_same_parent_only() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        let (sibling, sibling_key) = seed_database(&cache, &directory.path().join("sibling.db"));
+        let unrelated = tempdir().unwrap();
+        let (other, other_key) = seed_database(&cache, &unrelated.path().join("other.db"));
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&database).unwrap();
+        assert_ne!(sibling.source.object, target.identity());
+        cache.invalidate_database(&target);
+        for (identity, key) in [(&identity, &key), (&sibling, &sibling_key)] {
+            assert!(
+                cache.get_index(identity).is_none(),
+                "same parent must evict index"
+            );
+            assert!(
+                cache.get_result(key).is_none(),
+                "same parent must evict result"
+            );
+        }
+        assert!(
+            cache.get_index(&other).is_some(),
+            "different directory keeps index"
+        );
+        assert!(
+            cache.get_result(&other_key).is_some(),
+            "different directory keeps result"
+        );
+    }
+
+    #[test]
+    fn parent_metadata_failure_evicts_both_caches_and_rejects_late_insertion() {
+        let (_directory, cache, database, identity, key) = invalidation_fixture();
+        let unrelated = tempdir().unwrap();
+        let (other, other_key) = seed_database(&cache, &unrelated.path().join("other.db"));
+        let reader = cache.get_index(&identity).unwrap();
+        let snapshot = cache.invalidation_snapshot();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&database).unwrap();
+        FAIL_NEXT_SEARCH_PARENT_IDENTITY.with(|fail| fail.set(true));
+        cache.invalidate_database(&target);
+        assert!(
+            cache.invalidation_snapshot() > snapshot,
+            "failed metadata still advances invalidation"
+        );
+        for (identity, key) in [(&identity, &key), (&other, &other_key)] {
+            assert!(
+                cache.get_index(identity).is_none(),
+                "metadata failure must clear every index"
+            );
+            assert!(
+                cache.get_result(key).is_none(),
+                "metadata failure must clear every result"
+            );
+        }
+        cache.insert_index(identity.clone(), reader, snapshot);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "metadata failure must reject late insertion"
+        );
+    }
+
+    fn assert_alias_shares_cache_and_leases(
+        database: &Path,
+        alias: &Path,
+        cache: &SearchCache,
+        identity: &SearchIndexIdentity,
+        key: &SearchResultKey,
+    ) {
+        use crate::infra::path_authority::DatabaseFileTarget;
+        let original = DatabaseFileTarget::for_test_path(database).unwrap();
+        let aliased = DatabaseFileTarget::for_test_path(alias).unwrap();
+        assert_ne!(original.path(), aliased.path());
+        assert_eq!(original.identity(), aliased.identity());
+        let alias_identity =
+            SearchIndexIdentity::for_test_database(alias, identity.source.clone()).unwrap();
+        assert_eq!(
+            &alias_identity, identity,
+            "aliases mapping one sidecar must have equal identities"
+        );
+        assert!(
+            cache.get_index(&alias_identity).is_some(),
+            "alias must reuse cached index"
+        );
+        let alias_key = SearchResultKey::new(key.query.clone(), alias_identity.clone());
+        assert!(
+            cache.get_result(&alias_key).is_some(),
+            "alias must reuse cached result"
+        );
+        // A competing mapping with distinct provenance proves insert returns the existing mapping.
+        let alternate = database.with_extension("alternate.ecsi");
+        let mut alternate_source = identity.source.clone();
+        alternate_source.revision += 1;
+        SearchIndexChunk::default()
+            .write_to_with_source(&alternate, alternate_source)
+            .unwrap()
+            .expect_durable();
+        let shared = cache.insert_index(
+            alias_identity,
+            MmapSearchIndex::open(alternate).unwrap(),
+            cache.invalidation_snapshot(),
+        );
+        assert_eq!(
+            shared.source(),
+            &identity.source,
+            "alias insertion must deduplicate the mapped index"
+        );
+        assert_eq!(cache.cached_index_count(), 1);
+        let generation = cache.generation_lock(&original);
+        let alias_generation = cache.generation_lock(&aliased);
+        let held = generation.lock();
+        assert!(
+            alias_generation.try_lock().is_none(),
+            "aliases share generation exclusion"
+        );
+        drop(held);
+        let collision = cache.collision_lock(key.query.clone(), &original);
+        let alias_collision = cache.collision_lock(key.query.clone(), &aliased);
+        let held = collision.lock();
+        assert!(
+            alias_collision.try_lock().is_none(),
+            "aliases share collision exclusion"
+        );
+        let mut other_query = key.query.clone();
+        other_query.player1 = Some(1);
+        assert!(cache
+            .collision_lock(other_query, &aliased)
+            .try_lock()
+            .is_some());
+        drop(held);
+    }
+
+    #[test]
+    fn hard_link_aliases_share_identity_cache_and_leases() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        let alias = directory.path().join("alias.db");
+        std::fs::hard_link(&database, &alias).unwrap();
+        std::fs::hard_link(db::get_index_path(&database), db::get_index_path(&alias)).unwrap();
+        assert_alias_shares_cache_and_leases(&database, &alias, &cache, &identity, &key);
+    }
+
+    #[test]
+    fn native_case_aliases_share_identity_cache_and_leases() {
+        let (directory, cache, database, identity, key) = invalidation_fixture();
+        let alias = directory.path().join("CACHED.db");
+        if let Err(error) = std::fs::metadata(&alias) {
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            writeln!(
+                std::io::stderr().lock(),
+                "CASE_ALIAS_APPLICABLE=false: alternate spelling is absent on this volume"
+            )
+            .unwrap();
+            return;
+        }
+        writeln!(
+            std::io::stderr().lock(),
+            "CASE_ALIAS_APPLICABLE=true: alternate spelling resolves on this volume"
+        )
+        .unwrap();
+        assert_alias_shares_cache_and_leases(&database, &alias, &cache, &identity, &key);
+        std::fs::rename(&database, directory.path().join("old.db")).unwrap();
+        std::fs::write(&alias, b"replacement").unwrap();
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&alias).unwrap();
+        assert_ne!(identity.source.object, target.identity());
+        cache.invalidate_database(&target);
+        assert!(
+            cache.get_index(&identity).is_none(),
+            "native alias replacement evicts index"
+        );
+        assert!(
+            cache.get_result(&key).is_none(),
+            "native alias replacement evicts result"
+        );
+    }
+
+    #[test]
+    fn parent_metadata_failure_during_identity_construction_propagates() {
+        let (_directory, _cache, database, identity, _key) = invalidation_fixture();
+        FAIL_NEXT_SEARCH_PARENT_IDENTITY.with(|fail| fail.set(true));
+        let result = SearchIndexIdentity::for_test_database(&database, identity.source);
+        assert!(
+            matches!(result, Err(Error::Io(_))),
+            "parent metadata error must propagate before publication"
+        );
+    }
+
+    #[test]
+    fn generation_lock_is_shared_only_for_the_same_object() {
+        let (directory, cache, database, _identity, _key) = invalidation_fixture();
+        let other_database = directory.path().join("other.db");
+        seed_database(&cache, &other_database);
+        let target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&database).unwrap();
+        let other_target =
+            crate::infra::path_authority::DatabaseFileTarget::for_test_path(&other_database)
+                .unwrap();
+        assert_ne!(target.identity(), other_target.identity());
+        let first = cache.generation_lock(&target);
+        let same = cache.generation_lock(&target);
+        let other = cache.generation_lock(&other_target);
         let held = first.lock();
         assert!(same.try_lock().is_none());
         assert!(other.try_lock().is_some());
+        drop(held);
+        let first_collision = cache.collision_lock(GameQuery::new(), &target);
+        let same_collision = cache.collision_lock(GameQuery::new(), &target);
+        let other_collision = cache.collision_lock(GameQuery::new(), &other_target);
+        let held = first_collision.lock();
+        assert!(same_collision.try_lock().is_none());
+        assert!(other_collision.try_lock().is_some());
         drop(held);
     }
 
     #[test]
     fn clear_keeps_generation_and_collision_locks_with_live_leases() {
         let cache = Arc::new(SearchCache::default());
-        assert_clear_keeps_the_live_lock(&cache, generation_registry, PathBuf::from("index.ecsi"));
-        assert_clear_keeps_the_live_lock(
-            &cache,
-            collision_registry,
-            (GameQuery::new(), PathBuf::from("games.db")),
-        );
+        assert_clear_keeps_the_live_lock(&cache, generation_registry, (1, 1));
+        assert_clear_keeps_the_live_lock(&cache, collision_registry, (GameQuery::new(), (1, 1)));
     }
 }
 

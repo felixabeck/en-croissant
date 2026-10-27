@@ -1,8 +1,10 @@
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
@@ -859,6 +861,7 @@ impl<'a> Iterator for SearchIndexIter<'a> {
 #[cfg(test)]
 impl ExactSizeIterator for SearchIndexIter<'_> {}
 
+#[cfg(test)]
 pub fn get_index_path(db_path: &Path) -> PathBuf {
     let filename = db_path
         .file_name()

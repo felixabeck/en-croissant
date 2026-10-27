@@ -18,6 +18,8 @@ use tauri::Manager;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use crate::db::search_index::get_index_path;
 use crate::db::search_index::{
     legacy_sidecar_leaf, preferred_sidecar_leaf, promote_legacy_index_sidecar_at,
 };
@@ -32,9 +34,7 @@ use crate::{
         models::*,
         normalize_games,
         schema::*,
-        search_index::{
-            get_index_path, GameResult, IndexSource, MmapSearchIndex, SearchGameEntryRef,
-        },
+        search_index::{GameResult, IndexSource, MmapSearchIndex, SearchGameEntryRef},
         DatabaseRepository,
     },
     error::Error,
@@ -238,11 +238,17 @@ pub(crate) fn load_search_index_cancellable(
     }
 
     // Different queries for the same database may arrive concurrently. One
-    // per-index lock serializes only generation/loading for that archive.
-    let generation_lease = search_cache.generation_lock(get_index_path(read_target.path()));
+    // object-owned lock serializes generation across every authorized spelling.
+    let generation_object = read_target.identity();
+    let generation_lease = search_cache.generation_lock(&read_target);
     let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
     let (read_target, invalidation_snapshot, db_identity, expected_source) = probe_attempt()?;
+    if read_target.identity() != generation_object {
+        return Err(Error::Conflict(
+            "database changed while waiting for search generation".into(),
+        ));
+    }
     if let Some((identity, index)) =
         open_valid_preferred(&read_target, &expected_source, cancellation)?
     {
@@ -269,6 +275,11 @@ pub(crate) fn load_search_index_cancellable(
             PathOperation::DatabaseMutate
         },
     )?;
+    if mutate_target.identity() != generation_object {
+        return Err(Error::Conflict(
+            "database changed before search generation".into(),
+        ));
+    }
     let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
     let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
     search_cache.invalidate_database(&mutate_target);
@@ -664,7 +675,7 @@ pub(super) fn search_position_blocking<R: tauri::Runtime>(
     }
     let database_handle = file;
     let target = super::resolve_database(authority, &database_handle, PathOperation::DatabaseRead)?;
-    let collision_lease = search_cache.collision_lock(query.clone(), target.path().to_path_buf());
+    let collision_lease = search_cache.collision_lock(query.clone(), &target);
     let _guard = collision_lease.lock_cancellable(cancellation)?;
 
     let mut database_connection = get_db_or_create(
@@ -956,7 +967,7 @@ pub(crate) fn is_position_in_db_cancellable(
     }
     let database_handle = file;
     let target = super::resolve_database(authority, database_handle, PathOperation::DatabaseRead)?;
-    let collision_lease = search_cache.collision_lock(query.clone(), target.path().to_path_buf());
+    let collision_lease = search_cache.collision_lock(query.clone(), &target);
     let _guard = collision_lease.lock_cancellable(cancellation)?;
 
     let parsed_position_query: Option<PositionQuery> = if let Some(pq) = &query.position {
@@ -1027,6 +1038,15 @@ pub(crate) fn is_position_in_db_cancellable(
         service.validate_result(authority, file, &admitted.map(|(generation, _)| generation))?;
     }
     Ok(exists)
+}
+
+#[cfg(test)]
+fn mount_progress_test_events(app: &impl tauri::Manager<tauri::test::MockRuntime>) {
+    tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+        .events(tauri_specta::collect_events!(
+            crate::progress::ProgressEvent
+        ))
+        .mount_events(app);
 }
 
 #[cfg(test)]
@@ -1138,7 +1158,10 @@ mod descriptor_identity_tests {
                 .duration_since(std::time::SystemTime::UNIX_EPOCH)
                 .unwrap()
         );
-        assert_eq!(identity.database, target.path());
+        assert_eq!(
+            identity.parent_object,
+            crate::search_parent_identity(&target).unwrap()
+        );
         assert_eq!(index.source(), &source, "mapping must retain A's bytes");
         assert_eq!(
             MmapSearchIndex::open(&preferred).unwrap().source(),
@@ -1269,11 +1292,7 @@ mod progress_error_tests {
             )
             .unwrap()
             .expect_durable();
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         (dir, app, handle)
     }
 
@@ -2082,9 +2101,8 @@ mod tests {
     fn search_index_loader_fast_path_does_not_wait_for_generation_lock() {
         let (_dir, app, handle, database) = preferred_loader_test_case();
         let state = app.state::<AppState>();
-        let generation_lease = state
-            .search_cache
-            .generation_lock(get_index_path(&database));
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let generation_lease = state.search_cache.generation_lock(&target);
         let _generation_guard = generation_lease.lock();
         let cancellation = CancellationToken::new();
         let timer_token = cancellation.clone();
@@ -2210,11 +2228,7 @@ mod tests {
     #[test]
     fn search_commands_resolve_with_their_own_operation() {
         let (_dir, app, handle, _database) = loader_test_case(vec![PathOperation::DatabaseRead]);
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         let state = app.state::<AppState>();
         let progress = JobProgress::new(app.clone(), "matrix-search".into()).unwrap();
         let permit = state.new_request.clone().try_acquire_owned().unwrap();
@@ -2594,8 +2608,8 @@ mod tests {
         assert!(!loader.contains("let database"));
         assert!(loader
             .contains("cache_loaded_index(\n            search_cache,\n            identity,"));
-        assert!(loader.contains("generation_lock(get_index_path(read_target.path()))"));
-        assert!(loader.contains("get_index_path(read_target.path())"));
+        assert!(loader.contains("generation_lock(&read_target)"));
+        assert!(loader.contains("let generation_object = read_target.identity()"));
         assert!(
             loader.contains("cache_loaded_index(")
                 && loader.contains("invalidate_database(&mutate_target)")
@@ -2607,9 +2621,9 @@ mod tests {
     #[test]
     fn generation_lock_recovers_after_a_panicking_owner() {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
-        let index = get_index_path(&database.canonicalize().unwrap());
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
         let state = app.state::<AppState>();
-        let lock = state.search_cache.generation_lock(index);
+        let lock = state.search_cache.generation_lock(&target);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = lock.lock();
             panic!("poison the search cache generation lock");
@@ -2632,9 +2646,9 @@ mod tests {
     fn collision_lock_recovers_after_a_panicking_owner() {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
         let query = GameQuery::new();
-        let canonical = database.canonicalize().unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
         let state = app.state::<AppState>();
-        let lock = state.search_cache.collision_lock(query.clone(), canonical);
+        let lock = state.search_cache.collision_lock(query.clone(), &target);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = lock.lock();
             panic!("poison the search cache collision lock");
@@ -2656,9 +2670,16 @@ mod tests {
 
     fn collision_lease_for_cache(
         cache: &SearchCache,
-        (query, database): (GameQuery, PathBuf),
-    ) -> KeyedLockLease<'_, (GameQuery, PathBuf), ParkingMutex<()>> {
-        cache.collision_lock(query, database)
+        (query, database): (GameQuery, (u64, u64)),
+    ) -> KeyedLockLease<'_, (GameQuery, (u64, u64)), ParkingMutex<()>> {
+        cache.collisions.lease((query, database))
+    }
+
+    fn generation_lease_for_cache(
+        cache: &SearchCache,
+        database: (u64, u64),
+    ) -> KeyedLockLease<'_, (u64, u64), ParkingMutex<()>> {
+        cache.generation_locks.lease(database)
     }
 
     fn assert_search_lock_wait_cancels<K>(
@@ -2712,14 +2733,176 @@ mod tests {
         let cache = state.search_cache.as_ref();
         assert_search_lock_wait_cancels(
             cache,
-            get_index_path(&database),
-            SearchCache::generation_lock,
+            DatabaseFileTarget::for_test_path(&database)
+                .unwrap()
+                .identity(),
+            generation_lease_for_cache,
         );
         assert_search_lock_wait_cancels(
             cache,
-            (GameQuery::new(), database.canonicalize().unwrap()),
+            (
+                GameQuery::new(),
+                DatabaseFileTarget::for_test_path(&database)
+                    .unwrap()
+                    .identity(),
+            ),
             collision_lease_for_cache,
         );
+    }
+
+    fn grant_alias(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        alias: &std::path::Path,
+    ) -> DatabaseHandle {
+        let state = app.state::<AppState>();
+        let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
+        let commit = guard.as_mut().unwrap().grant_persistent_file_for_test(
+            alias,
+            "alias",
+            vec![PathOperation::DatabaseRead, PathOperation::DatabaseMutate],
+        );
+        DatabaseHandle::new(commit.id)
+    }
+
+    #[test]
+    fn generation_integration_waits_on_the_hard_link_object() {
+        let (dir, app, _handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let original = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let alias = dir.path().join("alias.db3");
+        std::fs::hard_link(&database, &alias).unwrap();
+        let handle = grant_alias(&app, &alias);
+        let state = app.state::<AppState>();
+        let holder = state.search_cache.generation_lock(&original);
+        let held = holder.lock();
+        let observer = holder.observe_wait();
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                load_search_index_cancellable(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    &handle,
+                    &cancellation,
+                )
+            });
+            let waiting = observer.recv_timeout(std::time::Duration::from_secs(5));
+            cancellation.cancel();
+            let result = worker.join().unwrap();
+            assert!(
+                waiting.is_ok(),
+                "hard-link generation must wait on the original object lease: {result:?}"
+            );
+            assert!(matches!(result, Err(Error::Cancellation)));
+        });
+        assert!(!get_index_path(&alias).exists());
+        drop(held);
+        drop(holder);
+        assert_eq!(state.search_cache.generation_locks.len(), 0);
+    }
+
+    #[test]
+    fn presence_collision_integration_waits_on_the_hard_link_object() {
+        assert_collision_integration_waits_on_the_hard_link_object(false);
+    }
+
+    #[test]
+    fn position_search_collision_integration_waits_on_the_hard_link_object() {
+        assert_collision_integration_waits_on_the_hard_link_object(true);
+    }
+
+    fn assert_collision_integration_waits_on_the_hard_link_object(position_search: bool) {
+        // JobProgress emits through the same registry mounted by the application.
+        let (dir, app, _handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let original = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let alias = dir.path().join("alias.db3");
+        std::fs::hard_link(&database, &alias).unwrap();
+        let handle = grant_alias(&app, &alias);
+        let state = app.state::<AppState>();
+        mount_progress_test_events(&app);
+        let query = GameQuery::new();
+        let holder = state.search_cache.collision_lock(query.clone(), &original);
+        let held = holder.lock();
+        let observer = holder.observe_wait();
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                if position_search {
+                    let progress = JobProgress::new(app.clone(), "alias-search".into()).unwrap();
+                    search_position_blocking(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        state.new_request.clone().try_acquire_owned().unwrap(),
+                        progress.lease(),
+                        app.clone(),
+                        handle.clone(),
+                        query.clone(),
+                        &cancellation,
+                        None,
+                    )
+                    .map(|_| ())
+                } else {
+                    is_position_in_db_cancellable(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        &handle,
+                        &query,
+                        &cancellation,
+                    )
+                    .map(|_| ())
+                }
+            });
+            let waiting = observer.recv_timeout(std::time::Duration::from_secs(5));
+            cancellation.cancel();
+            let result = worker.join().unwrap();
+            assert!(waiting.is_ok(), "collision integration {position_search} must wait on the original object lease: {result:?}");
+            assert!(matches!(result, Err(Error::Cancellation)));
+        });
+        drop(held);
+        drop(holder);
+        assert_eq!(state.search_cache.collisions.len(), 0);
+    }
+
+    #[test]
+    fn changed_database_after_generation_wait_is_rejected_without_publication() {
+        let (dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let original = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let state = app.state::<AppState>();
+        let holder = state.search_cache.generation_lock(&original);
+        let held = holder.lock();
+        let observer = holder.observe_wait();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                load_search_index(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    &handle,
+                )
+            });
+            let waiting = observer.recv_timeout(std::time::Duration::from_secs(5));
+            if waiting.is_ok() {
+                std::fs::rename(&database, dir.path().join("old.db3")).unwrap();
+                std::fs::write(&database, b"replacement").unwrap();
+            }
+            drop(held);
+            let result = worker.join().unwrap();
+            assert!(waiting.is_ok(), "loader must reach generation wait");
+            assert!(
+                result.is_err(),
+                "changed target after wait must be rejected"
+            );
+        });
+        assert!(!get_index_path(&database).exists());
+        assert_eq!(state.search_cache.cached_index_count(), 0);
+        assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+        drop(holder);
+        assert_eq!(state.search_cache.generation_locks.len(), 0);
     }
 
     fn assert_partial_match(fen1: &str, fen2: &str) {
@@ -3031,11 +3214,7 @@ mod tests {
         let app = tauri::test::mock_app();
         // The store emits a typed Specta event, so the mock app needs the same
         // event registry the real application mounts in `main.rs`.
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         app.manage(AppState::default());
         app.handle().clone()
     }
@@ -3124,11 +3303,7 @@ mod tests {
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,
         ]);
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         let state = app.state::<AppState>();
         let progress = JobProgress::new(app.clone(), "held-search".into()).unwrap();
         let permit = state.new_request.clone().try_acquire_owned().unwrap();
@@ -3156,11 +3331,7 @@ mod tests {
     #[test]
     fn search_position_cancels_during_post_sql_normalization_without_cache_publication() {
         let (_dir, app, handle, _database) = position_search_database();
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         let state = app.state::<AppState>();
         let progress = JobProgress::new(app.clone(), "normalization-search".into()).unwrap();
         let permit = state.new_request.clone().try_acquire_owned().unwrap();
@@ -3422,11 +3593,7 @@ mod tests {
     #[test]
     fn production_position_search_applies_filters_and_reuses_exact_cached_results() {
         let (_dir, app, handle, database) = position_search_database();
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
         let white_id = players::table
             .filter(players::name.eq("Carlsen"))
@@ -3504,11 +3671,7 @@ mod tests {
         PathBuf,
     ) {
         let (dir, app, handle, database) = position_search_database();
-        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(
-                crate::progress::ProgressEvent
-            ))
-            .mount_events(&app);
+        mount_progress_test_events(&app);
         let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
         for &(white, black, event) in extra {
             insert_e4_e5_game(&mut connection, white, black, event);
