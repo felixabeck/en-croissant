@@ -8016,7 +8016,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Keep at most 100 unique exact history-key cleanup intents in existing workspace metadata, saved before source retirement, replayed independently of tree existence. Refuse overflow while preserving the old owner.
 * **Rejected:** Expiring tree-removal authority or broad suffix deletion.
 * **Reason:** The logical source can disappear before history deletion succeeds. Reversal requires equivalent cold-document retry authority, or retirement of legacy migration and all outstanding intents. Remove this legacy-only field and replay when no supported workspace contains those intents.
-* **Decided by:** Codex, adopted reviewed PR-1 correction under full auto · **Superseded-by:** d-20261027-28
+* **Decided by:** Codex, adopted reviewed PR-1 correction under full auto · **Superseded-by:** d-20261027-29
 
 ### d-20261015-25 — How do saved puzzle timing and revisits behave?
 
@@ -8026,7 +8026,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Persisting wall-clock timer starts or adding one tree per history row.
 * **Reason:** This preserves the existing transient timer and one active tree. Reversal requires a separate evidenced product requirement.
 * **Decided by:** Codex, adopted reviewed plan under full auto · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"92e808ea9f5877150798ab1a357a22369051c37bdfee8d1545e22e2a89d4c4a2","input_sha256":"14cba44eb2fc1838fd68122f8890fb972a0f9abd3ad414b94b1f1707c635d3f4","kind":"mutation-receipt","operation":"ce7745a31afe5bb309372c0f20b28ebb4cf441f4e4908f4d3b59300050697b70","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-21","d-20261015-22","d-20261015-23","d-20261015-24","d-20261015-25"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"9df2be0def423cafb29e0b594fc1a77ea2cd8b4902e5b66449f60e681168528b","input_sha256":"14cba44eb2fc1838fd68122f8890fb972a0f9abd3ad414b94b1f1707c635d3f4","kind":"mutation-receipt","operation":"ce7745a31afe5bb309372c0f20b28ebb4cf441f4e4908f4d3b59300050697b70","options":{"section":null},"request_id_sha256":null,"results":["d-20261015-21","d-20261015-22","d-20261015-23","d-20261015-24","d-20261015-25"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261015-26 — Where should legacy puzzle duplication restore complete ownership?
 
