@@ -6955,6 +6955,8 @@ mod tests {
         }
     }
 
+    /// Waits for the prior holder to release, then acquires the exclusive lock for `file`.
+    /// The lock remains with its open file description until unlocked or the last handle closes.
     #[cfg(target_os = "linux")]
     fn assert_archive_payload_description_released(file: &std::fs::File, message: &str) {
         use crate::infra::fs::{
