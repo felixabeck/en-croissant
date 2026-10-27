@@ -10429,8 +10429,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Aborting the group on the first throw. Dropping sessions before the native call. Dropping by group name or username after the await. A new native batch command. Changing startup reconciliation.
 * **Reason:** d-20260831-20 already logs out on any returned removal and keeps the session when removal throws. Native removal deletes the credential before provider revocation returns, and a new sign-in can publish a new handle during that wait, so the drop has to match the handle. A rename changes the group name and not the handle. Revocation cannot be rolled back, so a later member must still be revoked.
 * **Reversal:** Restore a group-wide abort or a username drop only with a new removal contract that still cannot resurrect a revoked token or delete a replacement credential.
-* **Decided by:** Grok, drain session 639b7b96-4d27-46a3-9a37-afd2958f9366, full auto · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"2103b3442f33c9f92f17f8fd187e82bf5faf5eaf7879077089408b479fe2b0b4","input_sha256":"22ff9fcb087b8b758ef6f55e62507a4afd715ba5c20f38bdede0af94c5617c38","kind":"mutation-receipt","operation":"ed3a5d5fb0eddbe5b8e6c6ab6be8fe244995f4dbc94db182c392c087e697fa23","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-24"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Grok, drain session 639b7b96-4d27-46a3-9a37-afd2958f9366, full auto · **Superseded-by:** d-20261027-25
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e0013e981028046cb5cefcbbf20dfa153516a56fbc36493a0437ac2fe3728147","input_sha256":"22ff9fcb087b8b758ef6f55e62507a4afd715ba5c20f38bdede0af94c5617c38","kind":"mutation-receipt","operation":"ed3a5d5fb0eddbe5b8e6c6ab6be8fe244995f4dbc94db182c392c087e697fa23","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-24"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261027-25 — Which username drop does group removal reject?
 
