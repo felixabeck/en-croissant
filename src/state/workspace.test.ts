@@ -56,7 +56,13 @@ function expectLegacyContentRefusal(key: "tabs" | "activeTab") {
     const remove = vi.spyOn(Storage.prototype, "removeItem");
 
     expect(loadStoredWorkspace).toThrow(WorkspaceReadError);
-    expect(loadStoredWorkspace).toThrow(expect.objectContaining({ cause: failure }));
+    expect(loadStoredWorkspace).toThrow(
+        expect.objectContaining({
+            name: "WorkspaceReadError",
+            message: "Could not read the saved workspace",
+            cause: failure,
+        }),
+    );
     expect(write).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(persistError.reportPersistError).not.toHaveBeenCalled();
@@ -84,11 +90,14 @@ test.each(["tabs", "activeTab"])(
         const legacyKey = key === "tabs" ? "tabs" : "activeTab";
         sessionStorage.setItem(legacyKey, "legacy bytes");
         const refusal = refuseStorageReads([key]);
+        const write = vi.spyOn(Storage.prototype, "setItem");
         const remove = vi.spyOn(Storage.prototype, "removeItem");
 
         expect(loadStoredWorkspace()).toEqual(workspace);
+        expect(write).not.toHaveBeenCalled();
         expect(remove.mock.calls.flat()).not.toContain("tabs");
         expect(remove.mock.calls.flat()).not.toContain("activeTab");
+        expect(remove).not.toHaveBeenCalledWith("Stryker was here");
         expect(persistError.reportPersistError).toHaveBeenCalledOnce();
         refusal.mockRestore();
         expect(sessionStorage.getItem(legacyKey)).toBe("legacy bytes");
@@ -1933,6 +1942,49 @@ test("pending-removal reconciliation excludes retained IDs and leaves an exact-c
     removeItem.mockRestore();
 });
 
+test("pending-removal reconciliation excludes retained prior IDs and keeps other stored trees", () => {
+    sessionStorage.clear();
+    const retainedId = crypto.randomUUID();
+    const pendingId = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    for (const id of [retainedId, pendingId]) sessionStorage.setItem(id, tree);
+
+    const result = reconcilePendingTreeRemovals(
+        [retainedId, pendingId],
+        [],
+        new Set([retainedId]),
+    );
+
+    expect(result).toEqual({ ids: [pendingId], overflowCount: null, unreadableIds: new Set() });
+    expect(sessionStorage.getItem(retainedId)).toBe(tree);
+    expect(sessionStorage.getItem(pendingId)).toBe(tree);
+});
+
+test("pending-removal reconciliation reports the first unreadable error and retains both IDs", () => {
+    sessionStorage.clear();
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    for (const id of ids) sessionStorage.setItem(id, tree);
+    const firstError = new DOMException("first pending read refused", "SecurityError");
+    const secondError = new DOMException("second pending read refused", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const read = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === ids[0]) throw firstError;
+            if (key === ids[1]) throw secondError;
+            return originalGetItem.call(this, key);
+        });
+
+    const result = reconcilePendingTreeRemovals(ids, [], new Set());
+
+    expect(result).toEqual({ ids, overflowCount: null, unreadableIds: new Set(ids) });
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(firstError);
+    read.mockRestore();
+    for (const id of ids) expect(sessionStorage.getItem(id)).toBe(tree);
+});
+
 test("pending-removal reconciliation accepts exact capacity after one successful retry", () => {
     sessionStorage.clear();
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
@@ -2014,6 +2066,155 @@ test("fails closed when the protected tree snapshot exceeds its documented bound
     expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
     expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
     expect(sessionStorage.getItem(treeIds[0]!)).toBe(tree);
+});
+
+test("protects exactly the documented number of stored trees under a broken envelope", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const treeIds = Array.from(
+        { length: MAX_PROTECTED_TREE_KEYS },
+        (_, index) => `tree-${index}`,
+    );
+    for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.treeOwnershipProtectedIds).toEqual(treeIds);
+});
+
+test("a present pending tree counts toward the ownership snapshot capacity", () => {
+    sessionStorage.clear();
+    const pendingId = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const treeIds = Array.from(
+        { length: MAX_PROTECTED_TREE_KEYS },
+        (_, index) => `tree-${index}`,
+    );
+    for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
+    sessionStorage.setItem(pendingId, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            ...defaultWorkspace(),
+            treeOwnershipUncertain: true,
+            treeOwnershipPendingRemovalIds: [pendingId],
+        }),
+    );
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    for (const treeId of treeIds) expect(sessionStorage.getItem(treeId)).toBe(tree);
+});
+
+test.each([
+    { pendingIdLength: MAX_PROTECTED_TREE_KEY_LENGTH + 1, protectedIds: undefined },
+    { pendingIdLength: MAX_PROTECTED_TREE_KEY_LENGTH, protectedIds: ["normal-tree"] },
+])(
+    "ownership snapshots enforce the pending-id length bound at $pendingIdLength characters",
+    ({ pendingIdLength, protectedIds }) => {
+        sessionStorage.clear();
+        const pendingId = "p".repeat(pendingIdLength);
+        const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+        sessionStorage.setItem("normal-tree", tree);
+        sessionStorage.setItem(pendingId, tree);
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({
+                ...defaultWorkspace(),
+                treeOwnershipUncertain: true,
+                treeOwnershipPendingRemovalIds: [pendingId],
+            }),
+        );
+
+        const workspace = loadStoredWorkspace();
+
+        expect(workspace.treeOwnershipUncertain).toBe(true);
+        expect(workspace.treeOwnershipProtectedIds).toEqual(protectedIds);
+        expect(Object.hasOwn(workspace, "treeOwnershipProtectedIds")).toBe(
+            protectedIds !== undefined,
+        );
+        expect(sessionStorage.getItem("normal-tree")).toBe(tree);
+    },
+);
+
+test("keeps a successful snapshot when the workspace storage has no key function", () => {
+    sessionStorage.clear();
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    const storage = {
+        getItem: sessionStorage.getItem.bind(sessionStorage),
+        setItem: sessionStorage.setItem.bind(sessionStorage),
+        removeItem: sessionStorage.removeItem.bind(sessionStorage),
+        get length() {
+            return sessionStorage.length;
+        },
+    };
+
+    const workspace = loadWorkspace(storage, WORKSPACE_STORAGE_KEY);
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.treeOwnershipProtectedIds).toEqual([treeId]);
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+});
+
+test("the ownership walk reports its own enumeration failure and drops a successful snapshot", () => {
+    sessionStorage.clear();
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    const scanError = new DOMException("ownership walk denied", "SecurityError");
+    const storage = {
+        getItem: sessionStorage.getItem.bind(sessionStorage),
+        setItem: sessionStorage.setItem.bind(sessionStorage),
+        removeItem: sessionStorage.removeItem.bind(sessionStorage),
+        get length() {
+            return sessionStorage.length;
+        },
+        key() {
+            throw scanError;
+        },
+    };
+
+    const workspace = loadWorkspace(storage, WORKSPACE_STORAGE_KEY);
+
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+});
+
+test("an empty ownership walk does not count a pending ID beyond its length", () => {
+    sessionStorage.clear();
+    const pendingId = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const treeIds = Array.from(
+        { length: MAX_PROTECTED_TREE_KEYS },
+        (_, index) => `tree-${index}`,
+    );
+    for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            ...defaultWorkspace(),
+            treeOwnershipUncertain: true,
+            treeOwnershipPendingRemovalIds: [pendingId],
+        }),
+    );
+    const storage = {
+        getItem: sessionStorage.getItem.bind(sessionStorage),
+        setItem: sessionStorage.setItem.bind(sessionStorage),
+        removeItem: sessionStorage.removeItem.bind(sessionStorage),
+        length: 0,
+        key: vi.fn((_index: number) => pendingId),
+    };
+
+    const workspace = loadWorkspace(storage, WORKSPACE_STORAGE_KEY);
+
+    expect(storage.key).not.toHaveBeenCalled();
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.treeOwnershipProtectedIds).toEqual(treeIds);
 });
 
 test("fails closed when a protected tree key exceeds the length bound", () => {

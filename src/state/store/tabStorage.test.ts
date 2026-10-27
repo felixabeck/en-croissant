@@ -2695,3 +2695,22 @@ test("tree-key snapshot accepts the exact length bound and supports omitted excl
     persistTree(oversizedKey, defaultTree());
     expect(storage.snapshotStoredTreeKeys(2, 128)).toBeNull();
 });
+
+test("tree-key snapshot refuses two boundary-length keys when only one is allowed", () => {
+    persistTree("a".repeat(128), defaultTree());
+    persistTree("b".repeat(128), defaultTree());
+
+    expect(storage.snapshotStoredTreeKeys(1, 128)).toBeNull();
+});
+
+test("tree-key snapshot reports enumeration failures and returns no snapshot", () => {
+    persistTree("stored-tree", defaultTree());
+    const scanError = new DOMException("tree snapshot denied", "SecurityError");
+    vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+        throw scanError;
+    });
+
+    expect(storage.snapshotStoredTreeKeys(1, 128)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
+});

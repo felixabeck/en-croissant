@@ -422,7 +422,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         try {
             for (let index = 0; index < (enumerableStorage.length ?? 0); index++) {
                 const id = enumerableStorage.key(index);
-                if (id !== null && pendingIds.has(id)) presentPendingCount++;
+                const isPendingId = id !== null && pendingIds.has(id);
+                if (isPendingId) presentPendingCount++;
             }
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
