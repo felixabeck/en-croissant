@@ -363,12 +363,13 @@ describe("DatabasePanel", () => {
     });
   }
 
-  function selectedPanel(value: "games" | "stats") {
+  function selectedPanel(value: "games" | "stats" | "options") {
+    const labels = { stats: "Stats", games: "Games", options: "Options" };
     const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
-      (element) =>
-        element.textContent === `Board.Database.${value === "games" ? "Games" : "Stats"}`,
+      (element) => element.textContent === `Board.Database.${labels[value]}`,
     );
-    expect(tab?.getAttribute("aria-selected")).toBe("true");
+    expect(tab).toBeDefined();
+    expect(tab!.getAttribute("aria-selected")).toBe("true");
     const panel = document.getElementById(tab!.getAttribute("aria-controls")!);
     expect(container.contains(panel)).toBe(true);
     expect(panel?.getAttribute("role")).toBe("tabpanel");
@@ -423,6 +424,13 @@ describe("DatabasePanel", () => {
       const store = await mountExplorer({ ...mockExplorerData, moves }, ["g0"], diagnostic);
       const panel = selectedPanel("games");
       expect(panel.textContent).toContain("Board.Database.GamesIncomplete W0 - B0");
+      const notice = panel.querySelector('[role="alert"]');
+      const table = panel.querySelector("table");
+      expect(notice?.textContent).toContain("Board.Database.GamesIncomplete W0 - B0");
+      expect(table).not.toBeNull();
+      expect(notice!.compareDocumentPosition(table!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+        0,
+      );
       expect(
         Array.from(panel.querySelectorAll("tbody tr")).some((row) =>
           row.textContent?.includes("W1"),
@@ -545,23 +553,14 @@ describe("DatabasePanel", () => {
   }
 
   function expectNoReference(value: "stats" | "games" | "options" = "stats") {
-    const labels = { stats: "Stats", games: "Games", options: "Options" };
-    const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
-      (element) => element.textContent === `Board.Database.${labels[value]}`,
-    );
-    expect(tab).toBeDefined();
-    expect(tab!.getAttribute("aria-selected")).toBe("true");
-    const panelId = tab!.getAttribute("aria-controls");
-    expect(panelId).toBeTruthy();
-    const panel = document.getElementById(panelId!);
-    expect(container.contains(panel)).toBe(true);
-    expect(panel!.getAttribute("role")).toBe("tabpanel");
-    expect(panel!.getAttribute("aria-labelledby")).toBe(tab!.id);
-    expect({ [value]: panel!.textContent }).toEqual({
+    const panel = selectedPanel(value);
+    const tab = container.querySelector(`[role="tab"][aria-controls="${panel.id}"]`);
+    expect(panel.getAttribute("aria-labelledby")).toBe(tab?.id);
+    expect({ [value]: panel.textContent }).toEqual({
       [value]: expect.stringContaining("Board.Database.NoReference1"),
     });
     expect({
-      [value]: panel!.querySelector<HTMLInputElement>(".mantine-Select-input")?.value,
+      [value]: panel.querySelector<HTMLInputElement>(".mantine-Select-input")?.value,
     }).toEqual({ [value]: "" });
   }
 
