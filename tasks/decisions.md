@@ -10349,3 +10349,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Governs:** f-20261008-03
 * **Decided by:** Grok, drain session bce024bc-d0cc-48be-9c68-1e82e89eecb7, full auto, diff review round 1 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"56f043af24b3e8d9f23f0e6cb37de406cc06c25d88836e495175ceac8e97ab3e","input_sha256":"b2fcf040259fff3d76bbfa2d5850577b8ee8c96bbc2c18e09d6b1c98c5322197","kind":"mutation-receipt","operation":"2de1f2befea83d40ba0c1867b944fbd9f7e75244a5fb41e5b93551f678040598","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-16"],"target":"decisions-ledger","v":1} -->
+
+### d-20261027-15 — Retire the replaced engine modal editor
+
+* **Question:** Should the unreachable EditEngine component be mounted again or removed?
+* **Governs:** f-20261001-04
+* **Chosen:** Remove only src/components/engines/EditEngine.tsx and its component-only test file. Keep the live EngineSettings surface, EngineForm used by AddEngine, validation and attachment helpers.
+* **Rejected:** Restoring the old modal or changing the live engine editing contract.
+* **Reason:** Upstream commit 6c5ec008 replaced EngineRow and its EditEngine mount with selected-card EngineSettings on 2024-01-31. Commit 3a055715 removed the leftover unused import on 2024-02-01. Current source imports EditEngine only in its own test. Later repair commits 739db8db and 5e8912e7 demonstrate actual maintenance spent on the unreachable path. The live editor is governed by d-20261014-27 and d-20261015-02. This deletion changes no reachable product behavior. Reversal path: restore the two files from the parent commit only if a separately authorized product requirement establishes a mount and equivalent current ownership proof.
+* **Decided by:** Codex independent lane, source and history tracing on 2026-10-27. Plan authorship and arbitration share one root context. Detection uses the same OpenAI model family as code. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"583ea1a7a90af57106328bc2ff8c23201cf13d2896a95199c367dcbddecd1d4c","input_sha256":"75a07d406e41b915cbaa14092a2fbe1eb94b382f2644804ac9a91c234494c610","kind":"mutation-receipt","operation":"33b66464f733c1529c209792e671c219cada461aba4816ce0c63bee43aaabf4b","options":{"section":null},"request_id_sha256":null,"results":["d-20261027-15"],"target":"decisions-ledger","v":1} -->
