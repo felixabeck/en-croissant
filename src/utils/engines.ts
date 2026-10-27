@@ -207,7 +207,7 @@ export const defaultEngineManifestSchema = z
     })
     .passthrough();
 
-/** Server manifest entry used only during installation; it is never persisted as an engine. */
+/** Entry from the verified catalog, used for installation and portraits, never persisted as an engine. */
 export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
     path: string;
     sha256: string;
