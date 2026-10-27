@@ -12848,6 +12848,9 @@ The set-header note's description of the call site and of databaseLayoutCommands
 Reversal path: if that preview stops scrolling and clips the name, reopen the anchor. Reversal of the decision is a new decision, not an edit of d-20261027-21.
 <!-- ledger-meta {"command":"close","effect_lines":11,"effect_sha256":"e78d57c1283727df5b92c4b2fd3e3cf31d885d297b408ff09755611a7c0a111e","header_sha256":"1e9987a17c3abbcf4103f026d76953aff1cee35fff155dd0d2ba40cf09b88a22","header_status":"handled","input_sha256":"13a0e9826d890fa544adcc80322dbe92f30620cfaedcdf1be764da10a05a8d1e","kind":"mutation-receipt","operation":"8256ed4c3955345ebad7b705f74c0005d7af88140798d0ddf6b078d9352a5200","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
 
+The original Where line says the name Text is rendered by Databases.tsx:248. That line is the player lookup. getPlayersGameInfo is called at Databases.tsx:252, and the card render is Databases.tsx:386, which passes setName. The name Text is PersonalCard.tsx:78 and is reached from PlayerCard.tsx:42, which does not pass setName. Read the Where line with those later notes.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"61e3aefccf3c479bbd71f282339b460f3c36986c5fba4dc2889d351eab69b076","input_sha256":"b9a177877713919c46561a37fdc362f986f505c85390a6b23defc18f30b8c0a4","kind":"mutation-receipt","operation":"a62f2553cc6a01fdec918802fb7b5eb07b1c457a6b39bc026adbee88e8845bc3","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-10"],"target":"f-20260927-10","v":1} -->
+
 ### Seven test files each carry their own inert ResizeObserver stub
 
 * **ID:** f-20260928-01 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
