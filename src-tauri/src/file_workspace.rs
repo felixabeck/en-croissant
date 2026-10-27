@@ -5467,12 +5467,68 @@ mod tests {
         fs::write(nested.join("inner.pgn"), b"*").expect("inner.pgn");
         fs::create_dir(root.join(TRASH_DIRECTORY)).expect("trash bucket");
 
-        let (entries, missing) = collect_tree_entries(
+        // Finish all contents before pinning whole seconds, with no modifying handle left open.
+        const FILE_SECONDS: i64 = 1_600_000_000;
+        const NESTED_SECONDS: i64 = 1_600_000_100;
+        const LATER_NESTED_SECONDS: i64 = 1_600_000_200;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("a.pgn"))
+            .expect("a.pgn timestamp handle")
+            .set_modified(
+                std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(FILE_SECONDS as u64),
+            )
+            .expect("a.pgn mtime");
+        set_directory_modified(
+            &nested,
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(NESTED_SECONDS as u64),
+        );
+        assert_eq!(
+            enumerated_workspace_entry(&root, "a.pgn").modified_seconds,
+            FILE_SECONDS,
+            "file timestamp fixture"
+        );
+        assert_eq!(
+            enumerated_workspace_entry(&root, "nested").modified_seconds,
+            NESTED_SECONDS,
+            "initial directory timestamp fixture"
+        );
+
+        struct ListingHookCleanup;
+        impl Drop for ListingHookCleanup {
+            fn drop(&mut self) {
+                set_workspace_listing_pre_register_hook(None);
+            }
+        }
+        let hook_cleanup = ListingHookCleanup;
+        let transitioned = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_transitioned = std::rc::Rc::clone(&transitioned);
+        let mut hook_nested = Some(nested);
+        // This all-platform seam runs after the walk. Mutate our directory only once, so a
+        // later observation differs from the captured snapshot without relying on NTFS timing.
+        set_workspace_listing_pre_register_hook(Some(Box::new(move || {
+            if let Some(nested) = hook_nested.take() {
+                set_directory_modified(
+                    &nested,
+                    std::time::SystemTime::UNIX_EPOCH
+                        + Duration::from_secs(LATER_NESTED_SECONDS as u64),
+                );
+                hook_transitioned.set(true);
+            }
+        })));
+        let listing = collect_tree_entries(
             &state.pgn_path_authority,
             &workspace,
             &CancellationToken::new(),
-        )
-        .expect("workspace listing");
+        );
+        drop(hook_cleanup);
+        let (entries, missing) = listing.expect("workspace listing");
+        assert!(transitioned.get(), "post-walk timestamp transition ran");
+        assert_eq!(
+            enumerated_workspace_entry(&root, "nested").modified_seconds,
+            LATER_NESTED_SECONDS,
+            "later directory timestamp fixture"
+        );
 
         // Sorted by raw name bytes, sidecars and non-PGN files dropped, the trash bucket hidden.
         assert_eq!(
@@ -5486,10 +5542,7 @@ mod tests {
         let a = &entries.entries[0];
         assert_eq!(a.kind, WorkspaceEntryKind::File);
         assert_eq!(a.metadata.as_ref().expect("a metadata").tags, ["trusted"]);
-        assert_eq!(
-            a.last_modified,
-            enumerated_workspace_entry(&root, "a.pgn").modified_seconds
-        );
+        assert_eq!(a.last_modified, FILE_SECONDS);
         let b = &entries.entries[1];
         assert_eq!(b.kind, WorkspaceEntryKind::File);
         assert_eq!(
@@ -5507,10 +5560,7 @@ mod tests {
             ["inner"]
         );
         assert_eq!(nested_entry.children[0].kind, WorkspaceEntryKind::File);
-        assert_eq!(
-            nested_entry.last_modified,
-            enumerated_workspace_entry(&root, "nested").modified_seconds
-        );
+        assert_eq!(nested_entry.last_modified, NESTED_SECONDS);
         // One game-count handle per listed PGN, directories excluded.
         assert_eq!(missing.len(), 3);
         for handle in &missing {
