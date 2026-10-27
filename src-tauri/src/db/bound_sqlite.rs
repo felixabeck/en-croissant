@@ -27,7 +27,7 @@ use crate::infra::inode_ownership::{Registry, REGISTRY};
 #[cfg(unix)]
 use crate::infra::fs::raw_libc_stat_identity;
 use crate::{
-    error::Error,
+    error::{Error, DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY, DATABASE_OPEN_THROUGH_ANOTHER_NAME},
     infra::path_authority::{opened_file_identity, DatabaseFileTarget},
 };
 
@@ -260,9 +260,9 @@ impl BoundDatabase {
                 .find(conflicts)
             {
                 let message = if existing.parent_identity != parent_identity {
-                    "database is open through another directory"
+                    DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY
                 } else {
-                    "database is open through another name"
+                    DATABASE_OPEN_THROUGH_ANOTHER_NAME
                 };
                 return Err(Error::Conflict(message.into()));
             }

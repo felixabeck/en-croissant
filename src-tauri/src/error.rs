@@ -163,6 +163,9 @@ pub struct ErrorPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub name_taken: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub database_admission: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub progress_generation: Option<crate::progress::ProgressGeneration>,
@@ -179,6 +182,9 @@ pub enum RootFailure {
 }
 
 pub(crate) const WORKSPACE_FILE_NAME_TAKEN: &str = "workspace file already exists";
+pub(crate) const DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY: &str =
+    "database is open through another directory";
+pub(crate) const DATABASE_OPEN_THROUGH_ANOTHER_NAME: &str = "database is open through another name";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -1055,6 +1061,10 @@ impl Error {
             name_taken:
                 matches!(self, Self::Conflict(message) if message == WORKSPACE_FILE_NAME_TAKEN)
                     .then_some(true),
+            database_admission: matches!(self, Self::Conflict(message)
+                if message == DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY
+                    || message == DATABASE_OPEN_THROUGH_ANOTHER_NAME)
+            .then_some(true),
             progress_generation: None,
         }
     }
@@ -1240,6 +1250,52 @@ mod tests {
             ),
         ] {
             let payload = serde_json::to_value(error).expect("other payload");
+            assert!(payload.get("nameTaken").is_none());
+        }
+    }
+
+    #[test]
+    fn database_admission_conflict_payload() {
+        for message in [
+            DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY,
+            DATABASE_OPEN_THROUGH_ANOTHER_NAME,
+        ] {
+            let error = Error::Conflict(message.into());
+            let payload = serde_json::to_value(&error).expect("database admission payload");
+            assert_eq!(payload["category"], "conflict");
+            assert_eq!(payload["message"], format!("Conflict: {message}"));
+            assert_eq!(payload["databaseAdmission"], true);
+            assert!(payload.get("nameTaken").is_none());
+
+            for error in [
+                Error::Conflict(format!("{message} elsewhere")),
+                Error::InvalidInput(message.into()),
+                Error::Shared(std::sync::Arc::new(Error::Conflict(message.into()))),
+                Error::Conflict(message.into()).with_root_failure(RootFailure::Changed),
+                Error::with_cleanup(
+                    Error::Conflict(message.into()),
+                    Err(Error::InvalidInput("cleanup failed".into())),
+                ),
+            ] {
+                let payload = serde_json::to_value(error).expect("other payload");
+                assert!(payload.get("databaseAdmission").is_none());
+                assert!(payload.get("nameTaken").is_none());
+            }
+        }
+
+        let error = Error::Conflict(WORKSPACE_FILE_NAME_TAKEN.into());
+        let payload = serde_json::to_value(&error).expect("name-taken payload");
+        assert_eq!(payload["nameTaken"], true);
+        assert!(payload.get("databaseAdmission").is_none());
+
+        for message in [
+            "bound SQLite registry was poisoned",
+            "file is open through a SQLite binding",
+            "database changed after capability resolution",
+        ] {
+            let payload =
+                serde_json::to_value(Error::Conflict(message.into())).expect("other payload");
+            assert!(payload.get("databaseAdmission").is_none());
             assert!(payload.get("nameTaken").is_none());
         }
     }
