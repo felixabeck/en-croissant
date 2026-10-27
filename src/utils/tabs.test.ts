@@ -429,6 +429,7 @@ test.each(["commitNewTab", "createTab"] as const)(
 test("a refused initialization precedes ID allocation, seed and caller-supplied admission", async () => {
     sessionStorage.clear();
     const { tabs, repository } = await importFreshAdmission();
+    const { WorkspaceReadError } = await import("@/state/workspace");
     const failure = new DOMException("workspace read refused", "SecurityError");
     const originalGetItem = Storage.prototype.getItem;
     const refusal = vi
@@ -441,13 +442,18 @@ test("a refused initialization precedes ID allocation, seed and caller-supplied 
     const seed = vi.fn((id: string) => repository.seed(id, defaultTree()));
     const setTabs = vi.fn(() => true);
 
-    expect(() =>
+    let caught: unknown;
+    try {
         tabs.commitNewTab({
             tab: { name: "Never staged", type: "analysis", gameOrigin: { kind: "none" } },
             seed,
             setTabs,
-        }),
-    ).toThrow(failure);
+        });
+    } catch (error) {
+        caught = error;
+    }
+    expect(caught).toBeInstanceOf(WorkspaceReadError);
+    expect((caught as Error).cause).toBe(failure);
 
     expect(allocate).not.toHaveBeenCalled();
     expect(seed).not.toHaveBeenCalled();

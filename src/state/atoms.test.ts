@@ -326,62 +326,74 @@ test("a fresh initializer retains an unreadable pending id, reports once and cac
     expect(third.atoms.initializeWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
 });
 
-test.each([
-    { priorCount: 1, unreadableCount: 1, succeeds: true },
-    { priorCount: 100, unreadableCount: 1, succeeds: true },
-    { priorCount: 100, unreadableCount: 100, succeeds: false },
-])(
-    "closing with $unreadableCount unreadable of $priorCount pending targets succeeds: $succeeds",
-    async ({ priorCount, unreadableCount, succeeds }) => {
-        const { workspace } = seedWorkspace();
-        const closed = workspace.tabs[0]!.value;
-        const pending = Array.from({ length: priorCount }, () => crypto.randomUUID());
-        const unreadable = pending.slice(0, unreadableCount);
-        const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-        for (const id of [...pending, closed]) sessionStorage.setItem(id, tree);
-        sessionStorage.setItem(
-            "workspace",
-            serializeStorageValue({ ...workspace, treeOwnershipPendingRemovalIds: pending }),
-        );
-        // Preserve prior intents during the initial load, then exercise the later atom commit.
-        const deny = denyStorageRemoval((id) => pending.includes(id));
-        const { atoms } = await importAtoms();
-        atoms.initializeWorkspace();
-        deny.mockRestore();
-        persistError.reportPersistError.mockClear();
-        const bytes = sessionStorage.getItem("workspace");
-        const refusal = refuseReads(unreadable);
-        const store = createStore();
+async function prepareCloseWithUnreadablePending(priorCount: number, unreadableCount: number) {
+    const { workspace } = seedWorkspace();
+    const closed = workspace.tabs[0]!.value;
+    const pending = Array.from({ length: priorCount }, () => crypto.randomUUID());
+    const pendingIds = new Set<string>(pending);
+    const unreadable = pending.slice(0, unreadableCount);
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    for (const id of [...pending, closed]) sessionStorage.setItem(id, tree);
+    sessionStorage.setItem(
+        "workspace",
+        serializeStorageValue({ ...workspace, treeOwnershipPendingRemovalIds: pending }),
+    );
+    // Preserve prior intents during the initial load, then exercise the later atom commit.
+    const deny = denyStorageRemoval((id) => pendingIds.has(id));
+    const { atoms } = await importAtoms();
+    atoms.initializeWorkspace();
+    deny.mockRestore();
+    persistError.reportPersistError.mockClear();
+    const bytes = sessionStorage.getItem("workspace");
+    const refusal = refuseReads(unreadable);
+    const store = createStore();
+    return { workspace, closed, pending, unreadable, tree, atoms, bytes, refusal, store };
+}
 
-        expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(succeeds);
+test.each([1, 100])(
+    "closing succeeds with one unreadable of %s pending targets",
+    async (priorCount) => {
+        const { workspace, closed, pending, unreadable, tree, atoms, refusal, store } =
+            await prepareCloseWithUnreadablePending(priorCount, 1);
 
-        expect(persistError.reportPersistError).toHaveBeenCalledTimes(succeeds ? 1 : 2);
+        expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(true);
+
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
         for (const id of unreadable)
             expect(refusal.mock.calls.filter(([key]) => key === id)).toHaveLength(1);
         refusal.mockRestore();
         for (const id of unreadable) expect(sessionStorage.getItem(id)).toBe(tree);
-        if (succeeds) {
-            expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toMatchObject({
-                treeOwnershipPendingRemovalIds: [...unreadable, closed],
-            });
-            expect(sessionStorage.getItem(closed)).toBeNull();
-            for (const id of pending.slice(unreadableCount))
-                expect(sessionStorage.getItem(id)).toBeNull();
-            expect(store.get(atoms.tabsAtom)).toEqual([workspace.tabs[1]]);
-        } else {
-            expect(sessionStorage.getItem("workspace")).toBe(bytes);
-            expect(sessionStorage.getItem(closed)).toBe(tree);
-            expect(store.get(atoms.tabsAtom)).toEqual(workspace.tabs);
-            expect(persistError.reportPersistError).toHaveBeenLastCalledWith(
-                expect.objectContaining({
-                    cause: expect.objectContaining({
-                        message: "Pending tree removals exceeded 100: 101",
-                    }),
-                }),
-            );
-        }
+        expect(deserializeStorageValue(sessionStorage.getItem("workspace")!)).toMatchObject({
+            treeOwnershipPendingRemovalIds: [...unreadable, closed],
+        });
+        expect(sessionStorage.getItem(closed)).toBeNull();
+        for (const id of pending.slice(1)) expect(sessionStorage.getItem(id)).toBeNull();
+        expect(store.get(atoms.tabsAtom)).toEqual([workspace.tabs[1]]);
     },
 );
+
+test("closing refuses when all 100 pending targets are unreadable", async () => {
+    const { workspace, closed, unreadable, tree, atoms, bytes, refusal, store } =
+        await prepareCloseWithUnreadablePending(100, 100);
+
+    expect(store.set(atoms.closeWorkspaceTabAtom, closed)).toBe(false);
+
+    expect(persistError.reportPersistError).toHaveBeenCalledTimes(2);
+    for (const id of unreadable)
+        expect(refusal.mock.calls.filter(([key]) => key === id)).toHaveLength(1);
+    refusal.mockRestore();
+    for (const id of unreadable) expect(sessionStorage.getItem(id)).toBe(tree);
+    expect(sessionStorage.getItem("workspace")).toBe(bytes);
+    expect(sessionStorage.getItem(closed)).toBe(tree);
+    expect(store.get(atoms.tabsAtom)).toEqual(workspace.tabs);
+    expect(persistError.reportPersistError).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            cause: expect.objectContaining({
+                message: "Pending tree removals exceeded 100: 101",
+            }),
+        }),
+    );
+});
 
 test("original path owners are captured before direct atom access repairs legacy storage", async () => {
     const fileTab: Tab = {
