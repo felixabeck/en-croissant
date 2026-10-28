@@ -233,7 +233,7 @@ describe("production database metadata pipeline", () => {
             ),
         ).toBe(true);
     });
-    it("persists and rehydrates exact native decimal metadata through the facade and plain JSON", async () => {
+    it("persists and rehydrates exact native decimal metadata through the compressed envelope", async () => {
         const metadata: Awaited<ReturnType<typeof tauri.getDbInfo>> = {
             filename: "exact.db3",
             title: "Exact byte count",
