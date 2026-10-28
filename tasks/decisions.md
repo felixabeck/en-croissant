@@ -10622,3 +10622,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The current nested grow layout allocates one share to two fields and another to Time control. All three consumers must change together. This adopts O1 of the reviewed plan. Reversal path: replace the shared layout only with equivalent independent field allocation and the same browser regression proof.
 * **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6e9f7c746cd426dcf35c67734c207910254bf15c473982071c28af30717b6284","input_sha256":"24b7774e0c063c30aad27ccd37d360171da7b3d23eb6b2c378c54dc61750cc83","kind":"mutation-receipt","operation":"e09f20f2661cae9d8737725c6c107701dc3031ee0ce3822f83469eff262305be","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261028-11 — What happens below one readable statistics field width?
+
+* **Governs:** f-20261027-02
+* **Question:** How should the Home filters behave when the card is narrower than one readable field?
+* **Chosen:** Reflow first, bounded horizontal scrolling within the filter region when one field cannot fit.
+* **Rejected:** Document horizontal scrolling, shrinking text, tiny forced fields and a new compact picker flow.
+* **Reason:** d-20260831-16 permits reflow or reachable scrolling while prohibiting silently lost content and document overflow. This adopts O1 and O2 of the reviewed plan. Reversal path: another card-local layout passing the same reachability and selected-value proofs.
+* **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"0b77e81545cb91dfe99481abd87b62b73247236aaa43557447d5f475fbd6e24c","input_sha256":"af58956ae8e562f35d71ff1841bdf180b83ad2704ec3d032749de167676ab875","kind":"mutation-receipt","operation":"fc77d18acc9dbd4c102c162cfd39ca99646de86450f3c10d61430ed12ecb835e","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-11"],"target":"decisions-ledger","v":1} -->
