@@ -2307,37 +2307,15 @@ fn prepare_zip_cancellable(
         if (*file.name()).ends_with('/') {
             staging.ensure_relative_directory(&validated_path)?;
         } else {
-            #[cfg(all(test, unix))]
-            {
-                let mut bytes = Vec::new();
-                bounded_copy(
-                    &mut file,
-                    &mut bytes,
-                    size,
-                    &mut total_expanded,
-                    limits.expanded,
-                    cancellation,
-                )?;
-                staging
-                    .ensure_relative_directory(validated_path.parent().unwrap_or(Path::new("")))?;
-                crate::infra::test_executable::publish_test_archive_entry(
-                    staging.directory()?,
-                    &validated_path,
-                    &bytes,
-                )?;
-            }
-            #[cfg(not(all(test, unix)))]
-            {
-                let mut outfile = staging.create_relative_regular(&validated_path)?;
-                bounded_copy(
-                    &mut file,
-                    &mut outfile,
-                    size,
-                    &mut total_expanded,
-                    limits.expanded,
-                    cancellation,
-                )?;
-            }
+            write_regular_archive_entry(
+                &mut file,
+                &staging,
+                &validated_path,
+                size,
+                &mut total_expanded,
+                limits.expanded,
+                cancellation,
+            )?;
         }
     }
 
@@ -2401,41 +2379,61 @@ fn prepare_tar_cancellable(
         if entry_type.is_dir() {
             staging.ensure_relative_directory(&validated_path)?;
         } else {
-            #[cfg(all(test, unix))]
-            {
-                let mut bytes = Vec::new();
-                bounded_copy(
-                    &mut entry,
-                    &mut bytes,
-                    size,
-                    &mut total_expanded,
-                    limits.expanded,
-                    cancellation,
-                )?;
-                staging
-                    .ensure_relative_directory(validated_path.parent().unwrap_or(Path::new("")))?;
-                crate::infra::test_executable::publish_test_archive_entry(
-                    staging.directory()?,
-                    &validated_path,
-                    &bytes,
-                )?;
-            }
-            #[cfg(not(all(test, unix)))]
-            {
-                let mut outfile = staging.create_relative_regular(&validated_path)?;
-                bounded_copy(
-                    &mut entry,
-                    &mut outfile,
-                    size,
-                    &mut total_expanded,
-                    limits.expanded,
-                    cancellation,
-                )?;
-            }
+            write_regular_archive_entry(
+                &mut entry,
+                &staging,
+                &validated_path,
+                size,
+                &mut total_expanded,
+                limits.expanded,
+                cancellation,
+            )?;
         }
     }
 
     Ok(staging)
+}
+
+fn write_regular_archive_entry(
+    input: &mut impl Read,
+    staging: &crate::infra::fs::OwnedStagingDir,
+    relative: &Path,
+    per_entry_limit: u64,
+    total_expanded: &mut u64,
+    total_limit: u64,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    #[cfg(all(test, unix))]
+    {
+        let mut bytes = Vec::new();
+        bounded_copy(
+            input,
+            &mut bytes,
+            per_entry_limit,
+            total_expanded,
+            total_limit,
+            cancellation,
+        )?;
+        staging.ensure_relative_directory(relative.parent().unwrap_or(Path::new("")))?;
+        crate::infra::test_executable::publish_test_archive_entry(
+            staging.directory()?,
+            relative,
+            &bytes,
+        )?;
+    }
+    #[cfg(not(all(test, unix)))]
+    {
+        let mut outfile = staging.create_relative_regular(relative)?;
+        bounded_copy(
+            input,
+            &mut outfile,
+            per_entry_limit,
+            total_expanded,
+            total_limit,
+            cancellation,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -17,6 +17,18 @@ static PUBLICATIONS: AtomicUsize = AtomicUsize::new(0);
 static FORKS: AtomicUsize = AtomicUsize::new(0);
 static INSTALL: OnceLock<i32> = OnceLock::new();
 
+// Register before test threads can enter glibc's prepare-handler walk.
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".init_array")]
+static CHESSFABLE_TEST_EXECUTABLE_INIT: extern "C" fn() = {
+    extern "C" fn initialize() {
+        install_handlers();
+    }
+    initialize
+};
+
 // Only the proof's selected publisher stops. Other test threads can still publish.
 static HOLD_PUBLICATION: AtomicBool = AtomicBool::new(false);
 static PUBLICATION_HELD: AtomicBool = AtomicBool::new(false);
@@ -50,14 +62,18 @@ extern "C" fn child() {
     PUBLICATIONS.store(0, Ordering::SeqCst);
 }
 
+fn install_handlers() -> i32 {
+    // Registration returns an error number directly, rather than setting errno.
+    *INSTALL
+        .get_or_init(|| unsafe { libc::pthread_atfork(Some(prepare), Some(parent), Some(child)) })
+}
+
 fn install() -> io::Result<()> {
     let failure = INSTALL_FAILURE.get();
     if failure != 0 {
         return Err(io::Error::from_raw_os_error(failure));
     }
-    // Registration returns an error number directly, rather than setting errno.
-    let result = *INSTALL
-        .get_or_init(|| unsafe { libc::pthread_atfork(Some(prepare), Some(parent), Some(child)) });
+    let result = install_handlers();
     if result == 0 {
         Ok(())
     } else {
@@ -189,6 +205,12 @@ pub(crate) mod tests {
 
     const SCRIPT: &[u8] = b"#!/bin/sh\nexit 0\n";
     static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_executable_handlers_are_installed_before_test_threads() {
+        assert_eq!(INSTALL.get(), Some(&0));
+    }
 
     struct ResetHolds;
     impl Drop for ResetHolds {
@@ -455,19 +477,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cat_copy_writer_audit() {
-        let source = include_str!("../engine/process.rs");
-        let body = source
-            .split("fn copy_closed_cat_fixture(")
-            .nth(1)
-            .unwrap()
-            .split("\n    }")
-            .next()
-            .unwrap();
-        assert!(body.contains("publish_test_executable("));
-        assert!(body.contains("std::fs::read("));
-        assert!(!body.contains("std::fs::copy("));
-        assert!(!body.contains("set_permissions("));
+    fn executable_copy_writer_audit() {
+        for (source, function) in [
+            (
+                include_str!("../engine/process.rs"),
+                "copy_closed_cat_fixture",
+            ),
+            (
+                include_str!("../chess.rs"),
+                "warm_resource_and_executable_changes_relaunch_and_duplicate_ids_stay_separate",
+            ),
+        ] {
+            let signature = format!("fn {function}(");
+            let body = source
+                .split(&signature)
+                .nth(1)
+                .unwrap()
+                .split("\n    }")
+                .next()
+                .unwrap();
+            assert!(body.contains("publish_test_executable("), "{function}");
+            assert!(body.contains("std::fs::read("), "{function}");
+            assert!(!body.contains("std::fs::copy("), "{function}");
+            if function == "copy_closed_cat_fixture" {
+                assert!(!body.contains("set_permissions("));
+            }
+        }
     }
 
     #[test]
