@@ -65,6 +65,12 @@ pub(crate) enum SqliteMode {
     ReadOnly,
 }
 
+pub(super) enum VanishedWal {
+    Empty,
+    Moved,
+    Unproven,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct BindingKey {
     pub(crate) identity: (u64, u64),
@@ -386,6 +392,99 @@ impl BoundDatabase {
         self.0.binding.refusal_count.load(Ordering::SeqCst)
     }
 
+    pub(super) fn retained_name_is_current(&self) -> Result<bool, Error> {
+        match crate::infra::fs::probe_regular_file_at(&self.0.binding.parent, &self.0.binding.leaf)
+        {
+            Ok(probe) => Ok(probe.identity == self.0.binding.identity),
+            Err(error) if vanished_leaf(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Preserve orphaned frames without opening the database inode. A replacement at the
+    /// retained name makes ownership of a nonempty WAL unproven, even after stale selection.
+    pub(super) fn move_vanished_wal(
+        &self,
+        target: &DatabaseFileTarget,
+    ) -> Result<VanishedWal, Error> {
+        use crate::infra::fs::{probe_regular_file_at, rename_entry_at, AtomicFileOutcome};
+
+        let binding = &self.0.binding;
+        let sidecar = |leaf: &OsStr, suffix: &str| {
+            let mut name = leaf.to_os_string();
+            name.push(suffix);
+            name
+        };
+        let wal = sidecar(&binding.leaf, "-wal");
+        let wal_probe = match probe_regular_file_at(&binding.parent, &wal) {
+            Ok(probe) if probe.length == 0 => return Ok(VanishedWal::Empty),
+            Ok(probe) => probe,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(VanishedWal::Empty);
+            }
+            Err(error) => return Err(error),
+        };
+        match probe_regular_file_at(&binding.parent, &binding.leaf) {
+            Err(error) if vanished_leaf(&error) => {}
+            Ok(_) => return Ok(VanishedWal::Unproven),
+            Err(error) => return Err(error),
+        }
+        let shm = sidecar(&binding.leaf, "-shm");
+        let shm_probe = match probe_regular_file_at(&binding.parent, &shm) {
+            Ok(probe) => Some(probe),
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let target_wal = sidecar(target.leaf(), "-wal");
+        let target_shm = sidecar(target.leaf(), "-shm");
+        for name in [&target_wal, &target_shm] {
+            match probe_regular_file_at(target.parent(), name) {
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+                Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
+            }
+        }
+        // These renames must not replace destination entries. Parent-sync uncertainty does
+        // not undo a completed rename, and recovery still needs the frames at the new name.
+        let record_sync = |outcome| {
+            if let AtomicFileOutcome::CommittedDurabilityUncertain(error) = outcome {
+                log::warn!("renamed database sidecar parent sync failed: {error}");
+            }
+        };
+        record_sync(rename_entry_at(
+            &binding.parent,
+            &wal,
+            wal_probe.identity,
+            false,
+            target.parent(),
+            &target_wal,
+        )?);
+        if let Some(probe) = shm_probe {
+            match rename_entry_at(
+                &binding.parent,
+                &shm,
+                probe.identity,
+                false,
+                target.parent(),
+                &target_shm,
+            ) {
+                Ok(outcome) => record_sync(outcome),
+                Err(error) => {
+                    record_sync(rename_entry_at(
+                        target.parent(),
+                        &target_wal,
+                        wal_probe.identity,
+                        false,
+                        &binding.parent,
+                        &wal,
+                    )?);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(VanishedWal::Moved)
+    }
+
     #[cfg(test)]
     pub(super) fn token(&self) -> u64 {
         self.0.token
@@ -502,6 +601,11 @@ impl BoundDatabase {
             callback,
         )
     }
+}
+
+fn vanished_leaf(error: &Error) -> bool {
+    matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+        || matches!(error, Error::InvalidInput(message) if message == "target must be a regular file")
 }
 
 #[cfg(test)]

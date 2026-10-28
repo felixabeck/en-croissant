@@ -40,14 +40,22 @@ use parking_lot::{Condvar as ParkingCondvar, Mutex as ParkingMutex, RwLock as Pa
 use scheduled_thread_pool::{OnPoolDropBehavior, ScheduledThreadPool};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Error;
+use crate::error::{
+    Error, DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY, DATABASE_OPEN_THROUGH_ANOTHER_NAME,
+};
 
 use super::{
-    bound_sqlite::{BoundDatabase, SqliteMode},
+    bound_sqlite::{BoundDatabase, SqliteMode, VanishedWal},
     migrations, ConnectionOptions, DatabaseSchemaIdentity, RegularFileMetadata,
 };
 
 const MAX_OPEN_DATABASES: usize = 16;
+
+fn vanished_holder_conflict(error: &Error) -> bool {
+    matches!(error, Error::Conflict(message)
+        if message == DATABASE_OPEN_THROUGH_ANOTHER_NAME
+            || message == DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY)
+}
 #[cfg(test)]
 const RELEASE_DELAY: Duration = Duration::from_millis(150);
 #[cfg(all(test, unix))]
@@ -811,6 +819,8 @@ pub struct DatabaseRepository {
     pool_connection_timeout: Duration,
     #[cfg(test)]
     fail_next_deletion_release: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    vanished_retirement_attempts: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for DatabaseRepository {
@@ -823,6 +833,8 @@ impl Default for DatabaseRepository {
             pool_connection_timeout: POOL_CONNECTION_TIMEOUT,
             #[cfg(test)]
             fail_next_deletion_release: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            vanished_retirement_attempts: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -1090,32 +1102,39 @@ impl DatabaseRepository {
             });
         }
 
-        let (s1, r1) = self.probe_schema_and_revision(target, cancellation)?;
-        let (s2, r2) = self.probe_schema_and_revision(target, cancellation)?;
-        let (s3, r3) = self.probe_schema_and_revision(target, cancellation)?;
-        let (s4, r4) = self.probe_schema_and_revision(target, cancellation)?;
-        self.tombstone_conflict(target)?;
-        if s1 != s2 || s2 != s3 || s3 != s4 || r1 != r2 || r2 != r3 || r3 != r4 {
-            return Err(Error::Conflict(
-                "database changed while reading its identity".into(),
-            ));
+        let mut wrote_main = false;
+        for sample in 0..2 {
+            let (s1, r1) = self.probe_schema_and_revision(target, cancellation, &mut wrote_main)?;
+            let (s2, r2) = self.probe_schema_and_revision(target, cancellation, &mut wrote_main)?;
+            let (s3, r3) = self.probe_schema_and_revision(target, cancellation, &mut wrote_main)?;
+            let (s4, r4) = self.probe_schema_and_revision(target, cancellation, &mut wrote_main)?;
+            self.tombstone_conflict(target)?;
+            if s1 == s2 && s2 == s3 && s3 == s4 && r1 == r2 && r2 == r3 && r3 == r4 {
+                super::cancellation_check(cancellation)?;
+                return Ok(DatabaseIdentity {
+                    data_revision: r4,
+                    object: s4.object,
+                    length: s4.length,
+                    modified: s4.modified,
+                });
+            }
+            if sample != 0 || !wrote_main {
+                break;
+            }
         }
-        super::cancellation_check(cancellation)?;
-        Ok(DatabaseIdentity {
-            data_revision: r4,
-            object: s4.object,
-            length: s4.length,
-            modified: s4.modified,
-        })
+        Err(Error::Conflict(
+            "database changed while reading its identity".into(),
+        ))
     }
 
     fn probe_schema_and_revision(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: &CancellationToken,
+        wrote_main: &mut bool,
     ) -> Result<(DatabaseSchemaIdentity, u64), Error> {
         let schema = self.probe_schema(target, cancellation)?;
-        let revision = self.read_revision(target, cancellation)?;
+        let revision = self.read_revision_tracking_writes(target, cancellation, wrote_main)?;
         Ok((schema, revision))
     }
 
@@ -1151,16 +1170,40 @@ impl DatabaseRepository {
         )
     }
 
+    #[cfg(test)]
     fn read_revision(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: &CancellationToken,
     ) -> Result<u64, Error> {
+        self.read_revision_tracking_writes(target, cancellation, &mut false)
+    }
+
+    fn read_revision_tracking_writes(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: &CancellationToken,
+        wrote_main: &mut bool,
+    ) -> Result<u64, Error> {
         super::cancellation_check(cancellation)?;
         super::sqlite_cancellation::install()?;
-        let _admission = self.predecessor_admission_for(target, cancellation)?;
-        self.tombstone_conflict(target)?;
-        let bound = self.acquire_bound(target)?;
+        let mut attempted_retirement = false;
+        let (_admission, bound) = loop {
+            let admission = self.predecessor_admission_for(target, cancellation)?;
+            self.tombstone_conflict(target)?;
+            match self.acquire_bound(target) {
+                Ok(bound) => break (admission, bound),
+                Err(error) if !attempted_retirement && vanished_holder_conflict(&error) => {
+                    attempted_retirement = true;
+                    drop(admission);
+                    match self.retire_vanished_idle_holders(target, Some(cancellation))? {
+                        Some(wrote) => *wrote_main |= wrote,
+                        None => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let uri = bound.uri(SqliteMode::ReadOnly)?;
         let refusal_count = bound.refusal_count();
         let connection_lifetime = bound.connection_lifetime()?;
@@ -1436,6 +1479,7 @@ impl DatabaseRepository {
         super::sqlite_cancellation::install()?;
         let key = entry_key(target)?;
         let mut initial_probe = self.entry_probe(target, &key, cancellation)?;
+        let mut attempted_retirement = false;
         loop {
             let mut state = self.state.lock().map_err(repository_state_poisoned)?;
             state.prune_retirements();
@@ -1472,13 +1516,30 @@ impl DatabaseRepository {
                 finished: false,
             };
 
-            let mut capacity = self.reserve_retirement_capacity(deadline, cancellation)?;
-            let admission = predecessor_admission(&self.state, &key, None, deadline, cancellation)?;
+            let mut capacity = Some(self.reserve_retirement_capacity(deadline, cancellation)?);
+            let (admission, bound) = loop {
+                let admission =
+                    predecessor_admission(&self.state, &key, None, deadline, cancellation)?;
 
-            self.probe_current(target)?;
-            #[cfg(all(test, unix))]
-            run_test_hook(TestHook::PreBuild, target.path());
-            let bound = self.acquire_bound(target)?;
+                self.probe_current(target)?;
+                #[cfg(all(test, unix))]
+                run_test_hook(TestHook::PreBuild, target.path());
+                match self.acquire_bound(target) {
+                    Ok(bound) => break (admission, bound),
+                    Err(error) if !attempted_retirement && vanished_holder_conflict(&error) => {
+                        attempted_retirement = true;
+                        drop(admission);
+                        drop(capacity.take());
+                        if self
+                            .retire_vanished_idle_holders(target, cancellation)?
+                            .is_none()
+                        {
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
             let uri = bound.uri(SqliteMode::ReadWrite)?;
             let connections = Arc::new(DrainGate::default());
             let owners = Arc::new(DrainGate::default());
@@ -1518,6 +1579,10 @@ impl DatabaseRepository {
             // The unopened pool is protected by the construction reservation. Its first
             // SQLite open receives a separate admission in the manager.
             drop(admission);
+            let mut capacity = match capacity {
+                Some(capacity) => capacity,
+                None => self.reserve_retirement_capacity(deadline, cancellation)?,
+            };
             let mut state = loop {
                 let mut state = self.state.lock().map_err(repository_state_poisoned)?;
                 state.prune_retirements();
@@ -1604,6 +1669,109 @@ impl DatabaseRepository {
             .map_err(repository_state_poisoned)?
             .schema_identity = Some(identity);
         Ok(())
+    }
+
+    /// Select only unowned idle holders, then preserve their WAL before the existing drain.
+    /// The incoming predecessor admission and construction capacity must already be released.
+    fn retire_vanished_idle_holders(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Option<bool>, Error> {
+        #[cfg(test)]
+        self.vanished_retirement_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let incoming = entry_key(target)?;
+        let selected = {
+            let state = self.state.lock().map_err(repository_state_poisoned)?;
+            let mut stale = Vec::new();
+            for (key, entry) in &state.entries {
+                if *key == incoming
+                    || key.identity != incoming.identity
+                    || state.tombstones.contains(&key.path)
+                    || Arc::strong_count(entry) != 1
+                    || !entry.is_idle()
+                {
+                    continue;
+                }
+                if !entry.bound.retained_name_is_current()?
+                    && Arc::strong_count(entry) == 1
+                    && entry.is_idle()
+                {
+                    stale.push((key, entry));
+                }
+            }
+            stale
+                .into_iter()
+                .map(|(key, entry)| {
+                    entry.leases.close();
+                    (key.clone(), Arc::clone(entry))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut retired = false;
+        let mut wrote_main = false;
+        let result = (|| {
+            for (key, entry) in &selected {
+                if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                    return Err(Error::Cancellation);
+                }
+                let preserved = {
+                    let pool = entry.pool.read();
+                    if let Some(pool) = pool.as_ref().filter(|pool| pool.state().connections != 0) {
+                        // try_get never schedules a new connection. An idle connection's
+                        // descriptors retain the vanished inode and its WAL.
+                        let mut connection = pool.try_get().ok_or_else(|| {
+                            Error::Conflict(
+                                "database idle checkpoint connection is unavailable".into(),
+                            )
+                        })?;
+                        #[derive(QueryableByName)]
+                        struct Checkpoint {
+                            #[diesel(sql_type = diesel::sql_types::Integer)]
+                            busy: i32,
+                        }
+                        let mut checkpoint = || -> Result<Checkpoint, Error> {
+                            Ok(sql_query("PRAGMA wal_checkpoint(TRUNCATE)")
+                                .get_result::<Checkpoint>(&mut **connection)?)
+                        };
+                        let outcome = match cancellation {
+                            Some(token) => super::sqlite_cancellation::with_sqlite_cancellation(
+                                token, checkpoint,
+                            )?,
+                            None => checkpoint()?,
+                        };
+                        if outcome.busy != 0 {
+                            return Err(Error::Conflict("database idle checkpoint is busy".into()));
+                        }
+                        true
+                    } else {
+                        #[cfg(test)]
+                        run_test_hook(TestHook::VanishedHolderSelected, &key.path);
+                        match entry.bound.move_vanished_wal(target)? {
+                            VanishedWal::Empty => false,
+                            VanishedWal::Moved => true,
+                            VanishedWal::Unproven => return Ok(None),
+                        }
+                    }
+                };
+                self.retire_replaced(key, entry, cancellation)?;
+                retired = true;
+                wrote_main |= preserved;
+            }
+            Ok(retired.then_some(wrote_main))
+        })();
+        // Also restore any selected but unprocessed lease gates on an error. A published
+        // retirement keeps its closed connection gate and cannot be reopened here.
+        for (_, entry) in &selected {
+            entry.cancel_retirement();
+        }
+        drop(selected);
+        #[cfg(test)]
+        if matches!(result, Ok(Some(_))) {
+            run_test_hook(TestHook::VanishedHoldersRetired, target.path());
+        }
+        result
     }
 
     fn retire_replaced(
@@ -1866,6 +2034,8 @@ impl DatabaseRepository {
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) -> Result<BoundDatabase, Error> {
+        #[cfg(test)]
+        run_test_hook(TestHook::BeforeAcquireBound, target.path());
         let result = BoundDatabase::acquire(target);
         #[cfg(unix)]
         return result.map_err(|error| self.classify_bound_failure(target, false, error));
@@ -2133,6 +2303,9 @@ pub(crate) enum TestHook {
     RetirementPublished,
     RetirementCapacityWait,
     RetirementReservedWait,
+    VanishedHolderSelected,
+    VanishedHoldersRetired,
+    BeforeAcquireBound,
     ScanBeforeAdmission,
     ScanAfterEstablish,
     ScanValidationCheckpoint,
@@ -2289,6 +2462,9 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::RetirementPublished
         | TestHook::RetirementCapacityWait
         | TestHook::RetirementReservedWait
+        | TestHook::VanishedHolderSelected
+        | TestHook::VanishedHoldersRetired
+        | TestHook::BeforeAcquireBound
         | TestHook::ScanBeforeAdmission
         | TestHook::ScanAfterEstablish
         | TestHook::ScanValidationCheckpoint
@@ -2326,7 +2502,11 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
             TestHook::PoolGetFailed => hooks.pool_get_failed.take(),
             TestHook::BoundRefusal => hooks.bound_refusal.take(),
             TestHook::PostGet => hooks.post_get.take(),
-            TestHook::AfterProbeCurrent | TestHook::PoolBeforeFailureArbitration => None,
+            TestHook::AfterProbeCurrent
+            | TestHook::PoolBeforeFailureArbitration
+            | TestHook::VanishedHolderSelected
+            | TestHook::VanishedHoldersRetired
+            | TestHook::BeforeAcquireBound => None,
             TestHook::AfterReadRevision => hooks.after_read_revision.take(),
             TestHook::WorkerBeforeAdmission => hooks.worker_before_admission.take(),
             TestHook::WorkerAfterAdmission => hooks.worker_after_admission.take(),
@@ -2379,6 +2559,13 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 | TestHook::ScanValidationCheckpoint
                 | TestHook::PoolBeyondRetireDeadline
                 | TestHook::PoolBeforeFailureArbitration => {}
+                TestHook::VanishedHolderSelected
+                | TestHook::VanishedHoldersRetired
+                | TestHook::BeforeAcquireBound => {
+                    hooks
+                        .by_path
+                        .insert((hook, normalize_test_hook_path(path)), callback_fn);
+                }
                 TestHook::PredecessorWait => hooks.predecessor_wait = Some(callback_fn),
                 #[cfg(unix)]
                 TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
@@ -4602,6 +4789,475 @@ mod retirement_tests {
     #[test]
     fn spelling_alias_replacement_delete_waits() {
         replacement_case("delete", true);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod vanished_holder_tests {
+    use super::*;
+    use diesel::connection::{AnsiTransactionManager, SimpleConnection, TransactionManager};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    const WAIT: Duration = Duration::from_secs(10);
+
+    fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    }
+
+    fn committed_fixture(repository: &DatabaseRepository, path: &Path) -> Result<EntryKey, Error> {
+        let target = test_target(path);
+        let mut connection = repository.initialization_connection(&target, None)?;
+        migrations::prepare_database(&mut connection, "before rename", "fixture")?;
+        connection.batch_execute(
+            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA wal_autocheckpoint=0;
+            BEGIN IMMEDIATE;
+            UPDATE Info SET Value='committed renamed row' WHERE Name='Title';
+            INSERT OR REPLACE INTO Info(Name, Value) VALUES ('DataRevision', '23');
+            COMMIT;",
+        )?;
+        drop(connection);
+        assert!(std::fs::metadata(sidecar(path, "-wal"))?.len() > 0);
+        entry_key(&target)
+    }
+
+    // An unfinished transaction makes r2d2 discard each checked-out connection. The BEGIN
+    // writes nothing, and the vanished leaf prevents final-close checkpointing. No reaper tick.
+    fn close_idle_connections(
+        repository: &DatabaseRepository,
+        key: &EntryKey,
+    ) -> Result<(), Error> {
+        let pool = repository
+            .state
+            .lock()
+            .map_err(repository_state_poisoned)?
+            .entries
+            .get(key)
+            .and_then(|entry| entry.pool.read().clone())
+            .ok_or_else(|| Error::Conflict("fixture pool missing".into()))?;
+        while let Some(mut connection) = pool.try_get() {
+            AnsiTransactionManager::begin_transaction(&mut **connection)?;
+            drop(connection);
+        }
+        assert_eq!(pool.state().connections, 0);
+        Ok(())
+    }
+
+    fn assert_committed(repository: &DatabaseRepository, path: &Path) -> Result<(), Error> {
+        let target = test_target(path);
+        let mut connection = repository.connection(&target, None)?;
+        let row: RevisionRow = sql_query("SELECT Value AS value FROM Info WHERE Name='Title'")
+            .get_result(&mut *connection)?;
+        assert_eq!(row.value.as_deref(), Some("committed renamed row"));
+        assert_eq!(repository.database_identity(&target)?.data_revision, 23);
+        Ok(())
+    }
+
+    fn assert_admission_refusal<T>(result: Result<T, Error>, directory: bool) {
+        let expected = if directory {
+            DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY
+        } else {
+            DATABASE_OPEN_THROUGH_ANOTHER_NAME
+        };
+        assert!(matches!(result, Err(Error::Conflict(message)) if message == expected));
+    }
+
+    #[test]
+    fn vanished_renamed_idle_cache_opens_under_the_new_name() -> Result<(), Error> {
+        for cross_directory in [false, true] {
+            let root = tempfile::tempdir()?;
+            let old = root.path().join("old.db3");
+            let parent = root.path().join("moved");
+            std::fs::create_dir(&parent)?;
+            let new = if cross_directory {
+                parent.join("new.db3")
+            } else {
+                root.path().join("new.db3")
+            };
+            let repository = DatabaseRepository::default();
+            let old_key = committed_fixture(&repository, &old)?;
+            std::fs::hard_link(&old, &new)?;
+            // A live alias, even with no lease or extra entry owner, must remain refused.
+            assert_admission_refusal(
+                repository.connection(&test_target(&new), None),
+                cross_directory,
+            );
+            assert!(repository
+                .state
+                .lock()
+                .map_err(repository_state_poisoned)?
+                .entries
+                .contains_key(&old_key));
+            std::fs::remove_file(&new)?;
+            let lease = repository.connection(&test_target(&old), None)?;
+            std::fs::rename(&old, &new)?;
+            assert_admission_refusal(
+                repository.connection(&test_target(&new), None),
+                cross_directory,
+            );
+            drop(lease);
+            let extra_owner = repository
+                .state
+                .lock()
+                .map_err(repository_state_poisoned)?
+                .entries
+                .get(&old_key)
+                .cloned();
+            assert_admission_refusal(
+                repository.connection(&test_target(&new), None),
+                cross_directory,
+            );
+            drop(extra_owner);
+            assert_admission_refusal(BoundDatabase::acquire(&test_target(&new)), cross_directory);
+            assert_committed(&repository, &new)?;
+            let state = repository.state.lock().map_err(repository_state_poisoned)?;
+            assert!(!state.entries.contains_key(&old_key));
+            assert!(state.entries.keys().all(|key| key.path != old));
+            assert_eq!(state.entries.len(), 1);
+            drop(state);
+            drop(BoundDatabase::acquire(&test_target(&new))?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_renamed_idle_cache_keeps_committed_row() -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let repository = DatabaseRepository::default();
+        let key = committed_fixture(&repository, &old)?;
+        let old_wal = sidecar(&old, "-wal");
+        let old_wal_identity = test_target(&old_wal).identity();
+        std::fs::rename(&old, &new)?;
+        // A pending leaf-open hook must remain unused by the checkpoint and retirement.
+        let bound = repository
+            .state
+            .lock()
+            .map_err(repository_state_poisoned)?
+            .entries
+            .get(&key)
+            .map(|entry| entry.bound.clone())
+            .ok_or_else(|| Error::Conflict("fixture binding missing".into()))?;
+        let opens = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&opens);
+        bound.set_before_openat_hook(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })?;
+        drop(bound);
+        assert_committed(&repository, &new)?;
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        assert_eq!(test_target(&old_wal).identity(), old_wal_identity);
+        assert_eq!(std::fs::metadata(&old_wal)?.len(), 0);
+        std::fs::remove_file(old_wal)?;
+        assert_committed(&repository, &new)?;
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_renamed_idle_cache_keeps_row_after_idle_close() -> Result<(), Error> {
+        for cross_directory in [false, true] {
+            let root = tempfile::tempdir()?;
+            let old = root.path().join("old.db3");
+            std::fs::create_dir(root.path().join("moved"))?;
+            let new = if cross_directory {
+                root.path().join("moved/new.db3")
+            } else {
+                root.path().join("new.db3")
+            };
+            let repository = DatabaseRepository::default();
+            let key = committed_fixture(&repository, &old)?;
+            std::fs::rename(&old, &new)?;
+            close_idle_connections(&repository, &key)?;
+            assert!(std::fs::metadata(sidecar(&old, "-wal"))?.len() > 0);
+            assert_committed(&repository, &new)?;
+            assert!(!sidecar(&old, "-wal").exists());
+            assert!(!sidecar(&old, "-shm").exists());
+        }
+        Ok(())
+    }
+
+    fn replacement_wal_case(after_selection: bool) -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let repository = DatabaseRepository::default();
+        let key = committed_fixture(&repository, &old)?;
+        std::fs::rename(&old, &new)?;
+        let distinctive = b"replacement wal must stay at its own name";
+        if !after_selection {
+            std::fs::write(&old, b"different regular database file")?;
+        }
+        close_idle_connections(&repository, &key)?;
+        let _hooks = if after_selection {
+            let old = old.clone();
+            Some(configure_test_hooks(root.path(), |hooks| {
+                hooks.by_path.insert(
+                    (
+                        TestHook::VanishedHolderSelected,
+                        normalize_test_hook_path(&old),
+                    ),
+                    Box::new(move || {
+                        assert!(!old.exists());
+                        assert!(
+                            std::fs::write(&old, b"replacement installed after selection").is_ok()
+                        );
+                        assert!(std::fs::write(sidecar(&old, "-wal"), distinctive).is_ok());
+                    }),
+                );
+            }))
+        } else {
+            std::fs::write(sidecar(&old, "-wal"), distinctive)?;
+            None
+        };
+        assert_admission_refusal(repository.connection(&test_target(&new), None), false);
+        let state = repository.state.lock().map_err(repository_state_poisoned)?;
+        let entry = state
+            .entries
+            .get(&key)
+            .ok_or_else(|| Error::Conflict("old entry was retired".into()))?;
+        assert!(entry.is_idle());
+        assert_eq!(std::fs::read(sidecar(&old, "-wal"))?, distinctive);
+        assert!(!sidecar(&new, "-wal").exists());
+        assert!(!sidecar(&new, "-shm").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_rename_refuses_unproven_replacement_wal() -> Result<(), Error> {
+        replacement_wal_case(false)
+    }
+
+    #[test]
+    fn vanished_rename_refuses_wal_replaced_after_selection() -> Result<(), Error> {
+        replacement_wal_case(true)
+    }
+
+    #[test]
+    fn vanished_renamed_idle_cache_waits_for_drain() -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let repository = DatabaseRepository::default();
+        let key = committed_fixture(&repository, &old)?;
+        let gate = repository
+            .state
+            .lock()
+            .map_err(repository_state_poisoned)?
+            .entries
+            .get(&key)
+            .map(|entry| Arc::clone(&entry.connections))
+            .ok_or_else(|| Error::Conflict("fixture gate missing".into()))?;
+        let ticket = gate
+            .enter()
+            .ok_or_else(|| Error::Conflict("fixture gate closed".into()))?;
+        std::fs::rename(&old, &new)?;
+        let acquires = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&acquires);
+        let (published, published_rx) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let _hooks = configure_test_hooks(root.path(), |hooks| {
+            hooks.by_path.insert(
+                (TestHook::BeforeAcquireBound, normalize_test_hook_path(&new)),
+                Box::new(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+            hooks.retirement_published = Some(Box::new(move || {
+                assert!(published.send(()).is_ok());
+                assert!(resume_rx.recv_timeout(WAIT).is_ok());
+            }));
+        });
+        std::thread::scope(|scope| -> Result<(), Error> {
+            let worker =
+                scope.spawn(|| repository.connection(&test_target(&new), None).map(|_| ()));
+            assert!(published_rx.recv_timeout(WAIT).is_ok());
+            assert_eq!(acquires.load(Ordering::SeqCst), 1);
+            assert!(resume.send(()).is_ok());
+            let deadline = Instant::now() + WAIT;
+            while gate.snapshot().waiting == 0
+                && acquires.load(Ordering::SeqCst) == 1
+                && Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            assert!(
+                gate.snapshot().waiting > 0,
+                "connection gate must hold the retry back"
+            );
+            assert_eq!(acquires.load(Ordering::SeqCst), 1);
+            drop(ticket);
+            worker
+                .join()
+                .map_err(|_| Error::Conflict("open worker panicked".into()))??;
+            assert_eq!(acquires.load(Ordering::SeqCst), 2);
+            assert!(gate.snapshot().closed);
+            assert_eq!(gate.snapshot().outstanding, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn revision_read_retires_vanished_idle_cache() -> Result<(), Error> {
+        for empty_pool in [false, true] {
+            let root = tempfile::tempdir()?;
+            let old = root.path().join("old.db3");
+            let new = root.path().join("new.db3");
+            let repository = DatabaseRepository::default();
+            let key = committed_fixture(&repository, &old)?;
+            std::fs::rename(&old, &new)?;
+            if empty_pool {
+                close_idle_connections(&repository, &key)?;
+            }
+            let target = test_target(&new);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&reads);
+            let _hooks = configure_test_hooks(&new, |hooks| {
+                hooks.after_read_revision = Some(Box::new(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }));
+            });
+            assert_eq!(repository.database_identity(&target)?.data_revision, 23);
+            let count = reads.load(Ordering::SeqCst);
+            if !empty_pool {
+                assert_eq!(
+                    count, 8,
+                    "checkpoint requires exactly one identity resample"
+                );
+            } else {
+                assert!(count == 4 || count == 8);
+            }
+            assert!(repository
+                .state
+                .lock()
+                .map_err(repository_state_poisoned)?
+                .entries
+                .is_empty());
+            assert_committed(&repository, &new)?;
+            drop(_hooks);
+
+            // Without a write by this identity call, metadata disagreement remains a conflict.
+            let changed = new.clone();
+            let mut changed_once = false;
+            let _hooks = configure_test_hooks(&new, |hooks| {
+                hooks.after_read_revision = Some(Box::new(move || {
+                    if !changed_once {
+                        changed_once = true;
+                        let metadata = std::fs::metadata(&changed);
+                        assert!(metadata.is_ok());
+                        if let Ok(metadata) = metadata {
+                            let file = std::fs::OpenOptions::new().write(true).open(&changed);
+                            assert!(file.is_ok());
+                            if let Ok(file) = file {
+                                assert!(file.set_len(metadata.len() + 4096).is_ok());
+                            }
+                        }
+                    }
+                }));
+            });
+            assert!(matches!(repository.database_identity(&target),
+                Err(Error::Conflict(message)) if message == "database changed while reading its identity"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_rename_retry_conflict_runs_helper_once() -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let link = root.path().join("live.db3");
+        let repository = DatabaseRepository::default();
+        committed_fixture(&repository, &old)?;
+        std::fs::hard_link(&old, &link)?;
+        std::fs::rename(&old, &new)?;
+        let holder = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&holder);
+        let _hooks = configure_test_hooks(&new, |hooks| {
+            hooks.by_path.insert(
+                (
+                    TestHook::VanishedHoldersRetired,
+                    normalize_test_hook_path(&new),
+                ),
+                Box::new(move || {
+                    let bound = BoundDatabase::acquire(&test_target(&link));
+                    assert!(bound.is_ok());
+                    *held
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = bound.ok();
+                }),
+            );
+        });
+        assert_admission_refusal(repository.connection(&test_target(&new), None), false);
+        assert_eq!(
+            repository
+                .vanished_retirement_attempts
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert!(repository
+            .state
+            .lock()
+            .map_err(repository_state_poisoned)?
+            .entries
+            .is_empty());
+        drop(holder.lock().map_err(repository_state_poisoned)?.take());
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_rename_admits_with_fifteen_incomplete_retirements() -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let repository = DatabaseRepository::with_retire_wait(Duration::from_secs(2));
+        let mut tickets = Vec::new();
+        for index in 0..15 {
+            let parent = root.path().join(format!("retired-{index}"));
+            std::fs::create_dir(&parent)?;
+            let target = test_target(&parent.join("held.db3"));
+            let (key, entry, _) = repository.entry(&target, None)?;
+            tickets.push(
+                entry
+                    .connections
+                    .enter()
+                    .ok_or_else(|| Error::Conflict("fixture gate closed".into()))?,
+            );
+            entry.leases.close();
+            let mut capacity =
+                repository.reserve_retirement_capacity(Instant::now() + WAIT, None)?;
+            let mut state = repository.state.lock().map_err(repository_state_poisoned)?;
+            let disposal = state.publish_retirement(&key, &entry)?;
+            capacity.publish(&mut state);
+            let removed = state.entries.remove(&key);
+            drop(state);
+            drop(entry.pool.write().take());
+            drop(removed);
+            drop(disposal);
+        }
+        assert_eq!(
+            repository
+                .state
+                .lock()
+                .map_err(repository_state_poisoned)?
+                .retired
+                .len(),
+            15
+        );
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let key = committed_fixture(&repository, &old)?;
+        std::fs::rename(&old, &new)?;
+        assert_committed(&repository, &new)?;
+        let state = repository.state.lock().map_err(repository_state_poisoned)?;
+        assert!(!state.entries.contains_key(&key));
+        assert_eq!(state.retired.len(), 15);
+        assert_eq!(state.retirement_reservations, 0);
+        drop(state);
+        drop(tickets);
+        Ok(())
     }
 }
 
