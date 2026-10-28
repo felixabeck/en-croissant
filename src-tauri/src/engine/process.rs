@@ -15762,20 +15762,30 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn child_pid_published_when_spawn_completed(
+        pid_rx: &std::sync::mpsc::Receiver<Option<u32>>,
+        spawn_result: &Result<EngineRuntime, Error>,
+    ) -> u32 {
+        match pid_rx.try_recv() {
+            Ok(Some(pid)) => pid,
+            published => {
+                let outcome = match spawn_result {
+                    Ok(_) => "Ok(runtime)".to_string(),
+                    Err(error) => format!("Err({error:?})"),
+                };
+                panic!(
+                    "spawn observer must have published a child pid by the time spawn completed; channel={published:?}; spawn={outcome}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn spawn_io_take_failures_force_kill_and_reap_child() {
-        use std::os::unix::fs::PermissionsExt;
-
         for failure in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
             let directory = tempfile::tempdir().unwrap();
-            let script = directory.path().join("spawn-io-failure-engine.sh");
-            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let executable = EngineExecutable::test_fixture(
-                std::fs::File::open(&script).unwrap(),
-                directory.path().to_path_buf(),
-                Vec::new(),
-            );
+            let executable = stdin_waiting_executable(&directory);
             let command_target = executable.command_target().to_path_buf();
             let (pid_tx, pid_rx) = std::sync::mpsc::channel();
             let _observer = set_spawn_child_observer(
@@ -15795,10 +15805,7 @@ mod tests {
             .await;
             set_spawn_io_failure(None);
 
-            let pid = pid_rx
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .expect("spawn observer must see a real child pid");
+            let pid = child_pid_published_when_spawn_completed(&pid_rx, &result);
             match failure {
                 SpawnIoFailure::NoStdin => assert!(matches!(result, Err(Error::NoStdin))),
                 SpawnIoFailure::NoStdout => assert!(matches!(result, Err(Error::NoStdout))),
@@ -15807,14 +15814,7 @@ mod tests {
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let script = directory.path().join("spawn-io-reap-failure-engine.sh");
-        std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let executable = EngineExecutable::test_fixture(
-            std::fs::File::open(&script).unwrap(),
-            directory.path().to_path_buf(),
-            Vec::new(),
-        );
+        let executable = stdin_waiting_executable(&directory);
         let command_target = executable.command_target().to_path_buf();
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
         let _observer = set_spawn_child_observer(
@@ -15836,10 +15836,7 @@ mod tests {
         set_spawn_io_failure(None);
         set_terminate_failure(None);
 
-        let pid = pid_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .expect("spawn observer must see a real child pid");
+        let pid = child_pid_published_when_spawn_completed(&pid_rx, &result);
         assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
         assert_child_is_reaped(pid);
     }
@@ -17015,21 +17012,12 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
     #[cfg(unix)]
     #[tokio::test]
     async fn real_child_termination_failures_cover_error_and_timeout_reap_branches() {
-        use std::os::unix::fs::PermissionsExt;
-
         for (failure, expected_timeout) in [
             (TerminateFailure::QuitKillReap, false),
             (TerminateFailure::ReapTimeout, true),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let script = directory.path().join("termination-failure-engine.sh");
-            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let executable = EngineExecutable::test_fixture(
-                std::fs::File::open(&script).unwrap(),
-                directory.path().to_path_buf(),
-                Vec::new(),
-            );
+            let executable = stdin_waiting_executable(&directory);
             let deadlines = EngineDeadlines {
                 quit: Duration::from_millis(20),
                 kill_reap: Duration::from_millis(30),
@@ -17044,12 +17032,10 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
                 }),
             );
             set_terminate_failure(Some(failure));
-            let mut runtime = EngineRuntime::spawn(executable, deadlines).await.unwrap();
+            let result = EngineRuntime::spawn(executable, deadlines).await;
             set_terminate_failure(None);
-            let pid = pid_rx
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .expect("spawn observer must see a real child pid");
+            let pid = child_pid_published_when_spawn_completed(&pid_rx, &result);
+            let mut runtime = result.expect("termination-failure child must spawn");
             let result = runtime.terminate().await;
             if expected_timeout {
                 assert!(matches!(result, Err(Error::EngineTimeout(_))));
