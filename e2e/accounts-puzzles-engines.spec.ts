@@ -827,6 +827,16 @@ const summaryStatistics = {
     ],
 };
 
+const homeSummaryPlayerStatisticsFixture = (player: string, won: number) => ({
+    site_stats_data: [
+        {
+            ...summaryStatistics.site_stats_data[0],
+            player,
+            daily: [{ ...summaryStatistics.site_stats_data[0].daily[0], won, drawn: 0, lost: 0 }],
+        },
+    ],
+});
+
 async function expectHomeSummaryDropdown(
     page: Page,
     assertNoHorizontalOverflow: () => Promise<void>,
@@ -969,17 +979,6 @@ test("accounts-puzzles-engines: home summary retains mixed-case owner games afte
             ),
         );
     });
-    const variant = (player: string, won: number) => ({
-        site_stats_data: [
-            {
-                ...summaryStatistics.site_stats_data[0],
-                player,
-                daily: [
-                    { ...summaryStatistics.site_stats_data[0].daily[0], won, drawn: 0, lost: 0 },
-                ],
-            },
-        ],
-    });
     await mockScenario({
         commands: {
             list_workspace_databases: { result: { entries: [summaryLichessDatabase], unread: [] } },
@@ -994,7 +993,10 @@ test("accounts-puzzles-engines: home summary retains mixed-case owner games afte
                 },
             },
             get_players_game_info: {
-                outcomes: [{ result: variant("Alex", 3) }, { result: variant("ALEX", 5) }],
+                outcomes: [
+                    { result: homeSummaryPlayerStatisticsFixture("Alex", 3) },
+                    { result: homeSummaryPlayerStatisticsFixture("ALEX", 5) },
+                ],
                 error: "Unexpected extra statistics read",
             },
         },
@@ -1069,22 +1071,7 @@ for (const corner of [
             handle: { id: { id: "summary-other" }, kind: "database" },
             filename: "other_lichess.db3",
         };
-        const otherStatistics = {
-            site_stats_data: [
-                {
-                    ...summaryStatistics.site_stats_data[0],
-                    player: "other",
-                    daily: [
-                        {
-                            ...summaryStatistics.site_stats_data[0].daily[0],
-                            won: 3,
-                            drawn: 0,
-                            lost: 0,
-                        },
-                    ],
-                },
-            ],
-        };
+        const otherStatistics = homeSummaryPlayerStatisticsFixture("other", 3);
         await mockScenario({
             commands: {
                 list_workspace_databases: {
