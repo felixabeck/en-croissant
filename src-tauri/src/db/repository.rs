@@ -51,11 +51,6 @@ use super::{
 
 const MAX_OPEN_DATABASES: usize = 16;
 
-fn vanished_holder_conflict(error: &Error) -> bool {
-    matches!(error, Error::Conflict(message)
-        if message == DATABASE_OPEN_THROUGH_ANOTHER_NAME
-            || message == DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY)
-}
 #[cfg(test)]
 const RELEASE_DELAY: Duration = Duration::from_millis(150);
 #[cfg(all(test, unix))]
@@ -1193,15 +1188,15 @@ impl DatabaseRepository {
             self.tombstone_conflict(target)?;
             match self.acquire_bound(target) {
                 Ok(bound) => break (admission, bound),
-                Err(error) if !attempted_retirement && vanished_holder_conflict(&error) => {
-                    attempted_retirement = true;
+                Err(error) => {
                     drop(admission);
-                    match self.retire_vanished_idle_holders(target, Some(cancellation))? {
-                        Some(wrote) => *wrote_main |= wrote,
-                        None => return Err(error),
-                    }
+                    *wrote_main |= self.recover_vanished_holder_conflict(
+                        target,
+                        Some(cancellation),
+                        &mut attempted_retirement,
+                        error,
+                    )?;
                 }
-                Err(error) => return Err(error),
             }
         };
         let uri = bound.uri(SqliteMode::ReadOnly)?;
@@ -1526,18 +1521,16 @@ impl DatabaseRepository {
                 run_test_hook(TestHook::PreBuild, target.path());
                 match self.acquire_bound(target) {
                     Ok(bound) => break (admission, bound),
-                    Err(error) if !attempted_retirement && vanished_holder_conflict(&error) => {
-                        attempted_retirement = true;
+                    Err(error) => {
                         drop(admission);
                         drop(capacity.take());
-                        if self
-                            .retire_vanished_idle_holders(target, cancellation)?
-                            .is_none()
-                        {
-                            return Err(error);
-                        }
+                        self.recover_vanished_holder_conflict(
+                            target,
+                            cancellation,
+                            &mut attempted_retirement,
+                            error,
+                        )?;
                     }
-                    Err(error) => return Err(error),
                 }
             };
             let uri = bound.uri(SqliteMode::ReadWrite)?;
@@ -1669,6 +1662,25 @@ impl DatabaseRepository {
             .map_err(repository_state_poisoned)?
             .schema_identity = Some(identity);
         Ok(())
+    }
+
+    fn recover_vanished_holder_conflict(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: Option<&CancellationToken>,
+        attempted_retirement: &mut bool,
+        error: Error,
+    ) -> Result<bool, Error> {
+        if *attempted_retirement
+            || !matches!(&error, Error::Conflict(message)
+                if message == DATABASE_OPEN_THROUGH_ANOTHER_NAME
+                    || message == DATABASE_OPEN_THROUGH_ANOTHER_DIRECTORY)
+        {
+            return Err(error);
+        }
+        *attempted_retirement = true;
+        self.retire_vanished_idle_holders(target, cancellation)?
+            .ok_or(error)
     }
 
     /// Select only unowned idle holders, then preserve their WAL before the existing drain.
@@ -2305,6 +2317,7 @@ pub(crate) enum TestHook {
     RetirementReservedWait,
     VanishedHolderSelected,
     VanishedHoldersRetired,
+    BeforeVanishedShmRename,
     BeforeAcquireBound,
     ScanBeforeAdmission,
     ScanAfterEstablish,
@@ -2464,6 +2477,7 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::RetirementReservedWait
         | TestHook::VanishedHolderSelected
         | TestHook::VanishedHoldersRetired
+        | TestHook::BeforeVanishedShmRename
         | TestHook::BeforeAcquireBound
         | TestHook::ScanBeforeAdmission
         | TestHook::ScanAfterEstablish
@@ -2506,6 +2520,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
             | TestHook::PoolBeforeFailureArbitration
             | TestHook::VanishedHolderSelected
             | TestHook::VanishedHoldersRetired
+            | TestHook::BeforeVanishedShmRename
             | TestHook::BeforeAcquireBound => None,
             TestHook::AfterReadRevision => hooks.after_read_revision.take(),
             TestHook::WorkerBeforeAdmission => hooks.worker_before_admission.take(),
@@ -2561,6 +2576,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 | TestHook::PoolBeforeFailureArbitration => {}
                 TestHook::VanishedHolderSelected
                 | TestHook::VanishedHoldersRetired
+                | TestHook::BeforeVanishedShmRename
                 | TestHook::BeforeAcquireBound => {
                     hooks
                         .by_path
@@ -4979,6 +4995,171 @@ mod vanished_holder_tests {
             assert!(!sidecar(&old, "-shm").exists());
         }
         Ok(())
+    }
+
+    #[test]
+    fn vanished_rename_with_directory_at_old_name() -> Result<(), Error> {
+        for empty_pool in [false, true] {
+            let root = tempfile::tempdir()?;
+            let old = root.path().join("old.db3");
+            let new = root.path().join("new.db3");
+            let repository = DatabaseRepository::default();
+            let key = committed_fixture(&repository, &old)?;
+            std::fs::rename(&old, &new)?;
+            std::fs::create_dir(&old)?;
+            if empty_pool {
+                close_idle_connections(&repository, &key)?;
+            }
+            assert_committed(&repository, &new)?;
+            let state = repository.state.lock().map_err(repository_state_poisoned)?;
+            assert!(!state.entries.contains_key(&key));
+            assert!(state.entries.contains_key(&entry_key(&test_target(&new))?));
+            assert!(old.is_dir());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_rename_with_absent_or_empty_wal() -> Result<(), Error> {
+        for empty_wal in [false, true] {
+            let root = tempfile::tempdir()?;
+            let old = root.path().join("old.db3");
+            let new = root.path().join("new.db3");
+            let repository = DatabaseRepository::default();
+            let key = committed_fixture(&repository, &old)?;
+            let mut connection = repository.connection(&test_target(&old), None)?;
+            connection.batch_execute("PRAGMA wal_checkpoint(TRUNCATE)")?;
+            drop(connection);
+            close_idle_connections(&repository, &key)?;
+            let wal = sidecar(&old, "-wal");
+            if empty_wal {
+                std::fs::File::create(&wal)?;
+                assert_eq!(std::fs::metadata(&wal)?.len(), 0);
+            } else {
+                match std::fs::remove_file(&wal) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                assert!(!wal.exists());
+            }
+            {
+                let state = repository.state.lock().map_err(repository_state_poisoned)?;
+                assert!(state.entries.get(&key).is_some_and(|entry| entry.is_idle()));
+            }
+            std::fs::rename(&old, &new)?;
+            assert_committed(&repository, &new)?;
+            if empty_wal {
+                assert_eq!(std::fs::metadata(&wal)?.len(), 0);
+            } else {
+                assert!(!wal.exists());
+            }
+            let state = repository.state.lock().map_err(repository_state_poisoned)?;
+            assert!(!state.entries.contains_key(&key));
+            assert!(state.entries.contains_key(&entry_key(&test_target(&new))?));
+            drop(state);
+            drop(BoundDatabase::acquire(&test_target(&new))?);
+        }
+        Ok(())
+    }
+
+    fn shm_rename_failure_case(fail_restore: bool) -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old.db3");
+        let new = root.path().join("new.db3");
+        let repository = DatabaseRepository::default();
+        let key = committed_fixture(&repository, &old)?;
+        std::fs::rename(&old, &new)?;
+        close_idle_connections(&repository, &key)?;
+        let old_wal = sidecar(&old, "-wal");
+        let new_wal = sidecar(&new, "-wal");
+        let new_shm = sidecar(&new, "-shm");
+        let saved_wal = root.path().join("saved-wal");
+        let wal_bytes = std::fs::read(&old_wal)?;
+        let wal_identity = test_target(&old_wal).identity();
+        assert!(!wal_bytes.is_empty());
+        assert!(sidecar(&old, "-shm").is_file());
+        let hooks = configure_test_hooks(root.path(), |hooks| {
+            let new_wal = new_wal.clone();
+            let new_shm = new_shm.clone();
+            let saved_wal = saved_wal.clone();
+            hooks.by_path.insert(
+                (
+                    TestHook::BeforeVanishedShmRename,
+                    normalize_test_hook_path(&new),
+                ),
+                Box::new(move || {
+                    assert_eq!(test_target(&new_wal).identity(), wal_identity);
+                    assert!(!new_shm.exists());
+                    assert!(std::fs::write(&new_shm, b"destination shm").is_ok());
+                    if fail_restore {
+                        assert!(std::fs::rename(&new_wal, &saved_wal).is_ok());
+                        assert!(std::fs::write(&new_wal, b"replacement wal").is_ok());
+                        assert_ne!(test_target(&new_wal).identity(), wal_identity);
+                    }
+                }),
+            );
+        });
+        let error = repository
+            .connection(&test_target(&new), None)
+            .err()
+            .ok_or_else(|| Error::Conflict("SHM rename unexpectedly succeeded".into()))?;
+        if fail_restore {
+            let Error::OperationAndCleanup { primary, cleanup } = error else {
+                return Err(Error::Conflict(format!(
+                    "expected operation and cleanup failures, got {error:?}"
+                )));
+            };
+            assert_eq!(
+                primary,
+                Error::from(std::io::Error::from_raw_os_error(libc::EEXIST)).diagnostic()
+            );
+            assert_eq!(
+                cleanup,
+                Error::Conflict("workspace entry changed concurrently".into()).diagnostic()
+            );
+            assert!(!old_wal.exists());
+            assert_eq!(std::fs::read(&new_wal)?, b"replacement wal");
+            assert_eq!(test_target(&saved_wal).identity(), wal_identity);
+            assert_eq!(std::fs::read(&saved_wal)?, wal_bytes);
+        } else {
+            assert!(matches!(error, Error::Io(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists));
+            assert_eq!(std::fs::read(&old_wal)?, wal_bytes);
+            assert_eq!(test_target(&old_wal).identity(), wal_identity);
+            assert!(!new_wal.exists());
+        }
+        assert_eq!(std::fs::read(&new_shm)?, b"destination shm");
+        assert_admission_refusal(BoundDatabase::acquire(&test_target(&new)), false);
+        {
+            let state = repository.state.lock().map_err(repository_state_poisoned)?;
+            let entry = state
+                .entries
+                .get(&key)
+                .ok_or_else(|| Error::Conflict("old entry was retired".into()))?;
+            assert!(entry.is_idle());
+            assert!(!entry.leases.snapshot().closed);
+            assert!(!state.entries.contains_key(&entry_key(&test_target(&new))?));
+        }
+        drop(hooks);
+        if !fail_restore {
+            std::fs::remove_file(&new_shm)?;
+            assert_committed(&repository, &new)?;
+            let state = repository.state.lock().map_err(repository_state_poisoned)?;
+            assert!(!state.entries.contains_key(&key));
+            assert!(state.entries.contains_key(&entry_key(&test_target(&new))?));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vanished_shm_rename_failure_restores_wal() -> Result<(), Error> {
+        shm_rename_failure_case(false)
+    }
+
+    #[test]
+    fn vanished_shm_rename_and_restore_failures_are_preserved() -> Result<(), Error> {
+        shm_rename_failure_case(true)
     }
 
     fn replacement_wal_case(after_selection: bool) -> Result<(), Error> {

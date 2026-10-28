@@ -460,6 +460,11 @@ impl BoundDatabase {
             &target_wal,
         )?);
         if let Some(probe) = shm_probe {
+            #[cfg(test)]
+            super::repository::run_test_hook(
+                super::repository::TestHook::BeforeVanishedShmRename,
+                target.path(),
+            );
             match rename_entry_at(
                 &binding.parent,
                 &shm,
@@ -470,15 +475,16 @@ impl BoundDatabase {
             ) {
                 Ok(outcome) => record_sync(outcome),
                 Err(error) => {
-                    record_sync(rename_entry_at(
+                    let restore_result = rename_entry_at(
                         target.parent(),
                         &target_wal,
                         wal_probe.identity,
                         false,
                         &binding.parent,
                         &wal,
-                    )?);
-                    return Err(error);
+                    )
+                    .map(record_sync);
+                    return Err(Error::with_cleanup(error, restore_result));
                 }
             }
         }
@@ -604,8 +610,18 @@ impl BoundDatabase {
 }
 
 fn vanished_leaf(error: &Error) -> bool {
-    matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
-        || matches!(error, Error::InvalidInput(message) if message == "target must be a regular file")
+    match error {
+        Error::Io(error) => {
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_DIRECTORY as i32)
+            {
+                return true;
+            }
+            error.kind() == std::io::ErrorKind::NotFound
+        }
+        Error::InvalidInput(message) => message == "target must be a regular file",
+        _ => false,
+    }
 }
 
 #[cfg(test)]
