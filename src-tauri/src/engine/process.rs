@@ -8058,6 +8058,73 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn copy_closed_cat_fixture(directory: &tempfile::TempDir) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = std::fs::canonicalize("/bin/cat").unwrap();
+        let destination = directory.path().join("stdin-waiting-cat");
+        std::fs::copy(executable, &destination).unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755)).unwrap();
+        destination
+    }
+
+    #[cfg(unix)]
+    fn stdin_waiting_observer_executable(directory: &tempfile::TempDir) -> EngineExecutable {
+        #[cfg(target_os = "macos")]
+        {
+            EngineExecutable::test_fixture(
+                std::fs::File::open(copy_closed_cat_fixture(directory)).unwrap(),
+                directory.path().to_owned(),
+                Vec::new(),
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            stdin_waiting_executable(directory)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_closed_cat_fixtures_are_private_executable_copies() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory_a = tempfile::tempdir().unwrap();
+        let directory_b = tempfile::tempdir().unwrap();
+        let path_a = copy_closed_cat_fixture(&directory_a);
+        let path_b = copy_closed_cat_fixture(&directory_b);
+        let canonical_cat = std::fs::canonicalize("/bin/cat").unwrap();
+        let canonical_length = std::fs::metadata(&canonical_cat).unwrap().len();
+
+        assert_ne!(path_a, path_b);
+        for path in [&path_a, &path_b] {
+            assert!(path.is_file());
+            assert_ne!(path, &canonical_cat);
+            let metadata = std::fs::metadata(path).unwrap();
+            assert_eq!(metadata.len(), canonical_length);
+            assert_eq!(metadata.permissions().mode() & 0o111, 0o111);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stdin_waiting_observer_executables_have_distinct_command_targets() {
+        let directory_a = tempfile::tempdir().unwrap();
+        let directory_b = tempfile::tempdir().unwrap();
+        let executable_a = stdin_waiting_observer_executable(&directory_a);
+        let executable_b = stdin_waiting_observer_executable(&directory_b);
+        let target_a = executable_a.command_target();
+        let target_b = executable_b.command_target();
+        let canonical_cat = std::fs::canonicalize("/bin/cat").unwrap();
+
+        assert_ne!(target_a, target_b);
+        for target in [target_a, target_b] {
+            assert_ne!(target, canonical_cat.as_path());
+            assert_eq!(target.file_name().unwrap(), "stdin-waiting-cat");
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn retained_cleanup_real_child_capacity_and_retry_before_spawn() {
         let supervisor = EngineSupervisor {
@@ -15785,7 +15852,7 @@ mod tests {
     async fn spawn_io_take_failures_force_kill_and_reap_child() {
         for failure in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
             let directory = tempfile::tempdir().unwrap();
-            let executable = stdin_waiting_executable(&directory);
+            let executable = stdin_waiting_observer_executable(&directory);
             let command_target = executable.command_target().to_path_buf();
             let (pid_tx, pid_rx) = std::sync::mpsc::channel();
             let _observer = set_spawn_child_observer(
@@ -15814,7 +15881,7 @@ mod tests {
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let executable = stdin_waiting_executable(&directory);
+        let executable = stdin_waiting_observer_executable(&directory);
         let command_target = executable.command_target().to_path_buf();
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
         let _observer = set_spawn_child_observer(
@@ -17017,7 +17084,7 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
             (TerminateFailure::ReapTimeout, true),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let executable = stdin_waiting_executable(&directory);
+            let executable = stdin_waiting_observer_executable(&directory);
             let deadlines = EngineDeadlines {
                 quit: Duration::from_millis(20),
                 kill_reap: Duration::from_millis(30),
