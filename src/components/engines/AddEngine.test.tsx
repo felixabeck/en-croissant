@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { EngineCompletion, EngineInstallRequest, ErrorPayload } from "@/bindings";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
 import AddEngine from "./AddEngine";
+import CatalogEngineCard from "./CatalogEngineCard";
 import {
   expectRestoredDownloadCancellation,
   resetProgressButtonTestHarness,
@@ -173,8 +174,13 @@ vi.mock("./EngineForm", () => ({
 vi.mock("@mantine/core", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Button: ({ children, onClick, disabled }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button type="button" onClick={onClick} disabled={disabled}>
+  Button: ({
+    children,
+    onClick,
+    disabled,
+    className,
+  }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button type="button" onClick={onClick} disabled={disabled} className={className}>
       {children}
     </button>
   ),
@@ -237,6 +243,28 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+});
+
+test.each([false, true])("catalog recovery keeps label wrapping when busy is %s", async (busy) => {
+  await act(async () =>
+    root.render(
+      <CatalogEngineCard
+        engine={{ ...mocks.defaultEngines[0], os: "linux", bmi2: false }}
+        layout="add"
+        progressId="recovery"
+        initInstalled={false}
+        recovery={{ busy, retry: () => undefined }}
+        labels={{ completed: "Installed", action: "Install", inProgress: "Downloading" }}
+        onClick={() => undefined}
+        inProgress={false}
+        setInProgress={() => undefined}
+      />,
+    ),
+  );
+  const button = host.querySelector("button")!;
+  expect(button.classList.contains("wrap-button")).toBe(true);
+  expect(button.textContent).toBe(busy ? "Common.Extracting" : "Common.Install");
+  expect(button.disabled).toBe(busy);
 });
 
 test("wires installed state and progress id from the download URL", async () => {

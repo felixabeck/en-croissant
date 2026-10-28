@@ -18,6 +18,176 @@ import type { TreeState } from "../src/utils/treeReducer";
 import type { Locator, Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import bundledEngineCatalog from "../src/catalogs/engines.json" with { type: "json" };
+import english from "../src/translation/en-US.json" with { type: "json" };
+import polish from "../src/translation/pl-PL.json" with { type: "json" };
+import french from "../src/translation/fr-FR.json" with { type: "json" };
+
+async function assertCatalogActionReachable(action: Locator, cancel: Locator) {
+    await action.scrollIntoViewIfNeeded();
+    await expect(action).toBeDisabled();
+    await expect(cancel).toBeVisible();
+    await expect(cancel).toBeEnabled();
+    await expect(action.locator(".mantine-Button-label")).not.toHaveCSS(
+        "text-overflow",
+        "ellipsis",
+    );
+    // The label's ancestors include the button. Its decorative absolute progress fill
+    // deliberately extends past the label, so it is not part of the text reachability check.
+    await assertNothingClipped(action.locator(".mantine-Button-label > span"), {
+        mode: "reachable",
+    });
+    await assertNothingClipped(cancel, { mode: "reachable" });
+    const actionBox = await action.boundingBox();
+    const cancelBox = await cancel.boundingBox();
+    expect(actionBox).not.toBeNull();
+    expect(cancelBox).not.toBeNull();
+    expect(cancelBox!.x).toBeGreaterThanOrEqual(actionBox!.x + actionBox!.width);
+    expect(cancelBox!.y).toBeGreaterThanOrEqual(actionBox!.y - 1);
+    expect(cancelBox!.y + cancelBox!.height).toBeLessThanOrEqual(
+        actionBox!.y + actionBox!.height + 1,
+    );
+    const cancelSize = await cancel.evaluate(
+        () => parseFloat(getComputedStyle(document.documentElement).fontSize) * 2.125,
+    );
+    expect(Math.abs(cancelBox!.width - cancelSize)).toBeLessThanOrEqual(1);
+    expect(Math.abs(cancelBox!.height - cancelSize)).toBeLessThanOrEqual(1);
+}
+
+for (const kind of ["add", "upgrade"] as const) {
+    for (const corner of [
+        { locale: "en-US", width: 1440, scale: 100, copy: english.translation },
+        { locale: "pl-PL", width: 320, scale: 200, copy: polish.translation },
+        { locale: "fr-FR", width: 320, scale: 200, copy: french.translation },
+    ]) {
+        for (const phase of ["Downloading", "Extracting"] as const) {
+            test(`catalog active label: ${kind} ${corner.locale} ${phase}`, async ({
+                page,
+                mockScenario,
+                capture,
+                assertNoHorizontalOverflow,
+            }) => {
+                await page.setViewportSize({ width: corner.width, height: 900 });
+                await page.addInitScript(
+                    ({ locale, scale, engines }) => {
+                        localStorage.setItem("i18nextLng", locale);
+                        localStorage.setItem("font-size", String(scale));
+                        localStorage.setItem("engines", engines);
+                    },
+                    {
+                        locale: corner.locale,
+                        scale: corner.scale,
+                        engines: serializeStorageValue(
+                            kind === "upgrade"
+                                ? [
+                                      {
+                                          type: "local",
+                                          id: "catalog-label-target",
+                                          legacyAssessment: null,
+                                          name: "Original Engine",
+                                          version: "1",
+                                          handle: { id: { id: "original-binary" }, kind: "engine" },
+                                          filename: "old",
+                                          settings: [],
+                                      },
+                                  ]
+                                : [],
+                        ),
+                    },
+                );
+                await mockScenario({
+                    commands: {
+                        is_bmi2_compatible: { result: false },
+                        verify_signed_bytes: { result: null },
+                        get_progress: { result: null },
+                        file_exists: { result: true },
+                    },
+                });
+                await page.goto(kind === "upgrade" ? "/engines?selected=0" : "/engines");
+                const title =
+                    corner.copy[kind === "add" ? "Engines.Add.Title" : "Engines.Upgrade.Title"];
+                await page
+                    .getByRole("button", {
+                        name: kind === "add" ? corner.copy["Common.AddNew"] : title,
+                        exact: true,
+                    })
+                    .click();
+                const dialog = page.getByRole("dialog", { name: title, exact: true });
+                await expect(
+                    dialog
+                        .getByRole("button", { name: corner.copy["Common.Install"], exact: true })
+                        .first(),
+                ).toBeVisible();
+                await expect
+                    .poll(() =>
+                        page.evaluate(() =>
+                            window.__E2E_TAURI__
+                                .invocations()
+                                .some(({ command }) => command === "get_progress"),
+                        ),
+                    )
+                    .toBe(true);
+                await page.evaluate(
+                    (progress) => {
+                        const call = window.__E2E_TAURI__
+                            .invocations()
+                            .find(({ command }) => command === "get_progress")!;
+                        const { id } = call.args as { id: string };
+                        window.__E2E_TAURI__.emit("progress-event", {
+                            id,
+                            generation: "7",
+                            state: "running",
+                            progress,
+                            finished: false,
+                            cleared: false,
+                        });
+                    },
+                    phase === "Downloading" ? 37 : 100,
+                );
+                const label = corner.copy[`Common.${phase}`];
+                const name = `${label} ${phase === "Downloading" ? 37 : 100}%`;
+                const action = dialog.getByRole("button", { name, exact: true });
+                await expect(action).toHaveAccessibleName(name);
+                const card = dialog.locator(".mantine-Paper-root").filter({
+                    has: page.getByRole("button", { name, exact: true }),
+                });
+                const portrait = card.locator("img");
+                await expect(portrait).toBeVisible();
+                const geometry = await portrait.evaluate((image) => {
+                    const box = image.parentElement!;
+                    const text = box.nextElementSibling!;
+                    return {
+                        width: box.getBoundingClientRect().width,
+                        declared:
+                            parseFloat(box.style.width) *
+                            parseFloat(getComputedStyle(document.documentElement).fontSize),
+                        portraitRight: box.getBoundingClientRect().right,
+                        portraitBottom: box.getBoundingClientRect().bottom,
+                        textLeft: text.getBoundingClientRect().left,
+                        textTop: text.getBoundingClientRect().top,
+                    };
+                });
+                expect
+                    .soft(
+                        Math.abs(geometry.width - geometry.declared),
+                        `portrait border box ${geometry.width}px, declared ${geometry.declared}px`,
+                    )
+                    .toBeLessThanOrEqual(1);
+                if (corner.width === 1440)
+                    expect(geometry.textLeft).toBeGreaterThanOrEqual(geometry.portraitRight - 1);
+                if (corner.width === 320 && kind === "upgrade")
+                    expect
+                        .soft(geometry.textTop, "narrow upgrade text stacks below the portrait")
+                        .toBeGreaterThanOrEqual(geometry.portraitBottom - 1);
+                await assertCatalogActionReachable(
+                    action,
+                    card.getByRole("button", { name: corner.copy["Common.Cancel"], exact: true }),
+                );
+                await assertNoHorizontalOverflow();
+                await capture(`catalog-active-${kind}-${corner.locale}-${phase}`);
+            });
+        }
+    }
+}
 
 for (const layout of ["desktop", "narrow"] as const) {
     test(`accounts-puzzles-engines: saved catalog portraits survive reload ${layout}`, async ({
@@ -1799,6 +1969,7 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
     page,
     mockScenario,
     capture,
+    assertNoHorizontalOverflow,
 }) => {
     await page.addInitScript(() => {
         localStorage.setItem("font-size", "100");
@@ -1882,6 +2053,11 @@ test("accounts-puzzles-engines: add engine download catalog", async ({
     await expect(finalizing).toBeDisabled();
     await expect(finalizing.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
     await capture("engine-add-active-finalization");
+    await assertCatalogActionReachable(
+        finalizing,
+        dialog.getByRole("button", { name: "Cancel", exact: true }),
+    );
+    await assertNoHorizontalOverflow();
     await expect(
         page.getByText("Engine configuration failed after transfer", { exact: true }),
     ).toBeVisible();

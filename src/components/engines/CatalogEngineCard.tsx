@@ -28,17 +28,17 @@ export default function CatalogEngineCard({
 
   return (
     <Paper withBorder radius="md" p={0}>
-      <Group wrap="nowrap" gap={0} grow={adding || undefined}>
+      <Group wrap="wrap" gap={0}>
         {engine.imageUrl && (
-          <Box
-            w={adding ? "1.75rem" : "4rem"}
-            px="xs"
-            style={adding ? undefined : { flexShrink: 0 }}
-          >
+          <Box w={adding ? "1.75rem" : "4rem"} px="xs" style={{ flexShrink: 0 }}>
             <Image src={engine.imageUrl} alt={engine.name} fit="contain" />
           </Box>
         )}
-        <Box p="sm" flex={1}>
+        <Box
+          p="clamp(0px, calc((100% - 10rem) / 2), var(--mantine-spacing-sm))"
+          flex="1 1 12rem"
+          miw={0}
+        >
           <Text tt="uppercase" c="dimmed" fw={700} size="xs">
             {t("Common.Engine")}
           </Text>
@@ -54,7 +54,12 @@ export default function CatalogEngineCard({
             <Text size="xs">{formatBytes(engine.downloadSize ?? 0)}</Text>
           </Group>
           {recovery ? (
-            <Button fullWidth disabled={recovery.busy} onClick={recovery.retry}>
+            <Button
+              className="wrap-button"
+              fullWidth
+              disabled={recovery.busy}
+              onClick={recovery.retry}
+            >
               {t(recovery.busy ? "Common.Extracting" : "Common.Install")}
             </Button>
           ) : (

@@ -97,8 +97,9 @@ function ProgressButton({
   }
 
   return (
-    <Group gap="xs" wrap="nowrap">
+    <Group gap="min(var(--mantine-spacing-xs), 2%)" wrap="nowrap">
       <Button
+        className="wrap-button"
         fullWidth
         onClick={() => {
           onClick(id);
@@ -127,6 +128,7 @@ function ProgressButton({
           label={t("Common.Cancel", { defaultValue: "Cancel" })}
           variant="default"
           size="lg"
+          style={{ flexShrink: 0 }}
           onClick={() => void handleCancel()}
         >
           <IconX size="1rem" />
