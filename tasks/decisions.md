@@ -10612,3 +10612,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20260831-16, d-20260831-17, d-20261008-20 and d-20261015-07 already establish reflow with full reachability. CatalogEngineCard's add Group grow cap takes half the action width while fixed-height ProgressButton clips its label. Shipped Polish and French tokens require wrapping at 320px and 200% font scale. This adopts the supplied reviewed plan. Reversal path: replace allocation only with equivalent reachability of both active labels, Cancel and declared portrait sizes at the required corners.
 * **Decided by:** Codex, full auto adoption of the reviewed plan, 2026-10-28. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86328a3140d937f5e44e2a4aa908ae635174484205c187d033574b29639b99f8","input_sha256":"e2637e8b9ab53d9903ca4f18b841c6a54bb2a761e4f6351e27d6902061a19648","kind":"mutation-receipt","operation":"db471c3b74f049aeb62b38f7ebd2e400c7be7929186998dd0a7e2ede2d075b52","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20261028-10 — Where does Home statistics filter allocation belong?
+
+* **Governs:** f-20261027-02
+* **Question:** Where does field allocation belong across the three Home statistics panels?
+* **Chosen:** A flat list of actual fields in each panel using one shared CSS layout rule. WebsiteAccountSelector retains selection state and emits its fields without a layout wrapper.
+* **Rejected:** Increasing only the nested selector's share or maintaining separate layouts per panel.
+* **Reason:** The current nested grow layout allocates one share to two fields and another to Time control. All three consumers must change together. This adopts O1 of the reviewed plan. Reversal path: replace the shared layout only with equivalent independent field allocation and the same browser regression proof.
+* **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6e9f7c746cd426dcf35c67734c207910254bf15c473982071c28af30717b6284","input_sha256":"24b7774e0c063c30aad27ccd37d360171da7b3d23eb6b2c378c54dc61750cc83","kind":"mutation-receipt","operation":"e09f20f2661cae9d8737725c6c107701dc3031ee0ce3822f83469eff262305be","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-10"],"target":"decisions-ledger","v":1} -->
