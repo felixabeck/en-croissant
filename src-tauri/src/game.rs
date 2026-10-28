@@ -4381,8 +4381,6 @@ mod tests {
         black_script: TestEngineScript,
         register_black: bool,
     ) -> TestGameEngineBundle {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let white_engine_id = format!("{game_id}-white-engine");
         let black_engine_id = format!("{game_id}-black-engine");
@@ -4395,10 +4393,10 @@ mod tests {
                 "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n"
             }
         };
-        std::fs::write(&white_path, responsive).unwrap();
-        std::fs::write(&black_path, black_source).unwrap();
-        std::fs::set_permissions(&white_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::set_permissions(&black_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::infra::test_executable::publish_test_executable(&white_path, responsive, 0o700)
+            .unwrap();
+        crate::infra::test_executable::publish_test_executable(&black_path, black_source, 0o700)
+            .unwrap();
         let mut path_authority = {
             #[cfg(target_os = "macos")]
             {
@@ -4635,16 +4633,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn game_engine_is_registered_while_uci_initialization_is_pending() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("pending-uci-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n",
+            0o700,
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let executable = EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
@@ -4698,16 +4694,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn production_game_engine_start_uses_the_shared_launch_resolution_helper() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("production-game-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n", 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut authority = {
             #[cfg(target_os = "macos")]
             {
@@ -4753,11 +4745,10 @@ mod tests {
     #[tokio::test]
     async fn production_game_engine_directory_replacement_is_refused_before_any_option() {
         use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
-        use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("production-game-directory-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             r#"#!/bin/sh
 capture="$PWD/capture.log"
@@ -4770,9 +4761,9 @@ while IFS= read -r line; do
     esac
 done
 "#,
+            0o700,
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let tables = directory.path().join("tables");
         std::fs::create_dir(&tables).unwrap();
         std::fs::write(tables.join("authorized"), b"authorized").unwrap();
@@ -4909,11 +4900,10 @@ done
     #[tokio::test]
     async fn game_engine_initialization_passes_resource_provenance_to_actor_logs() {
         use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
-        use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("resource-logging-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             r#"#!/bin/sh
 capture="$PWD/capture.log"
@@ -4957,9 +4947,9 @@ while IFS= read -r line; do
     esac
 done
 "#,
+            0o700,
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let resource_path = directory.path().join("weights.nnue");
         std::fs::write(&resource_path, b"weights").unwrap();
         let authority = crate::infra::path_authority::SharedPathAuthority::installed(

@@ -6861,11 +6861,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn terminal_snapshot_production_child_exit_during_initialization() {
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("terminal-engine.sh");
-        std::fs::write(&script, "#!/bin/sh\nIFS= read -r line\necho 'stderr token=\"hidden\" /private/book.bin' >&2\necho 'info string CRITICAL ERROR: e2e4 rejected password=hidden2'\nexit 17\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::infra::test_executable::publish_test_executable(&script, "#!/bin/sh\nIFS= read -r line\necho 'stderr token=\"hidden\" /private/book.bin' >&2\necho 'info string CRITICAL ERROR: e2e4 rejected password=hidden2'\nexit 17\n", 0o700).unwrap();
         let executable = EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
@@ -6937,17 +6935,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn authorized_resource_survives_path_replacement_for_uci_child() {
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("uci-child.sh");
         // Echoes back the file the `setoption` value points at, so the assertion
         // below reads the bytes the child itself resolved.
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) p=${line#*value }; cat \"$p\";; quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) p=${line#*value }; cat \"$p\";; quit) exit 0;; esac; done\n", 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let resource = directory.path().join("resource.bin");
         // The trailing newline matters: the child pipes `cat` output straight into
         // the UCI line protocol, so an unterminated body would fuse with `readyok`.
@@ -7018,22 +7013,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn child_uci_io_preserves_a_partial_line_across_a_dropped_runtime_read() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("partial-line-engine.sh");
         let marker = directory.path().join("partial-ready");
         let release = directory.path().join("release");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             format!(
                 "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in go*) printf 'partial '; : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; printf 'line\\n';; quit) exit 0;; esac; done\n",
                 marker.display(),
                 release.display()
-            ),
-        )
+            ), 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let executable = EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
@@ -7086,16 +7077,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawned_engine_reads_a_directory_resource_through_the_authorized_value() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("directory-child.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value/authorized\";; quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value/authorized\";; quit) exit 0;; esac; done\n", 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let resource_path = directory.path().join("tables");
         std::fs::create_dir(&resource_path).unwrap();
         std::fs::write(resource_path.join("authorized"), b"directory-authorized\n").unwrap();
@@ -7459,13 +7446,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn apple_native_cwd_launch_uses_original_object_after_movement() {
+        use std::os::unix::fs::PermissionsExt;
+
         for replacement in [None, Some(false), Some(true)] {
             let temp = tempfile::tempdir().unwrap();
             let parent = temp.path().join("cwd");
             std::fs::create_dir(&parent).unwrap();
             std::fs::write(parent.join("cwd-data"), b"cwd-original\n").unwrap();
             let image = parent.join("engine");
-            std::fs::copy("/bin/sh", &image).unwrap();
+            let bytes = std::fs::read("/bin/sh").unwrap();
+            let mode = std::fs::metadata("/bin/sh").unwrap().permissions().mode() & 0o7777;
+            crate::infra::test_executable::publish_test_executable(&image, bytes, mode).unwrap();
             let mut authority =
                 PathAuthority::open(temp.path().join("registry.json"), vec![]).unwrap();
             let engine = authority
@@ -8059,12 +8050,10 @@ mod tests {
 
     #[cfg(unix)]
     fn copy_closed_cat_fixture(directory: &tempfile::TempDir) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
         let executable = std::fs::canonicalize("/bin/cat").unwrap();
         let destination = directory.path().join("stdin-waiting-cat");
-        std::fs::copy(executable, &destination).unwrap();
-        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bytes = std::fs::read(executable).unwrap();
+        crate::infra::test_executable::publish_test_executable(&destination, bytes, 0o755).unwrap();
         destination
     }
 
@@ -9365,10 +9354,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn fresh_interactive_dropped_publisher_exit_awaits_child_termination() {
-        use std::{
-            ffi::CString, io::Write, os::unix::ffi::OsStrExt, os::unix::fs::OpenOptionsExt,
-            os::unix::fs::PermissionsExt,
-        };
+        use std::{ffi::CString, io::Write, os::unix::ffi::OsStrExt, os::unix::fs::OpenOptionsExt};
 
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("pending-interactive-engine.sh");
@@ -9379,15 +9365,13 @@ mod tests {
         let fifo_path = CString::new(release.as_os_str().as_bytes()).unwrap();
         // The CString stays alive for this call; mkfifo does not retain its pointer.
         assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             format!(
                 "#!/bin/sh\n: > '{}'\nwhile IFS= read -r line; do\n  case \"$line\" in\n    quit) : > '{}'; read -r release < '{}'; : > '{}'; exit 0;;\n  esac\ndone\n",
                 spawned.display(), quitting.display(), release.display(), terminated.display(),
-            ),
-        )
+            ), 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
         let engine = authority
             .register_engine_file(&script, "pending-interactive-engine")
@@ -15757,15 +15741,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_owns_the_stderr_drain_until_terminate() {
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("uci-stderr.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\necho boot >&2\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\necho boot >&2\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n", 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
@@ -15944,23 +15925,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_child_observers_are_isolated_by_command_target() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script_a = directory.path().join("observer-a.sh");
         let script_b = directory.path().join("observer-b.sh");
         let marker_a = directory.path().join("observer-a.pid");
         let marker_b = directory.path().join("observer-b.pid");
         for (script, marker) in [(&script_a, &marker_a), (&script_b, &marker_b)] {
-            std::fs::write(
+            crate::infra::test_executable::publish_test_executable(
                 script,
                 format!(
                     "#!/bin/sh\nmarker='{}'\nprintf '%s\\n' \"$$\" > \"$marker.tmp\"\nmv \"$marker.tmp\" \"$marker\"\nwhile IFS= read -r line; do [ \"$line\" = quit ] && exit 0; done\n",
                     marker.display()
-                ),
-            )
+                ), 0o700)
             .unwrap();
-            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let executable_a = EngineExecutable::test_fixture(
             std::fs::File::open(&script_a).unwrap(),
@@ -16326,16 +16303,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn resolved_executable_stays_authorized_after_source_replacement_before_spawn() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("authorized-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n", 0o700)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let replacement = script.clone();
         let authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
         let mut authority = authority;
@@ -16393,12 +16366,10 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("resolve-launch-resource-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) p=${line#*value }; cat \"$p\";; quit) exit 0;; esac; done\n",
-        )
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) p=${line#*value }; cat \"$p\";; quit) exit 0;; esac; done\n", 0o555)
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o555)).unwrap();
         let resource_path = directory.path().join("resource.bin");
         std::fs::write(&resource_path, b"authorized-resource\n").unwrap();
         std::fs::set_permissions(&resource_path, std::fs::Permissions::from_mode(0o444)).unwrap();
@@ -17004,13 +16975,15 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn child_io_take_failures_release_pinned_leaves_after_spawn() {
-        use std::os::unix::fs::PermissionsExt;
-
         for failure in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
             let directory = tempfile::tempdir().unwrap();
             let script = directory.path().join("io-failure-engine.sh");
-            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            crate::infra::test_executable::publish_test_executable(
+                &script,
+                "#!/bin/sh\nwhile IFS= read -r line; do :; done\n",
+                0o700,
+            )
+            .unwrap();
             let root =
                 crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
             let mut executable = EngineExecutable::test_fixture(
@@ -17037,7 +17010,6 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
     #[tokio::test]
     async fn apple_fallback_materializes_and_runs_the_authorized_engine_image() {
         use crate::infra::path_authority::EngineLaunchFailure;
-        use std::os::unix::fs::PermissionsExt;
 
         for failure in [
             EngineLaunchFailure::CloneExdev,
@@ -17045,12 +17017,10 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
         ] {
             let directory = tempfile::tempdir().unwrap();
             let script = directory.path().join("fallback-engine.sh");
-            std::fs::write(
+            crate::infra::test_executable::publish_test_executable(
                 &script,
-                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
-            )
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n", 0o700)
             .unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
             let root =
                 crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
             let mut executable = EngineExecutable::test_fixture(
@@ -17151,17 +17121,13 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
     #[cfg(target_os = "macos")]
     #[tokio::test(flavor = "current_thread")]
     async fn apple_directory_resource_removal_and_file_swap_are_refused_before_setoption() {
-        use std::os::unix::fs::PermissionsExt;
-
         for replacement in ["remove", "file"] {
             let directory = tempfile::tempdir().unwrap();
             let script = directory.path().join("directory-check-engine.sh");
-            std::fs::write(
+            crate::infra::test_executable::publish_test_executable(
                 &script,
-                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) echo setoption-unexpected;; quit) exit 0;; esac; done\n",
-            )
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) echo setoption-unexpected;; quit) exit 0;; esac; done\n", 0o700)
             .unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
             let tables = directory.path().join("tables");
             std::fs::create_dir(&tables).unwrap();
             std::fs::write(tables.join("authorized"), b"authorized").unwrap();

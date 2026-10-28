@@ -2307,15 +2307,37 @@ fn prepare_zip_cancellable(
         if (*file.name()).ends_with('/') {
             staging.ensure_relative_directory(&validated_path)?;
         } else {
-            let mut outfile = staging.create_relative_regular(&validated_path)?;
-            bounded_copy(
-                &mut file,
-                &mut outfile,
-                size,
-                &mut total_expanded,
-                limits.expanded,
-                cancellation,
-            )?;
+            #[cfg(all(test, unix))]
+            {
+                let mut bytes = Vec::new();
+                bounded_copy(
+                    &mut file,
+                    &mut bytes,
+                    size,
+                    &mut total_expanded,
+                    limits.expanded,
+                    cancellation,
+                )?;
+                staging
+                    .ensure_relative_directory(validated_path.parent().unwrap_or(Path::new("")))?;
+                crate::infra::test_executable::publish_test_archive_entry(
+                    staging.directory()?,
+                    &validated_path,
+                    &bytes,
+                )?;
+            }
+            #[cfg(not(all(test, unix)))]
+            {
+                let mut outfile = staging.create_relative_regular(&validated_path)?;
+                bounded_copy(
+                    &mut file,
+                    &mut outfile,
+                    size,
+                    &mut total_expanded,
+                    limits.expanded,
+                    cancellation,
+                )?;
+            }
         }
     }
 
@@ -2379,15 +2401,37 @@ fn prepare_tar_cancellable(
         if entry_type.is_dir() {
             staging.ensure_relative_directory(&validated_path)?;
         } else {
-            let mut outfile = staging.create_relative_regular(&validated_path)?;
-            bounded_copy(
-                &mut entry,
-                &mut outfile,
-                size,
-                &mut total_expanded,
-                limits.expanded,
-                cancellation,
-            )?;
+            #[cfg(all(test, unix))]
+            {
+                let mut bytes = Vec::new();
+                bounded_copy(
+                    &mut entry,
+                    &mut bytes,
+                    size,
+                    &mut total_expanded,
+                    limits.expanded,
+                    cancellation,
+                )?;
+                staging
+                    .ensure_relative_directory(validated_path.parent().unwrap_or(Path::new("")))?;
+                crate::infra::test_executable::publish_test_archive_entry(
+                    staging.directory()?,
+                    &validated_path,
+                    &bytes,
+                )?;
+            }
+            #[cfg(not(all(test, unix)))]
+            {
+                let mut outfile = staging.create_relative_regular(&validated_path)?;
+                bounded_copy(
+                    &mut entry,
+                    &mut outfile,
+                    size,
+                    &mut total_expanded,
+                    limits.expanded,
+                    cancellation,
+                )?;
+            }
         }
     }
 
@@ -4464,6 +4508,129 @@ mod tests {
             result.unwrap_err().to_string(),
             "Invalid input: Special files/links not allowed in archive"
         );
+    }
+
+    #[cfg(unix)]
+    fn test_executable_archive(zip: bool, duplicate: bool) -> std::fs::File {
+        let mut output = tempfile::tempfile().unwrap();
+        if zip {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (name, bytes) in [
+                ("engine", b"first".as_slice()),
+                ("./engine", b"other".as_slice()),
+            ]
+            .into_iter()
+            .take(if duplicate { 2 } else { 1 })
+            {
+                archive
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(bytes).unwrap();
+            }
+            let bytes = archive.finish().unwrap().into_inner();
+            // Identical ZIP names collapse in the reader. Keep distinct central-directory
+            // names that validation maps to the same destination, so both opens are exercised.
+            if duplicate {
+                let mut reader = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+                assert_eq!(reader.len(), 2);
+                for (index, (name, expected)) in [
+                    ("engine", b"first".as_slice()),
+                    ("./engine", b"other".as_slice()),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut member = reader.by_index(index).unwrap();
+                    assert!(member.is_file());
+                    assert_eq!(member.name(), name);
+                    assert_eq!(
+                        validate_archive_path(member.name()).unwrap(),
+                        Path::new("engine")
+                    );
+                    let mut body = Vec::new();
+                    member.read_to_end(&mut body).unwrap();
+                    assert_eq!(body, expected);
+                }
+            }
+            output.write_all(&bytes).unwrap();
+        } else {
+            let mut archive = tar::Builder::new(&mut output);
+            for bytes in [b"first".as_slice(), b"other".as_slice()]
+                .into_iter()
+                .take(if duplicate { 2 } else { 1 })
+            {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_cksum();
+                archive.append_data(&mut header, "engine", bytes).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        output.rewind().unwrap();
+        output
+    }
+
+    #[cfg(unix)]
+    fn test_executable_two_forks_archive(zip: bool) {
+        let archive = test_executable_archive(zip, false);
+        let directory = tempdir().unwrap();
+        let staging = crate::infra::fs::OwnedStagingDir::adopt(&directory).unwrap();
+        let path = directory.path().join("engine");
+        crate::infra::test_executable::tests::two_fork_proof(&path, move || {
+            let cancellation = CancellationToken::new();
+            if zip {
+                prepare_zip_cancellable(archive, staging, OpClass::Engine.limits(), &cancellation)
+            } else {
+                prepare_tar_cancellable(archive, staging, OpClass::Engine.limits(), &cancellation)
+            }
+            .unwrap()
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_executable_two_fork_handler_sequence_blocks_zip_producer() {
+        test_executable_two_forks_archive(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_executable_two_fork_handler_sequence_blocks_tar_producer() {
+        test_executable_two_forks_archive(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_executable_duplicate_archive_members_preserve_first_inode() {
+        for zip in [true, false] {
+            let archive = test_executable_archive(zip, true);
+            let directory = tempdir().unwrap();
+            let staging = crate::infra::fs::OwnedStagingDir::adopt(&directory).unwrap();
+            let path = directory.path().join("engine");
+            crate::infra::test_executable::tests::duplicate_archive_proof(
+                &path,
+                b"first",
+                move || {
+                    let cancellation = CancellationToken::new();
+                    if zip {
+                        prepare_zip_cancellable(
+                            archive,
+                            staging,
+                            OpClass::Engine.limits(),
+                            &cancellation,
+                        )
+                    } else {
+                        prepare_tar_cancellable(
+                            archive,
+                            staging,
+                            OpClass::Engine.limits(),
+                            &cancellation,
+                        )
+                    }
+                    .map(drop)
+                },
+            );
+        }
     }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {

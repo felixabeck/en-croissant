@@ -4194,9 +4194,7 @@ mod tests {
         }
 
         fn prepare_image(f: &mut Fixture, script: &Path) -> (EngineExecutable, EngineHandle) {
-            use std::os::unix::fs::PermissionsExt;
-            fs::write(script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value\"; echo;; quit) exit 0;; esac; done\n").unwrap();
-            fs::set_permissions(script, fs::Permissions::from_mode(0o700)).unwrap();
+            crate::infra::test_executable::publish_test_executable(script, b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value\"; echo;; quit) exit 0;; esac; done\n", 0o700).unwrap();
             let engine = f
                 .authority
                 .register_engine_file(script, "Resource child")
@@ -6418,16 +6416,10 @@ mod tests {
     #[tokio::test]
     async fn catalog_install_running_uci_game_survives_upgrade_and_unconfirmed_restart() {
         use crate::engine::{EngineActor, EngineDeadlines, EngineSupervisor, GoMode};
-        use std::os::unix::fs::PermissionsExt;
         let mut f = Fixture::new();
         let mut stage = f.stage();
-        fs::write(stage.path().join("engine"),
-            b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) if [ -f data/network ]; then echo readyok; else exit 3; fi;; go*) echo 'bestmove e2e4';; quit) exit 0;; esac; done\n").unwrap();
-        fs::set_permissions(
-            stage.path().join("engine"),
-            fs::Permissions::from_mode(0o700),
-        )
-        .unwrap();
+        crate::infra::test_executable::publish_test_executable(stage.path().join("engine"),
+            b"#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) if [ -f data/network ]; then echo readyok; else exit 3; fi;; go*) echo 'bestmove e2e4';; quit) exit 0;; esac; done\n", 0o700).unwrap();
         f.publish_stage("old", &mut stage).unwrap();
         let old = f.engine("old");
         let executable = f

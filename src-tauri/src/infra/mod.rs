@@ -13,6 +13,8 @@ pub(crate) mod platform_support;
 #[cfg(test)]
 mod reload_completion_tests;
 pub mod runtime;
+#[cfg(all(test, unix))]
+pub(crate) mod test_executable;
 #[cfg(test)]
 pub(crate) mod test_hooks;
 pub mod validation;

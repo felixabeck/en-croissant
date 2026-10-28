@@ -2279,14 +2279,13 @@ mod tests {
         crate::infra::path_authority::EngineResourceHandle,
     ) {
         use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
-        use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
         if hold_quit {
             std::fs::write(directory.path().join("hold-quit"), b"").unwrap();
         }
         let script = directory.path().join("resource-flow-engine.sh");
-        std::fs::write(
+        crate::infra::test_executable::publish_test_executable(
             &script,
             r#"#!/bin/sh
 capture="$PWD/capture.log"
@@ -2359,9 +2358,9 @@ while IFS= read -r line; do
     esac
 done
 "#,
+            0o700,
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let resource_path = directory.path().join("weights.nnue");
         std::fs::write(&resource_path, b"resource-bytes").unwrap();
 
@@ -4339,9 +4338,12 @@ done
         assert!(first.actor.start_search(&GoMode::Depth(1)).await.is_err());
 
         let replacement_path = directory.path().join("replacement.sh");
-        std::fs::copy(
-            directory.path().join("resource-flow-engine.sh"),
+        let replacement_bytes =
+            std::fs::read(directory.path().join("resource-flow-engine.sh")).unwrap();
+        crate::infra::test_executable::publish_test_executable(
             &replacement_path,
+            replacement_bytes,
+            0o700,
         )
         .unwrap();
         let replacement = app
