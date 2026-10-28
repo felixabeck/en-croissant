@@ -16693,7 +16693,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 ## 2026-10-11 — filed through the inbox spool
 
 ### A database renamed outside the app stays refused while its old name's idle pool is cached
-* **ID:** f-20261011-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261011-01 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** d7fc28c0-e3c5-4fb5-b34f-fee1b64dec2f
 * **Where:** `src-tauri/src/db/bound_sqlite.rs` (`BoundDatabase::acquire`, same-inode admission added for f-20260929-05: `"database is open through another name"`); `src-tauri/src/db/repository.rs` (`evict_idle_entries`, `:1092`, evicts only while `state.entries.len() > MAX_OPEN_DATABASES`; a cached `DatabaseEntry` owns its binding); the adapted test `replacement_at_the_same_path_never_reuses_an_old_pooled_connection` has to `close_and_invalidate` the setup name before reopening the renamed inode.
 * **Defect:** after f-20260929-05, a database file renamed in the same folder outside ChessFable (file manager, sync client) while its old name's repository entry is cached gets `Conflict("database is open through another name")` on every open under the new name. The old entry is never accessed again (its path is gone), so the stale probe never retires it, and LRU eviction only fires above `MAX_OPEN_DATABASES`; the refusal therefore lasts until enough other databases are opened or the app restarts. The refusal itself is correct while the idle pool holds open SQLite connections on the inode (they share its `-shm`), so the defect is the retention, not the admission.
@@ -16701,6 +16701,15 @@ Obsolete (setup-findings triage 2026-10-13): GO14 coherent ownership read fixed 
 * **Open question:** should a same-inode admission conflict in the repository's build path retire an idle cached entry whose own path no longer resolves to that inode (draining its pool through the existing retire/close path) and retry once, or should the repository re-probe idle entries' paths on a conflict, or is restart-until-evicted acceptable? Interacts with f-20260930-01 (eviction drops entries without draining connections) — any retirement must drain before the binding is released.
 * **Related:** f-20260929-05 (introduced the admission; plan risk "Cached entries keep aliases refused" accepted this for live hard links, not for a vanished old name), f-20260930-01, f-20261009-03. Review record: `tasks/handoffs/2026-10-09-sqlite-hard-link-admission-review.md`.
 * **Found by:** orchestrator diff review of the f-20260929-05 phase-1 write leaf (Claude Code, drain session d7fc28c0-e3c5-4fb5-b34f-fee1b64dec2f), 2026-10-11, from the fixture adaptation the leaf reported.
+
+Idle cached holders of a database renamed outside ChessFable are retired when the retained parent and leaf no longer name that inode, so the new name can open. The two admission conflicts stay in place for a live holder.
+
+Commits: 52c8bb0f records d-20261028-02. aa146951 retires the idle cache. 8a351907 keeps an absent or empty WAL in place, restores a WAL when the sidecar rename fails, and classifies a Windows directory at the old name as vanished. 45d36788 records d-20261028-03. 9ffb312d marks d-20261028-02 superseded by d-20261028-03. b530a50a records the review.
+
+Rejected: renaming wrote_main. The flag means this read_revision wrote the main file, by the checkpoint or by the retry open after a moved WAL. Rejected: Windows tests that rename an open database. The reviewed plan keeps those tests on Unix and adds no Windows-only retirement policy. Rejected: opening the database leaf to find WAL frames.
+
+The Windows ERROR_DIRECTORY arm was compiled by windows-clippy and was not executed on this Linux host. Proof used cargo test --bin chessfable because the package has no library target.
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"9b2c77c8ab254606457979ee5ec1475c424ea17186907811874a4f2d55b2463b","header_sha256":"9c61e9ff354d8ba593e5c89c2b0b5429fa63d456e266c50f15e1a3ec01eb843b","header_status":"handled","input_sha256":"a21b4a65331ff7b4508e7db842ff14a5bd395d8834c599adbebf438b15493f24","kind":"mutation-receipt","operation":"95d01d1d104ee953c8e099b997f3a4afbe194f3518581761ca74c2c6d0c2e967","options":{"section":null},"request_id_sha256":null,"results":["f-20261011-01"],"target":"f-20261011-01","v":1} -->
 
 ### `instance_lock_refuses_competitor_and_keeps_leaf_after_drop` failed once in a full parallel `cargo test` run
 * **ID:** f-20261011-02 · **Status:** handled · **Area:** app-startup · **Root:** - · **Entry:** build · **Blocked:** none
