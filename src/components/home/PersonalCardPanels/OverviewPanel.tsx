@@ -1,4 +1,4 @@
-import { Group, Stack, Text } from "@mantine/core";
+import { Stack, Text } from "@mantine/core";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -15,6 +15,7 @@ import type { NameType, ValueType } from "recharts/types/component/DefaultToolti
 import type { DailyStatsData, PlayerGameInfo } from "@/bindings";
 import { getTimeControl } from "@/utils/timeControl";
 import ResultsChart from "./ResultsChart";
+import filterClasses from "./StatisticsFilters.module.css";
 import { summarizeDailyStats } from "./dailyStatsSummary";
 import TimeControlSelector from "./TimeControlSelector";
 import WebsiteAccountSelector from "./WebsiteAccountSelector";
@@ -106,7 +107,7 @@ function OverviewPanel({
 
   return (
     <Stack>
-      <Group grow>
+      <div className={filterClasses.filters}>
         {!isDatabase && (
           <WebsiteAccountSelector
             playerName={playerName}
@@ -120,7 +121,7 @@ function OverviewPanel({
           onTimeControlChange={setTimeControl}
           allowAll={true}
         />
-      </Group>
+      </div>
 
       <Text pt="md" fw="bold" fz="lg" ta="center">
         {total} {t("Common.Games")}

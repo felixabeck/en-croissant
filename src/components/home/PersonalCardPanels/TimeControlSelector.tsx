@@ -1,6 +1,7 @@
 import { Select } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import filterClasses from "./StatisticsFilters.module.css";
 
 const LICHESS_TIME_CONTROLS = [
   { value: "ultra_bullet", labelKey: "TimeControl.UltraBullet" },
@@ -65,6 +66,7 @@ const TimeControlSelector = ({
 
   return (
     <Select
+      classNames={{ dropdown: filterClasses.dropdown }}
       pt="lg"
       label={t("Board.Database.TimeControl")}
       value={timeControl}

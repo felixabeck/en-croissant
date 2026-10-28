@@ -1,0 +1,21 @@
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: var(--mantine-spacing-md);
+  min-width: 0;
+  max-width: 100%;
+  max-height: 50vh;
+  overflow: auto;
+  /* Leave space for the keyboard focus outline inside the scroll boundary. */
+  padding: 3px;
+}
+
+.filters > * {
+  flex: 1 0 12rem;
+  min-width: 12rem;
+}
+
+.dropdown {
+  max-width: calc(100vw - 16px);
+}

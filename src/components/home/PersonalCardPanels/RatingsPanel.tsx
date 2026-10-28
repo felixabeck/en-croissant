@@ -1,4 +1,4 @@
-import { Group, Stack, Text } from "@mantine/core";
+import { Stack, Text } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -22,6 +22,7 @@ import {
   tooltipCursorStyle,
 } from "./RatingsPanel.styles";
 import ResultsChart from "./ResultsChart";
+import filterClasses from "./StatisticsFilters.module.css";
 import TimeControlSelector from "./TimeControlSelector";
 import TimeRangeSlider from "./TimeRangeSlider";
 import WebsiteAccountSelector from "./WebsiteAccountSelector";
@@ -134,23 +135,21 @@ function RatingsPanel({
 
   return (
     <Stack>
-      <Group grow>
-        {!isDatabase && (
-          <>
-            <WebsiteAccountSelector
-              playerName={playerName}
-              onWebsiteChange={setWebsite}
-              onAccountChange={setAccount}
-              allowAll={false}
-            />
-            <TimeControlSelector
-              onTimeControlChange={setTimeControl}
-              website={website}
-              allowAll={false}
-            />
-          </>
-        )}
-      </Group>
+      {!isDatabase && (
+        <div className={filterClasses.filters}>
+          <WebsiteAccountSelector
+            playerName={playerName}
+            onWebsiteChange={setWebsite}
+            onAccountChange={setAccount}
+            allowAll={false}
+          />
+          <TimeControlSelector
+            onTimeControlChange={setTimeControl}
+            website={website}
+            allowAll={false}
+          />
+        </div>
+      )}
       <DateRangeTabs timeRange={dateRange} onTimeRangeChange={setDateRange} />
 
       <Text pt="md" fw="bold" fz="lg" ta="center">

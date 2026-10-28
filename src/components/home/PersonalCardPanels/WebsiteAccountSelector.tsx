@@ -1,8 +1,9 @@
-import { Group, Select } from "@mantine/core";
+import { Select } from "@mantine/core";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sessionsAtom } from "@/state/atoms";
+import filterClasses from "./StatisticsFilters.module.css";
 
 const ALL_ACCOUNTS = "All accounts";
 
@@ -64,8 +65,9 @@ const WebsiteAccountSelector = ({
   );
 
   return (
-    <Group grow>
+    <>
       <Select
+        classNames={{ dropdown: filterClasses.dropdown }}
         pt="lg"
         label={t("Home.Accounts.Website")}
         value={website}
@@ -78,6 +80,7 @@ const WebsiteAccountSelector = ({
       />
       {website !== "All websites" && accounts.filter((a) => a !== ALL_ACCOUNTS).length > 1 && (
         <Select
+          classNames={{ dropdown: filterClasses.dropdown }}
           pt="lg"
           label={t("Home.Accounts.Account")}
           value={account}
@@ -89,7 +92,7 @@ const WebsiteAccountSelector = ({
           allowDeselect={false}
         />
       )}
-    </Group>
+    </>
   );
 };
 

@@ -16,6 +16,7 @@ import { getTimeControl } from "@/utils/timeControl";
 import { countMainPly, defaultTree } from "@/utils/treeReducer";
 import classes from "./OpeningsPanel.module.css";
 import ResultsChart from "./ResultsChart";
+import filterClasses from "./StatisticsFilters.module.css";
 import TimeControlSelector from "./TimeControlSelector";
 import WebsiteAccountSelector from "./WebsiteAccountSelector";
 
@@ -89,7 +90,7 @@ function OpeningsPanel({
 
   return (
     <Stack gap={0} h="100%">
-      <Group grow>
+      <div className={filterClasses.filters}>
         {!isDatabase && (
           <WebsiteAccountSelector
             playerName={playerName}
@@ -105,7 +106,7 @@ function OpeningsPanel({
           onTimeControlChange={setTimeControl}
           allowAll={true}
         />
-      </Group>
+      </div>
 
       <Group grow pt="xl">
         <Text ta="center" fw="bold">

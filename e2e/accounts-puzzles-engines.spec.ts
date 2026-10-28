@@ -21,6 +21,7 @@ import bundledEngineCatalog from "../src/catalogs/engines.json" with { type: "js
 import english from "../src/translation/en-US.json" with { type: "json" };
 import polish from "../src/translation/pl-PL.json" with { type: "json" };
 import french from "../src/translation/fr-FR.json" with { type: "json" };
+import german from "../src/translation/de-DE.json" with { type: "json" };
 
 async function assertCatalogActionReachable(action: Locator, cancel: Locator) {
     await action.scrollIntoViewIfNeeded();
@@ -826,10 +827,135 @@ const summaryStatistics = {
     ],
 };
 
+async function expectHomeSummaryDropdown(
+    page: Page,
+    assertNoHorizontalOverflow: () => Promise<void>,
+) {
+    const dropdown = page.locator(".mantine-Select-dropdown:visible");
+    await expect(dropdown).toHaveCount(1);
+    await expect
+        .poll(
+            () =>
+                dropdown.evaluate((node) => {
+                    const box = node.getBoundingClientRect();
+                    return (
+                        box.left >= 0 &&
+                        box.right <= innerWidth &&
+                        box.top >= 0 &&
+                        box.bottom <= innerHeight
+                    );
+                }),
+            { message: "home summary open dropdown must fit within the viewport" },
+        )
+        .toBe(true);
+    await assertNoHorizontalOverflow();
+    console.log("HOME_SUMMARY_DROPDOWN", JSON.stringify(await dropdown.boundingBox()));
+}
+
+async function expectHomeSummarySelectedText(input: Locator, value: string) {
+    await expect(input).toHaveValue(value);
+    await input.blur();
+    await expect(input).not.toBeFocused();
+    await expect(input).not.toHaveAttribute("aria-expanded", "true");
+    await input.scrollIntoViewIfNeeded();
+    const geometry = await input.evaluate(async (node: HTMLInputElement) => {
+        await document.fonts.ready;
+        const style = getComputedStyle(node);
+        const measure = document.createElement("span");
+        Object.assign(measure.style, {
+            position: "fixed",
+            visibility: "hidden",
+            whiteSpace: "pre",
+            font: style.font,
+            letterSpacing: style.letterSpacing,
+            textTransform: style.textTransform,
+        });
+        measure.textContent = node.value;
+        document.body.append(measure);
+        const textWidth = measure.getBoundingClientRect().width;
+        measure.remove();
+        const content = () => {
+            const box = node.getBoundingClientRect();
+            let left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+            let right =
+                box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+            // Padding normally reserves Mantine's sections. Use their actual bounds too,
+            // so a changed adornment cannot silently consume the measured text area.
+            for (const section of node.parentElement!.querySelectorAll(".mantine-Input-section")) {
+                const bounds = section.getBoundingClientRect();
+                if (section.getAttribute("data-position") === "left")
+                    left = Math.max(left, bounds.right);
+                if (section.getAttribute("data-position") === "right")
+                    right = Math.min(right, bounds.left);
+            }
+            return { left, right, top: box.top, bottom: box.bottom };
+        };
+        const localScrolls: number[] = [];
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            const overflow = getComputedStyle(parent);
+            const box = parent.getBoundingClientRect();
+            const field = content();
+            if (/(auto|scroll)/.test(overflow.overflowX)) {
+                const left = box.left + parent.clientLeft;
+                const right = left + parent.clientWidth;
+                if (field.left < left) parent.scrollLeft += field.left - left;
+                else if (field.left + textWidth > right)
+                    parent.scrollLeft += field.left + textWidth - right;
+                if (parent.scrollWidth > parent.clientWidth) localScrolls.push(parent.scrollLeft);
+            }
+        }
+        const field = content();
+        const clip = { left: 0, right: innerWidth, top: 0, bottom: innerHeight };
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            const overflow = getComputedStyle(parent);
+            const box = parent.getBoundingClientRect();
+            if (/(auto|scroll|hidden|clip)/.test(overflow.overflowX)) {
+                clip.left = Math.max(clip.left, box.left + parent.clientLeft);
+                clip.right = Math.min(
+                    clip.right,
+                    box.left + parent.clientLeft + parent.clientWidth,
+                );
+            }
+            if (/(auto|scroll|hidden|clip)/.test(overflow.overflowY)) {
+                clip.top = Math.max(clip.top, box.top + parent.clientTop);
+                clip.bottom = Math.min(
+                    clip.bottom,
+                    box.top + parent.clientTop + parent.clientHeight,
+                );
+            }
+        }
+        return {
+            textWidth,
+            usableWidth: field.right - field.left,
+            field,
+            clip,
+            localScrolls,
+            scrollLeft: node.scrollLeft,
+        };
+    });
+    expect(geometry.scrollLeft, `${value}: closed input must rest at its text start`).toBe(0);
+    expect(
+        geometry.textWidth,
+        `${value}: selected text must fit the usable closed input content area`,
+    ).toBeLessThanOrEqual(geometry.usableWidth);
+    expect(
+        geometry.field.left,
+        `${value}: text start reachable inside the card`,
+    ).toBeGreaterThanOrEqual(geometry.clip.left - 1);
+    expect(
+        geometry.field.left + geometry.textWidth,
+        `${value}: complete text reachable inside the card`,
+    ).toBeLessThanOrEqual(geometry.clip.right + 1);
+    expect(geometry.field.top).toBeGreaterThanOrEqual(geometry.clip.top - 1);
+    expect(geometry.field.bottom).toBeLessThanOrEqual(geometry.clip.bottom + 1);
+    console.log("HOME_SUMMARY_SELECTED_TEXT", value, JSON.stringify(geometry));
+}
+
 test("accounts-puzzles-engines: home summary retains mixed-case owner games after account selection", async ({
     page,
     mockScenario,
     capture,
+    assertNoHorizontalOverflow,
 }) => {
     await page.addInitScript(() => {
         localStorage.setItem(
@@ -878,10 +1004,25 @@ test("accounts-puzzles-engines: home summary retains mixed-case owner games afte
     const total = overview.getByText("8 Games", { exact: true });
     await expect(total).toBeVisible();
     await overview.getByRole("textbox", { name: "Website", exact: true }).click();
+    await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
     await page.getByRole("option", { name: "Lichess", exact: true }).click();
     await overview.getByRole("textbox", { name: "Account", exact: true }).click();
+    await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+    await page.getByRole("option", { name: "other", exact: true }).click();
+    await expect(overview.getByText("0 Games", { exact: true })).toBeVisible();
+    await overview.getByRole("textbox", { name: "Account", exact: true }).click();
+    await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
     await page.getByRole("option", { name: "alex", exact: true }).click();
     await expect(total).toBeVisible();
+    await expectHomeSummarySelectedText(
+        overview.getByRole("textbox", { name: "Website", exact: true }),
+        "Lichess",
+    );
+    await expectHomeSummarySelectedText(
+        overview.getByRole("textbox", { name: "Account", exact: true }),
+        "alex",
+    );
+    await assertNoHorizontalOverflow();
     const reads = await page.evaluate(() =>
         window.__E2E_TAURI__
             .invocations()
@@ -891,6 +1032,186 @@ test("accounts-puzzles-engines: home summary retains mixed-case owner games afte
     expect(reads).toEqual([7, 8]);
     await capture("home-summary-exact-player-account-selected");
 });
+
+for (const corner of [
+    { width: 1440, scale: 100, locale: "en-US", copy: english.translation },
+    { width: 800, scale: 100, locale: "en-US", copy: english.translation },
+    { width: 800, scale: 200, locale: "en-US", copy: english.translation },
+    { width: 320, scale: 100, locale: "en-US", copy: english.translation },
+    { width: 320, scale: 200, locale: "de-DE", copy: german.translation },
+]) {
+    test(`accounts-puzzles-engines: home summary filters ${corner.width} ${corner.scale}% ${corner.locale}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertNoHorizontalOverflow,
+    }) => {
+        await page.setViewportSize({ width: corner.width, height: 900 });
+        await page.addInitScript(
+            ({ scale, locale }) => {
+                localStorage.setItem("font-size", String(scale));
+                localStorage.setItem("i18nextLng", locale);
+                localStorage.setItem(
+                    "sessions",
+                    JSON.stringify(
+                        ["alex", "other"].map((username) => ({
+                            player: "Alex",
+                            updatedAt: Date.UTC(2026, 9, 4),
+                            lichess: { username, account: { id: username, username, perfs: {} } },
+                        })),
+                    ),
+                );
+            },
+            { scale: corner.scale, locale: corner.locale },
+        );
+        const otherDatabase = {
+            ...summaryLichessDatabase,
+            handle: { id: { id: "summary-other" }, kind: "database" },
+            filename: "other_lichess.db3",
+        };
+        const otherStatistics = {
+            site_stats_data: [
+                {
+                    ...summaryStatistics.site_stats_data[0],
+                    player: "other",
+                    daily: [
+                        {
+                            ...summaryStatistics.site_stats_data[0].daily[0],
+                            won: 3,
+                            drawn: 0,
+                            lost: 0,
+                        },
+                    ],
+                },
+            ],
+        };
+        await mockScenario({
+            commands: {
+                list_workspace_databases: {
+                    result: { entries: [summaryLichessDatabase, otherDatabase], unread: [] },
+                },
+                get_db_info: {
+                    results: [
+                        summaryLichessInfo,
+                        summaryLichessInfo,
+                        { ...summaryLichessInfo, filename: otherDatabase.filename },
+                        { ...summaryLichessInfo, filename: otherDatabase.filename },
+                    ],
+                    result: { ...summaryLichessInfo, filename: otherDatabase.filename },
+                },
+                get_players: { result: { data: [{ id: 7, name: "alex", elo: 1500 }], count: 1 } },
+                get_players_game_info: {
+                    outcomes: [{ result: summaryStatistics }, { result: otherStatistics }],
+                    error: "Unexpected extra statistics read",
+                },
+            },
+        });
+        await page.goto("/accounts");
+        const copy = corner.copy;
+        for (const tab of ["Overview", "Ratings", "Openings"] as const) {
+            const tabName = copy[`Home.Personal.${tab}`];
+            await page.getByRole("tab", { name: tabName, exact: true }).click();
+            const panel = page.getByRole("tabpanel", { name: tabName, exact: true });
+            const website = panel.getByRole("textbox", {
+                name: copy["Home.Accounts.Website"],
+                exact: true,
+            });
+            const account = panel.getByRole("textbox", {
+                name: copy["Home.Accounts.Account"],
+                exact: true,
+            });
+            const time = panel.getByRole("textbox", {
+                name: copy["Board.Database.TimeControl"],
+                exact: true,
+            });
+            if (tab !== "Ratings") {
+                await expect(account).toHaveCount(0);
+                await expect(website).toHaveValue(copy["Home.Accounts.AllWebsites"]);
+                await expectHomeSummarySelectedText(time, copy["Board.Database.Local.Result.Any"]);
+                await capture(`home-summary-${corner.width}-${corner.scale}-${tab}-account-absent`);
+                await website.click();
+                await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+                await page.getByRole("option", { name: "Lichess", exact: true }).click();
+            }
+            if (tab !== "Openings")
+                await expect(
+                    panel.getByText(`11 ${copy["Common.Games"]}`, { exact: true }),
+                ).toBeVisible();
+            await account.click();
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            await page.getByRole("option", { name: "other", exact: true }).click();
+            if (tab !== "Openings")
+                await expect(
+                    panel.getByText(`3 ${copy["Common.Games"]}`, { exact: true }),
+                ).toBeVisible();
+            await account.click();
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            await page
+                .getByRole("option", { name: copy["Home.Accounts.AllAccounts"], exact: true })
+                .click();
+            await account.click();
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            // Exercise normal keyboard selection from All accounts to alex.
+            await account.press("ArrowDown");
+            await account.press("Enter");
+            if (tab !== "Openings")
+                await expect(
+                    panel.getByText(`8 ${copy["Common.Games"]}`, { exact: true }),
+                ).toBeVisible();
+            await expectHomeSummarySelectedText(website, "Lichess");
+            await expectHomeSummarySelectedText(account, "alex");
+            await capture(`home-summary-${corner.width}-${corner.scale}-${tab}-selected`);
+            await website.focus();
+            await page.keyboard.press("Tab");
+            await expect(account).toBeFocused();
+            await page.keyboard.press("Tab");
+            await expect(time).toBeFocused();
+            await time.press("ArrowDown");
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            // Reach the final time control with normal keyboard navigation, including
+            // the option list's own vertical scroll, then restore the original selection.
+            const lastOption = page.getByRole("option", {
+                name: copy["TimeControl.Correspondence"],
+                exact: true,
+            });
+            const optionCount = await page.getByRole("option").count();
+            for (let step = 0; step < optionCount; step++) {
+                if ((await lastOption.getAttribute("data-combobox-selected")) === "true") break;
+                await time.press("ArrowDown");
+            }
+            await expect(lastOption).toHaveAttribute("data-combobox-selected", "true");
+            await expect(lastOption).toBeInViewport({ ratio: 1 });
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            await capture(`home-summary-${corner.width}-${corner.scale}-${tab}-dropdown`);
+            await time.press("Enter");
+            await expect(time).toHaveValue(copy["TimeControl.Correspondence"]);
+            await time.click();
+            await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+            await page
+                .getByRole("option", {
+                    name: copy[
+                        tab === "Ratings" ? "TimeControl.Rapid" : "Board.Database.Local.Result.Any"
+                    ],
+                    exact: true,
+                })
+                .click();
+            await time.blur();
+            if (tab !== "Ratings") {
+                await website.click();
+                await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+                await page
+                    .getByRole("option", { name: copy["Home.Accounts.AllWebsites"], exact: true })
+                    .click();
+                await expect(account).toHaveCount(0);
+                await website.click();
+                await expectHomeSummaryDropdown(page, assertNoHorizontalOverflow);
+                await page.getByRole("option", { name: "Lichess", exact: true }).click();
+                await expect(account).toHaveValue(copy["Home.Accounts.AllAccounts"]);
+            }
+            await assertNoHorizontalOverflow();
+        }
+    });
+}
 
 for (const state of ["partial", "failed"] as const) {
     test(`accounts-puzzles-engines: home summary ${state} statistics`, async ({
