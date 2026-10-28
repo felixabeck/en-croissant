@@ -10592,3 +10592,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `std::fs::copy` holds a destination write fd until it returns, so a concurrent `libc::fork` inherits that writer. The drift added this producer after the shebang audit was closed. `d-20261028-05` keeps the private command target and does not close `f-20261011-06`. Publishing the copy does not by itself close `f-20261011-06`. Reversal needs a measured writer that closes before any fork can inherit it without the publication section, while keeping that private command target.
 * **Decided by:** Grok, drain session 6b165a1e-b84f-4be5-9716-88236adcac8b · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"032080d45e783baaa09e801e3e39a483dc0c5ceda3644db8d243a3d1677d0d73","input_sha256":"376adb76834daeeb691efde5462cfc8df9d37e21d53e8e830e51a7f3c4aa4906","kind":"mutation-receipt","operation":"c6a599d8284aca935bb62a45646c801fa4c1ad7621e3659c4145956154b4dd01","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261028-08 — Which Cargo target runs the publication-barrier proof?
+
+* **Question:** Which Cargo target runs the publication-barrier proof?
+* **Governs:** f-20261011-06
+* **Chosen:** `cargo test --manifest-path src-tauri/Cargo.toml --bin chessfable`, with one filter substring per invocation.
+* **Rejected:** `--lib`. This package has no library target, so those commands fail before any test runs.
+* **Reason:** `cargo metadata --no-deps` lists only the `chessfable` binary at `src/main.rs` and the build script. The renamed-database handoff records the same fact. Reversal: a library target that actually contains these tests.
+* **Decided by:** Grok, drain session 6b165a1e-b84f-4be5-9716-88236adcac8b · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"572464e8cae2414292ca60f05603db75e0e25283e05187ee898385cb3870f770","input_sha256":"7d571591f5781df40d2886d71c59312e2f4d76c6acc444a72ce3a69fe09598cf","kind":"mutation-receipt","operation":"e9cdd4d15aa9d188642ad5662e019c6477ba7431af9ab1b631c50e84023d26e8","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-08"],"target":"decisions-ledger","v":1} -->
