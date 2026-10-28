@@ -10632,3 +10632,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20260831-16 permits reflow or reachable scrolling while prohibiting silently lost content and document overflow. This adopts O1 and O2 of the reviewed plan. Reversal path: another card-local layout passing the same reachability and selected-value proofs.
 * **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"0b77e81545cb91dfe99481abd87b62b73247236aaa43557447d5f475fbd6e24c","input_sha256":"af58956ae8e562f35d71ff1841bdf180b83ad2704ec3d032749de167676ab875","kind":"mutation-receipt","operation":"fc77d18acc9dbd4c102c162cfd39ca99646de86450f3c10d61430ed12ecb835e","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20261028-12 — How is Home filter readability closure verified?
+
+* **Governs:** f-20261027-02
+* **Question:** What evidence distinguishes readable closed filter values from the filed clipping defect?
+* **Chosen:** Pinned container browser geometry, inspected screenshots and production-only layout fix reversal with tests retained.
+* **Rejected:** Mocked unit tests alone, input-value equality alone and reachable-mode clipping alone.
+* **Reason:** The existing journey passes despite clipped selected values, and the generic clipping helper exempts populated text inputs. This adopts O3 of the reviewed plan. Reversal path: an equally discriminating browser assertion without broad verifier changes.
+* **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e6a894a5a59bd27315bc6ec5f224120df1dfd8eb3a4bffe9bb546018938d2fa7","input_sha256":"47066a03037e3bd6084665241473cb5b0ba91ae6ce9b1e01232300aaf089cee9","kind":"mutation-receipt","operation":"654dc5a6ebc5426bc214cf07674e884a75759c3ee47909e90eaec486a1869ea3","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-12"],"target":"decisions-ledger","v":1} -->
