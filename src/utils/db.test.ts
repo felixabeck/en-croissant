@@ -4,6 +4,7 @@ import type { tauri } from "@/platform/tauri";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import i18n from "i18next";
 import { supportedLocales } from "@/i18n";
+import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
 
 const mocks = vi.hoisted(() => ({
     getDatabaseWorkspace: vi.fn(),
@@ -259,7 +260,10 @@ describe("production database metadata pipeline", () => {
             store.getState().setDatabase(managed);
             const raw = sessionStorage.getItem("database-view");
             expect(raw).not.toBeNull();
-            const stored = JSON.parse(raw!);
+            const stored = decodeCompressedOrJson(raw) as {
+                version: number;
+                state: { database: typeof managed };
+            };
             expect(stored.version).toBe(0);
             expect(stored.state.database).toEqual(managed);
             expect(stored.state.database.storage_size).toBe("9007199254740993");

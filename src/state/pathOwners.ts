@@ -187,7 +187,7 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
     trust(
         "databaseView",
         collectOne(
-            readJson(session, "database-view"),
+            readCompressed(session, "database-view"),
             z
                 .object({
                     state: z

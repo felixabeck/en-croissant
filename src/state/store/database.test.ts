@@ -3,9 +3,20 @@ import { databaseRouteTarget, resolveDatabaseRoute } from "@/components/database
 import { INITIAL_FEN } from "chessops/fen";
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { formatBytes } from "@/utils/format";
+
+vi.mock("@/i18n", () => ({
+    default: { t: (key: string) => `translated:${key}` },
+}));
+
 import { activeDatabaseViewStore, type DatabaseViewStore } from "./database";
+import { deserializeStorageValue } from "./debouncedStorage";
+import { storageErrorCause } from "@/state/storageError";
+
+const persistError = vi.hoisted(() => ({ report: vi.fn() }));
+vi.mock("@/state/persistError", () => ({ reportPersistError: persistError.report }));
 
 afterEach(() => {
+    vi.restoreAllMocks();
     activeDatabaseViewStore.getState().clearDatabase();
     sessionStorage.clear();
 });
@@ -27,7 +38,7 @@ const selectedDatabase = {
 async function hydrate(state?: unknown) {
     sessionStorage.clear();
     if (state !== undefined) {
-        // database-view deliberately retains its existing plain JSON persistence format.
+        // Legacy plain JSON remains a supported hydration input.
         sessionStorage.setItem("database-view", JSON.stringify({ state, version: 0 }));
     }
     vi.resetModules();
@@ -121,6 +132,185 @@ describe("database-view sessionStorage hydration", () => {
         expect(store.getState().games.selectedGame).toBeUndefined();
         store.getState().clearDatabase();
         expect(store.getState().database).toBeUndefined();
+    });
+});
+
+describe("database-view durable admission", () => {
+    const database: SuccessDatabaseInfo = {
+        ...selectedDatabase,
+        type: "success",
+        file: { id: { id: "selected" }, kind: "database" },
+        storage_size: "9007199254740993",
+    };
+    const mutations: [string, (store: typeof activeDatabaseViewStore) => boolean][] = [
+        ["setDatabase", (store) => store.getState().setDatabase({ ...database, title: "Next" })],
+        ["clearDatabase", (store) => store.getState().clearDatabase()],
+        ["setActiveTab", (store) => store.getState().setActiveTab("players")],
+        [
+            "setGamesQuery",
+            (store) =>
+                store.getState().setGamesQuery({ ...store.getState().games.query, player1: 7 }),
+        ],
+        ["setGamesSelectedGame", (store) => store.getState().setGamesSelectedGame(43)],
+        ["toggleGamesOpenedSettings", (store) => store.getState().toggleGamesOpenedSettings()],
+        [
+            "setPlayersQuery",
+            (store) =>
+                store
+                    .getState()
+                    .setPlayersQuery({ ...store.getState().players.query, name: "Next" }),
+        ],
+        ["setPlayersSelectedPlayer", (store) => store.getState().setPlayersSelectedPlayer(8)],
+        ["setPlayersActiveTab", (store) => store.getState().setPlayersActiveTab("ratings")],
+        [
+            "setTournamentsQuery",
+            (store) =>
+                store
+                    .getState()
+                    .setTournamentsQuery({ ...store.getState().tournaments.query, name: "Next" }),
+        ],
+        [
+            "setTournamentsSelectedTournament",
+            (store) => store.getState().setTournamentsSelectedTournament(10),
+        ],
+        [
+            "setTournamentsActiveTab",
+            (store) => store.getState().setTournamentsActiveTab("leaderboard"),
+        ],
+        ["setState partial", (store) => store.setState({ activeTab: "players" })],
+        [
+            "setState function",
+            (store) => store.setState((state) => ({ games: { ...state.games, selectedGame: 43 } })),
+        ],
+        [
+            "setState replace",
+            (store) => store.setState({ ...store.getState(), activeTab: "players" }, true),
+        ],
+        [
+            "setState function replace",
+            (store) => store.setState((state) => ({ ...state, activeTab: "players" }), true),
+        ],
+    ];
+
+    it.each(mutations)(
+        "refuses %s before publishing, then admits the same retry and reloads",
+        async (_name, mutate) => {
+            persistError.report.mockClear();
+            const initial = activeDatabaseViewStore.getInitialState();
+            const previous = {
+                ...initial,
+                database,
+                games: { ...initial.games, selectedGame: 42 },
+                players: { ...initial.players, selectedPlayer: 7 },
+                tournaments: { ...initial.tournaments, selectedTournament: 9 },
+            };
+            const store = await hydrate(previous);
+            const before = store.getState();
+            const seeded = sessionStorage.getItem("database-view");
+            const treeKey = "11111111-1111-4111-8111-111111111111";
+            const treeBytes = "unrelated tab-tree bytes";
+            sessionStorage.setItem(treeKey, treeBytes);
+            const subscriber = vi.fn();
+            const unsubscribe = store.subscribe(subscriber);
+            const cause = new DOMException("quota", "QuotaExceededError");
+            const nativeSetItem = Storage.prototype.setItem;
+            const refused = vi.fn(() => {
+                expect(store.getState()).toBe(before);
+                expect(subscriber).not.toHaveBeenCalled();
+                expect(sessionStorage.getItem("database-view")).toBe(seeded);
+                throw cause;
+            });
+            const setItem = vi
+                .spyOn(Storage.prototype, "setItem")
+                .mockImplementation(function (this: Storage, key, value) {
+                    if (this === sessionStorage && key === "database-view") return refused();
+                    return nativeSetItem.call(this, key, value);
+                });
+            try {
+                expect(mutate(store)).toBe(false);
+                expect(refused).toHaveBeenCalledOnce();
+                expect(store.getState()).toBe(before);
+                expect(sessionStorage.getItem("database-view")).toBe(seeded);
+                expect(sessionStorage.getItem(treeKey)).toBe(treeBytes);
+                expect(subscriber).not.toHaveBeenCalled();
+                expect(persistError.report).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({ message: storageErrorCause(cause), cause }),
+                );
+
+                vi.resetModules();
+                const refusedReload = (await import("./database")).activeDatabaseViewStore;
+                expect(JSON.parse(JSON.stringify(refusedReload.getState()))).toEqual(
+                    JSON.parse(JSON.stringify(before)),
+                );
+                expect(refused).toHaveBeenCalledOnce();
+                expect(sessionStorage.getItem("database-view")).toBe(seeded);
+            } finally {
+                setItem.mockRestore();
+                unsubscribe();
+            }
+
+            const published = vi.fn((state: DatabaseViewStore) => {
+                expect(deserializeStorageValue(sessionStorage.getItem("database-view")!)).toEqual({
+                    state: JSON.parse(JSON.stringify(state)),
+                    version: 0,
+                });
+            });
+            const stop = store.subscribe(published);
+            try {
+                expect(mutate(store)).toBe(true);
+                expect(published).toHaveBeenCalledOnce();
+            } finally {
+                stop();
+            }
+            const stored = sessionStorage.getItem("database-view")!;
+            const envelope = { state: JSON.parse(JSON.stringify(store.getState())), version: 0 };
+            expect(deserializeStorageValue(stored)).toEqual(envelope);
+            expect(stored).not.toBe(JSON.stringify(envelope));
+            expect(sessionStorage.getItem(treeKey)).toBe(treeBytes);
+            expect(persistError.report).toHaveBeenCalledOnce();
+
+            vi.resetModules();
+            const reloaded = (await import("./database")).activeDatabaseViewStore;
+            expect(reloaded.persist.hasHydrated()).toBe(true);
+            expect(JSON.parse(JSON.stringify(reloaded.getState()))).toEqual(envelope.state);
+            expect(sessionStorage.getItem("database-view")).toBe(stored);
+            expect(sessionStorage.getItem(treeKey)).toBe(treeBytes);
+        },
+    );
+
+    it("preserves replacement and identity semantics of public setState", async () => {
+        const store = await hydrate();
+        const before = store.getState();
+        const subscriber = vi.fn();
+        const unsubscribe = store.subscribe(subscriber);
+        expect(store.setState((state) => state)).toBe(true);
+        expect(store.getState()).toBe(before);
+        expect(subscriber).not.toHaveBeenCalled();
+        const replacement = { ...before, activeTab: "players" as const };
+        expect(store.setState(replacement, true)).toBe(true);
+        expect(store.getState()).toBe(replacement);
+        unsubscribe();
+    });
+
+    it("does not report a subscriber throw after a successful write as a refusal", async () => {
+        persistError.report.mockClear();
+        const store = await hydrate();
+        const failure = new Error("subscriber failed");
+        const unsubscribe = store.subscribe(() => {
+            throw failure;
+        });
+        try {
+            expect(() => store.getState().setDatabase(database)).toThrow(failure);
+            expect(store.getState().database).toEqual(database);
+            expect(
+                deserializeStorageValue<{ state: DatabaseViewStore }>(
+                    sessionStorage.getItem("database-view")!,
+                )?.state.database,
+            ).toEqual(database);
+            expect(persistError.report).not.toHaveBeenCalled();
+        } finally {
+            unsubscribe();
+        }
     });
 });
 

@@ -63,6 +63,24 @@ beforeEach(() => {
 });
 
 describe("collectOriginalPathOwners", () => {
+    test.each(["plain", "compressed"])(
+        "retains and trusts a %s database-view envelope",
+        (encoding) => {
+            const envelope = {
+                state: { database: { file: databaseHandle("database-view") } },
+                version: 0,
+            };
+            const raw =
+                encoding === "plain" ? JSON.stringify(envelope) : serializeStorageValue(envelope);
+            sessionStorage.setItem("database-view", raw);
+
+            const owners = collectOriginalPathOwners(localStorage, sessionStorage);
+            expect(owners.retainedIds).toContainEqual(path("database-view"));
+            expect(owners.trustedFamilies).toContain("databaseView");
+            expect(sessionStorage.getItem("database-view")).toBe(raw);
+        },
+    );
+
     test("document snapshot captures raw owners before persisted atoms hydrate", async () => {
         vi.resetModules();
         const originalGetItem = Storage.prototype.getItem;

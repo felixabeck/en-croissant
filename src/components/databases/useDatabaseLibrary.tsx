@@ -188,7 +188,7 @@ export function useDatabaseLibrary(
   const navigate = useNavigate();
 
   function openDatabase(database: SuccessDatabaseInfo) {
-    setActiveDatabase(database);
+    if (setActiveDatabase(database) !== true) return;
     void navigate(databaseRouteTarget(database));
   }
 
@@ -454,7 +454,9 @@ export function useDatabaseLibrary(
                   {...libraryButtonProps}
                   component={Link<RegisteredRouter, string, DatabaseRouteTarget["to"]>}
                   {...databaseRouteTarget(selectedDatabase)}
-                  onClick={() => setActiveDatabase(selectedDatabase)}
+                  onClick={(event) => {
+                    if (setActiveDatabase(selectedDatabase) !== true) event.preventDefault();
+                  }}
                   fullWidth
                   variant="default"
                   size="lg"

@@ -126,8 +126,8 @@ function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
       <Box
         className={classes.databaseCard}
         onClick={async () => {
+          if (setActiveDatabase(dbInfo) !== true) return;
           await navigate(databaseRouteTarget(dbInfo));
-          setActiveDatabase(dbInfo);
         }}
       >
         <Text tt="uppercase" c="dimmed" fw={700} size="xs">

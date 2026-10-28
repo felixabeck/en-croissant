@@ -232,6 +232,7 @@ test.each(["sibling opener", "card double-click"])(
     const activeAtNavigation: (SuccessDatabaseInfo | undefined)[] = [];
     mocks.setDatabase.mockImplementation((database: SuccessDatabaseInfo) => {
       activeDatabase = database;
+      return true;
     });
     mocks.navigate.mockImplementation(() => {
       activeAtNavigation.push(activeDatabase);

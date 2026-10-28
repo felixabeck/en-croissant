@@ -3,8 +3,11 @@ import { z } from "zod";
 import { createStore, useStore } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { GameQuery, PlayerQuery, TournamentQuery } from "@/bindings";
+import { reportPersistError } from "@/state/persistError";
+import { storageErrorCause } from "@/state/storageError";
 import { ELO_FILTER_MAX, type SuccessDatabaseInfo } from "@/utils/db";
 import { databaseHandleSchema } from "@/utils/pathCapabilities";
+import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
 
 // Hydrated selections supply identity only. DatabaseView gets display metadata from the
 // fresh listing before rendering its children, so retain the stored metadata unchanged.
@@ -34,21 +37,21 @@ export interface DatabaseViewStore {
         activeTab: "games" | "leaderboard";
     };
 
-    setDatabase: (database: SuccessDatabaseInfo) => void;
-    clearDatabase: () => void;
-    setActiveTab: (mode: DatabaseViewStore["activeTab"]) => void;
+    setDatabase: (database: SuccessDatabaseInfo) => boolean;
+    clearDatabase: () => boolean;
+    setActiveTab: (mode: DatabaseViewStore["activeTab"]) => boolean;
 
-    setGamesQuery: (filter: GameQuery) => void;
-    setGamesSelectedGame: (game?: number) => void;
-    toggleGamesOpenedSettings: () => void;
+    setGamesQuery: (filter: GameQuery) => boolean;
+    setGamesSelectedGame: (game?: number) => boolean;
+    toggleGamesOpenedSettings: () => boolean;
 
-    setPlayersQuery: (filter: PlayerQuery) => void;
-    setPlayersSelectedPlayer: (player?: number) => void;
-    setPlayersActiveTab: (value: DatabaseViewStore["players"]["activeTab"]) => void;
+    setPlayersQuery: (filter: PlayerQuery) => boolean;
+    setPlayersSelectedPlayer: (player?: number) => boolean;
+    setPlayersActiveTab: (value: DatabaseViewStore["players"]["activeTab"]) => boolean;
 
-    setTournamentsQuery: (query: TournamentQuery) => void;
-    setTournamentsSelectedTournament: (tournament?: number) => void;
-    setTournamentsActiveTab: (value: DatabaseViewStore["tournaments"]["activeTab"]) => void;
+    setTournamentsQuery: (query: TournamentQuery) => boolean;
+    setTournamentsSelectedTournament: (tournament?: number) => boolean;
+    setTournamentsActiveTab: (value: DatabaseViewStore["tournaments"]["activeTab"]) => boolean;
 }
 
 const defaultGamesState: DatabaseViewStore["games"] = {
@@ -169,16 +172,61 @@ const persistedTournamentsSchema: z.ZodType<
     }),
 });
 
-export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
-    persist(
-        (set) => ({
+type DatabaseViewSetState = {
+    (
+        partial:
+            | DatabaseViewStore
+            | Partial<DatabaseViewStore>
+            | ((state: DatabaseViewStore) => DatabaseViewStore | Partial<DatabaseViewStore>),
+        replace?: false,
+    ): boolean;
+    (
+        state: DatabaseViewStore | ((state: DatabaseViewStore) => DatabaseViewStore),
+        replace: true,
+    ): boolean;
+};
+
+const databaseViewStore = createStore<DatabaseViewStore>()<[["zustand/persist", unknown]]>((
+    publish,
+    get,
+    api,
+) => {
+    const admit: DatabaseViewSetState = (
+        partial:
+            | DatabaseViewStore
+            | Partial<DatabaseViewStore>
+            | ((state: DatabaseViewStore) => DatabaseViewStore | Partial<DatabaseViewStore>),
+        replace?: boolean,
+    ) => {
+        const current = get();
+        const next = typeof partial === "function" ? partial(current) : partial;
+        const candidate = Object.is(next, current)
+            ? current
+            : (replace ?? (typeof next !== "object" || next === null))
+              ? (next as DatabaseViewStore)
+              : Object.assign({}, current, next);
+        try {
+            sessionStorage.setItem(
+                "database-view",
+                serializeStorageValue({ state: candidate, version: 0 }),
+            );
+        } catch (cause) {
+            reportPersistError(new Error(storageErrorCause(cause), { cause }));
+            return false;
+        }
+        // Subscriber failures after publication are not storage refusals.
+        publish(candidate, true);
+        return true;
+    };
+    const state = persist<DatabaseViewStore>(
+        () => ({
             activeTab: "games",
             games: defaultGamesState,
             players: defaultPlayersState,
             tournaments: defaultTournamentState,
 
             setDatabase: (database: SuccessDatabaseInfo) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.database = database;
                         state.games = defaultGamesState;
@@ -188,7 +236,7 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 );
             },
             clearDatabase: () => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.database = undefined;
                         state.games = defaultGamesState;
@@ -200,14 +248,14 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
             },
 
             setActiveTab: (mode: DatabaseViewStore["activeTab"]) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.activeTab = mode;
                     }),
                 );
             },
             setGamesQuery: (query) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.games.query = query;
                         // A filter/sort change can make the old row either absent or refer to
@@ -218,14 +266,14 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 );
             },
             setGamesSelectedGame: (game) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.games.selectedGame = game;
                     }),
                 );
             },
             toggleGamesOpenedSettings: () => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.games.isFilterExpanded = !state.games.isFilterExpanded;
                     }),
@@ -233,7 +281,7 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
             },
 
             setPlayersQuery: (query: PlayerQuery) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.players.query = query;
                         state.players.selectedPlayer = undefined;
@@ -241,14 +289,14 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 );
             },
             setPlayersActiveTab: (value: DatabaseViewStore["players"]["activeTab"]) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.players.activeTab = value;
                     }),
                 );
             },
             setPlayersSelectedPlayer: (player?: number) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.players.selectedPlayer = player;
                     }),
@@ -256,7 +304,7 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
             },
 
             setTournamentsQuery: (query: TournamentQuery) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.tournaments.query = query;
                         state.tournaments.selectedTournament = undefined;
@@ -264,14 +312,14 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 );
             },
             setTournamentsSelectedTournament: (tournament?: number) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.tournaments.selectedTournament = tournament;
                     }),
                 );
             },
             setTournamentsActiveTab: (value: DatabaseViewStore["tournaments"]["activeTab"]) => {
-                set(
+                return admit(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.tournaments.activeTab = value;
                     }),
@@ -280,7 +328,15 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
         }),
         {
             name: "database-view",
-            storage: createJSONStorage(() => sessionStorage),
+            storage: createJSONStorage(() => ({
+                getItem: (name) => {
+                    const value = decodeCompressedOrJson(sessionStorage.getItem(name));
+                    return value === null ? null : JSON.stringify(value);
+                },
+                setItem: (name, value) =>
+                    sessionStorage.setItem(name, serializeStorageValue(JSON.parse(value))),
+                removeItem: (name) => sessionStorage.removeItem(name),
+            })),
             merge: (persistedState, currentState) => {
                 const stored =
                     persistedState && typeof persistedState === "object"
@@ -301,8 +357,17 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 };
             },
         },
-    ),
-);
+    )(publish, get, api);
+    api.setState = admit;
+    return state;
+});
+
+export const activeDatabaseViewStore = databaseViewStore as Omit<
+    typeof databaseViewStore,
+    "setState"
+> & {
+    setState: DatabaseViewSetState;
+};
 
 export function useActiveDatabaseViewStore(): DatabaseViewStore;
 export function useActiveDatabaseViewStore<T>(selector: (state: DatabaseViewStore) => T): T;

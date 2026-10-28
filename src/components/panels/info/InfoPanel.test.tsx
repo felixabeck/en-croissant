@@ -851,59 +851,105 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(mocks.loadFileGame).toHaveBeenCalledOnce();
   });
 
-  test("the database card navigates by handle key before setting the active database", async () => {
-    const database: SuccessDatabaseInfo = {
-      type: "success",
-      file: { id: { id: "info-database" }, kind: "database" },
-      filename: "info-database.db3",
-      title: "Info database",
-      description: "Database card",
-      player_count: 0,
-      event_count: 0,
-      game_count: 0,
-      storage_size: "0",
-      indexed: false,
-    };
-    mocks.getDatabases.mockResolvedValue({
-      databases: [database],
-      unread: [],
-      root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
-    });
-    let resolveNavigation!: () => void;
-    mocks.navigate.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
-        resolveNavigation = resolve;
-      }),
-    );
-    jotaiStore.set(tabsAtom, [
-      {
-        ...tabA,
-        gameOrigin: { kind: "database", database: database.file, gameId: 1 },
-      },
-    ]);
-    await act(async () =>
-      root.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          {renderPanel()}
-        </SWRConfig>,
-      ),
-    );
-    await vi.waitFor(() =>
-      expect(container.querySelector(`.${classes.databaseCard}`)).not.toBeNull(),
-    );
+  test.each(["admitted", "refused"])(
+    "the database card navigates only after admission is %s",
+    async (admission) => {
+      const database: SuccessDatabaseInfo = {
+        type: "success",
+        file: { id: { id: "info-database" }, kind: "database" },
+        filename: "info-database.db3",
+        title: "Info database",
+        description: "Database card",
+        player_count: 0,
+        event_count: 0,
+        game_count: 0,
+        storage_size: "0",
+        indexed: false,
+      };
+      mocks.getDatabases.mockResolvedValue({
+        databases: [database],
+        unread: [],
+        root: { id: { id: "listing-test-root" }, kind: "databaseRoot" as const },
+      });
+      let resolveNavigation!: () => void;
+      mocks.navigate.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveNavigation = resolve;
+        }),
+      );
+      const previous = {
+        ...database,
+        title: "Previous",
+        file: { id: { id: "previous" }, kind: "database" as const },
+      };
+      activeDatabaseViewStore.getState().setDatabase(previous);
+      const before = activeDatabaseViewStore.getState();
+      const seeded = JSON.stringify({ state: before, version: 0 });
+      sessionStorage.setItem("database-view", seeded);
+      jotaiStore.set(tabsAtom, [
+        {
+          ...tabA,
+          gameOrigin: { kind: "database", database: database.file, gameId: 1 },
+        },
+      ]);
+      await act(async () =>
+        root.render(
+          <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+            {renderPanel()}
+          </SWRConfig>,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(container.querySelector(`.${classes.databaseCard}`)).not.toBeNull(),
+      );
 
-    await act(async () =>
-      container.querySelector<HTMLElement>(`.${classes.databaseCard}`)!.click(),
-    );
-    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
-      to: "/databases/$databaseId",
-      params: { databaseId: "info-database" },
-    });
-    expect(activeDatabaseViewStore.getState().database).toBeUndefined();
+      const nativeSetItem = Storage.prototype.setItem;
+      const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+          if (admission === "refused" && this === sessionStorage && key === "database-view") {
+            expect(activeDatabaseViewStore.getState()).toBe(before);
+            expect(sessionStorage.getItem(key)).toBe(seeded);
+            throw new DOMException("quota", "QuotaExceededError");
+          }
+          return nativeSetItem.call(this, key, value);
+        });
+      const stop = activeDatabaseViewStore.subscribe(() => {
+        expect(mocks.navigate).not.toHaveBeenCalled();
+      });
+      try {
+        await act(async () =>
+          container.querySelector<HTMLElement>(`.${classes.databaseCard}`)!.click(),
+        );
+        expect(mocks.navigate.mock.calls).toEqual(
+          admission === "refused"
+            ? []
+            : [
+                [
+                  {
+                    to: "/databases/$databaseId",
+                    params: { databaseId: "info-database" },
+                  },
+                ],
+              ],
+        );
+        expect(activeDatabaseViewStore.getState() === before).toBe(admission === "refused");
+        expect(sessionStorage.getItem("database-view") === seeded).toBe(admission === "refused");
+        expect(mocks.notify).toHaveBeenCalledTimes(admission === "refused" ? 1 : 0);
+        expect(activeDatabaseViewStore.getState().database).toEqual(
+          admission === "refused" ? previous : database,
+        );
 
-    await act(async () => resolveNavigation());
-    expect(activeDatabaseViewStore.getState().database).toEqual(database);
-  });
+        await act(async () => resolveNavigation());
+        expect(activeDatabaseViewStore.getState().database).toEqual(
+          admission === "refused" ? previous : database,
+        );
+      } finally {
+        stop();
+        setItem.mockRestore();
+      }
+    },
+  );
 
   test("successful setPage loads game and updates tab and tree state", async () => {
     const mockTree = defaultTree();
