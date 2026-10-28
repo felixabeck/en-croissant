@@ -6,6 +6,11 @@ import type { DefaultEngine } from "@/utils/engines";
 import { formatBytes } from "@/utils/format";
 import ProgressButton from "../common/ProgressButton";
 
+// Padding yields to usable action width. The larger preferred text column basis makes
+// the portrait/text row wrap before that reserve comes under pressure. Both use rem to follow font scale.
+const ACTION_WIDTH_RESERVE = "10rem";
+const PREFERRED_TEXT_COLUMN_BASIS = "12rem";
+
 type Props = Omit<
   ComponentProps<typeof ProgressButton>,
   "id" | "completeOnProgressSuccess" | "clearOnCancel" | "leftIcon" | "redoable"
@@ -35,8 +40,8 @@ export default function CatalogEngineCard({
           </Box>
         )}
         <Box
-          p="clamp(0px, calc((100% - 10rem) / 2), var(--mantine-spacing-sm))"
-          flex="1 1 12rem"
+          p={`clamp(0px, calc((100% - ${ACTION_WIDTH_RESERVE}) / 2), var(--mantine-spacing-sm))`}
+          flex={`1 1 ${PREFERRED_TEXT_COLUMN_BASIS}`}
           miw={0}
         >
           <Text tt="uppercase" c="dimmed" fw={700} size="xs">

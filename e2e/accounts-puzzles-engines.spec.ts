@@ -31,6 +31,10 @@ async function assertCatalogActionReachable(action: Locator, cancel: Locator) {
         "text-overflow",
         "ellipsis",
     );
+    await expect(action.locator(".mantine-Button-label > span")).not.toHaveCSS(
+        "text-overflow",
+        "ellipsis",
+    );
     // The label's ancestors include the button. Its decorative absolute progress fill
     // deliberately extends past the label, so it is not part of the text reachability check.
     await assertNothingClipped(action.locator(".mantine-Button-label > span"), {
@@ -152,24 +156,27 @@ for (const kind of ["add", "upgrade"] as const) {
                 });
                 const portrait = card.locator("img");
                 await expect(portrait).toBeVisible();
-                const geometry = await portrait.evaluate((image) => {
-                    const box = image.parentElement!;
-                    const text = box.nextElementSibling!;
-                    return {
-                        width: box.getBoundingClientRect().width,
-                        declared:
-                            parseFloat(box.style.width) *
-                            parseFloat(getComputedStyle(document.documentElement).fontSize),
-                        portraitRight: box.getBoundingClientRect().right,
-                        portraitBottom: box.getBoundingClientRect().bottom,
-                        textLeft: text.getBoundingClientRect().left,
-                        textTop: text.getBoundingClientRect().top,
-                    };
-                });
+                const geometry = await portrait.evaluate(
+                    (image, expectedRem) => {
+                        const box = image.parentElement!;
+                        const text = box.nextElementSibling!;
+                        return {
+                            width: box.getBoundingClientRect().width,
+                            expectedWidth:
+                                expectedRem *
+                                parseFloat(getComputedStyle(document.documentElement).fontSize),
+                            portraitRight: box.getBoundingClientRect().right,
+                            portraitBottom: box.getBoundingClientRect().bottom,
+                            textLeft: text.getBoundingClientRect().left,
+                            textTop: text.getBoundingClientRect().top,
+                        };
+                    },
+                    kind === "add" ? 1.75 : 4,
+                );
                 expect
                     .soft(
-                        Math.abs(geometry.width - geometry.declared),
-                        `portrait border box ${geometry.width}px, declared ${geometry.declared}px`,
+                        Math.abs(geometry.width - geometry.expectedWidth),
+                        `portrait border box ${geometry.width}px, expected ${geometry.expectedWidth}px`,
                     )
                     .toBeLessThanOrEqual(1);
                 if (corner.width === 1440)
