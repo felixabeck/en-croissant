@@ -331,7 +331,7 @@ function ReportModal({
       <form onSubmit={form.onSubmit(() => analyze())}>
         <Stack>
           {referenceUnavailable && (
-            <Alert color="yellow">
+            <Alert color="warning">
               {t("Collections.Unavailable", {
                 defaultValue:
                   "The search index is unavailable. Retry, or select the collection's source file again.",

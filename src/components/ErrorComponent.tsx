@@ -26,7 +26,7 @@ export default function ErrorComponent({ error }: { error: unknown }) {
         {showDiagnostic && (
           <CopyButton value={normalized.diagnostic ?? ""}>
             {({ copied, copy }) => (
-              <Button color={copied ? "teal" : undefined} onClick={copy}>
+              <Button color={copied ? "success" : undefined} onClick={copy}>
                 {copied ? t("Common.Copied") : t("Error.CopyStackTrace")}
               </Button>
             )}

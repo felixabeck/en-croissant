@@ -43,13 +43,17 @@ test("derives selection from the current side and label without an effect write"
     root.render(<SideInput role="opponent" sides="WhiteBlack" setSides={setSides} />);
   });
   expect(setSides).not.toHaveBeenCalled();
-  expect(container.querySelector("div[style*='background-color: black']")).not.toBeNull();
+  expect(container.querySelector<HTMLElement>("button > div")?.style.backgroundColor).toBe(
+    "var(--cf-eval-bar-dark)",
+  );
 
   await act(async () => {
     root.render(<SideInput role="player" sides="WhiteBlack" setSides={setSides} />);
   });
   expect(setSides).not.toHaveBeenCalled();
-  expect(container.querySelector("div[style*='background-color: white']")).not.toBeNull();
+  expect(container.querySelector<HTMLElement>("button > div")?.style.backgroundColor).toBe(
+    "var(--cf-eval-bar-light)",
+  );
 
   await act(async () => {
     Array.from(container.querySelectorAll<HTMLButtonElement>("button"))

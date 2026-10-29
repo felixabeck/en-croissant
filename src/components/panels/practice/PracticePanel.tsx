@@ -729,14 +729,14 @@ function PracticePanel() {
             {deck.status === "read-failed" && (
               <Alert
                 icon={<IconInfoCircle />}
-                color="red"
+                color="danger"
                 title={t("Board.Practice.ReadFailed", { cause: deck.error?.message })}
               >
                 <Stack gap="xs">
                   <Group gap="xs">
                     <Button
                       variant="light"
-                      color="red"
+                      color="danger"
                       size="xs"
                       onClick={() => setDeck({ type: "retry" })}
                     >
@@ -745,7 +745,7 @@ function PracticePanel() {
                     {deck.repairable !== false && (
                       <Button
                         variant="light"
-                        color="red"
+                        color="danger"
                         size="xs"
                         onClick={() => toggleRepairModal()}
                       >
@@ -759,7 +759,7 @@ function PracticePanel() {
             {deck.status === "write-blocked" && (
               <Alert
                 icon={<IconInfoCircle />}
-                color="red"
+                color="danger"
                 title={t("Board.Practice.WriteBlocked", { cause: deck.error?.message })}
               />
             )}
@@ -795,7 +795,7 @@ function PracticePanel() {
                   </Alert>
                 )}
                 {deck.unappliedReviews > 0 && !deck.orphansAcknowledged && (
-                  <Alert color="orange">
+                  <Alert color="warning">
                     <Group justify="space-between" wrap="nowrap">
                       <Text fz="sm">
                         {t("Board.Practice.UnappliedReviews", {
@@ -832,7 +832,7 @@ function PracticePanel() {
                         >
                           <Progress.Section
                             value={(stats.practiced / stats.total) * 100}
-                            color="blue"
+                            color="gold"
                           />
                         </Tooltip>
                         <Tooltip
@@ -843,7 +843,7 @@ function PracticePanel() {
                         >
                           <Progress.Section
                             value={(stats.due / stats.total) * 100}
-                            color="yellow"
+                            color="warning"
                           />
                         </Tooltip>
                         <Tooltip
@@ -865,7 +865,7 @@ function PracticePanel() {
                         <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                           {t("Board.Practice.Practiced")}
                         </Text>
-                        <Text fz="lg" fw={700} c="blue">
+                        <Text fz="lg" fw={700} c="gold">
                           {stats.practiced}
                         </Text>
                       </Paper>
@@ -873,7 +873,7 @@ function PracticePanel() {
                         <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                           {t("Board.Practice.Due")}
                         </Text>
-                        <Text fz="lg" fw={700} c="yellow">
+                        <Text fz="lg" fw={700} c="warning">
                           {stats.due}
                         </Text>
                       </Paper>
@@ -892,38 +892,38 @@ function PracticePanel() {
                       <SimpleGrid cols={3} spacing="xs">
                         <Paper p="xs" withBorder radius="sm">
                           <Group gap={4} wrap="nowrap">
-                            <ThemeIcon size="xs" color="green" variant="transparent">
+                            <ThemeIcon size="xs" color="success" variant="transparent">
                               <IconCheck size={12} />
                             </ThemeIcon>
                             <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                               {t("Board.Practice.SessionCorrect")}
                             </Text>
                           </Group>
-                          <Text fz="lg" fw={700} c="green">
+                          <Text fz="lg" fw={700} c="success">
                             {displayedSessionStats.correct}
                           </Text>
                         </Paper>
                         <Paper p="xs" withBorder radius="sm">
                           <Group gap={4} wrap="nowrap">
-                            <ThemeIcon size="xs" color="red" variant="transparent">
+                            <ThemeIcon size="xs" color="danger" variant="transparent">
                               <IconX size={12} />
                             </ThemeIcon>
                             <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                               {t("Board.Practice.SessionIncorrect")}
                             </Text>
                           </Group>
-                          <Text fz="lg" fw={700} c="red">
+                          <Text fz="lg" fw={700} c="danger">
                             {displayedSessionStats.incorrect}
                           </Text>
                         </Paper>
                         <Paper p="xs" withBorder radius="sm">
                           <Group gap={4} wrap="nowrap">
                             {displayedSessionStats.correct + displayedSessionStats.incorrect > 0 ? (
-                              <ThemeIcon size="xs" color="teal" variant="transparent">
+                              <ThemeIcon size="xs" color="success" variant="transparent">
                                 <IconTarget size={12} />
                               </ThemeIcon>
                             ) : (
-                              <ThemeIcon size="xs" color="orange" variant="transparent">
+                              <ThemeIcon size="xs" color="warning" variant="transparent">
                                 <IconFlame size={12} />
                               </ThemeIcon>
                             )}
@@ -938,8 +938,8 @@ function PracticePanel() {
                             fw={700}
                             c={
                               displayedSessionStats.correct + displayedSessionStats.incorrect > 0
-                                ? "teal"
-                                : "orange"
+                                ? "success"
+                                : "warning"
                             }
                           >
                             {displayedSessionStats.correct + displayedSessionStats.incorrect > 0
@@ -960,7 +960,7 @@ function PracticePanel() {
                         {stats.due === 0 && stats.unseen === 0 ? (
                           <Paper p="sm" withBorder>
                             <Stack gap="xs" align="center">
-                              <ThemeIcon size="xl" radius="xl" color="green" variant="light">
+                              <ThemeIcon size="xl" radius="xl" color="success" variant="light">
                                 <IconCheck size={24} />
                               </ThemeIcon>
                               <Text ta="center" fw={500}>
@@ -982,7 +982,7 @@ function PracticePanel() {
                             leftSection={<IconTarget size={20} />}
                             justify="space-between"
                             rightSection={
-                              <Badge size="sm" variant="white" color="blue">
+                              <Badge size="sm" variant="white" color="gold">
                                 {stats.due + stats.unseen}
                               </Badge>
                             }
@@ -1048,7 +1048,7 @@ function PracticePanel() {
                             <Button
                               variant="light"
                               size="compact-xs"
-                              color="red"
+                              color="danger"
                               onClick={() => {
                                 endPracticeSession();
                               }}
@@ -1079,10 +1079,10 @@ function PracticePanel() {
                       <Paper p="sm" withBorder>
                         <Stack gap="xs" align="center">
                           <Group gap="xs">
-                            <ThemeIcon size="md" color="red" variant="light" radius="xl">
+                            <ThemeIcon size="md" color="danger" variant="light" radius="xl">
                               <IconX size={16} />
                             </ThemeIcon>
-                            <Text fw={500} c="red">
+                            <Text fw={500} c="danger">
                               {t("Common.Incorrect")}
                             </Text>
                           </Group>
@@ -1110,7 +1110,7 @@ function PracticePanel() {
                       <Button
                         variant="subtle"
                         size="xs"
-                        color="red"
+                        color="danger"
                         disabled={!deckCanWrite}
                         onClick={() => toggleResetModal()}
                       >
@@ -1182,10 +1182,10 @@ function QualityRatingPanel({
     <Paper p="sm" withBorder>
       <Stack gap="sm" align="center">
         <Group gap="xs">
-          <ThemeIcon size="md" color="green" variant="light" radius="xl">
+          <ThemeIcon size="md" color="success" variant="light" radius="xl">
             <IconCheck size={16} />
           </ThemeIcon>
-          <Text fw={500} c="green">
+          <Text fw={500} c="success">
             {t("Board.Practice.Correct")}
           </Text>
           {timeTaken !== undefined && (
@@ -1200,7 +1200,7 @@ function QualityRatingPanel({
         <SimpleGrid cols={4} spacing="xs" style={{ width: "100%" }}>
           <Tooltip label={t("Board.Practice.AgainHint")}>
             <Button
-              color="red"
+              color="danger"
               variant="light"
               size="compact-md"
               onClick={() => onRate(1)}
@@ -1218,7 +1218,7 @@ function QualityRatingPanel({
           </Tooltip>
           <Tooltip label={t("Board.Practice.HardHint")}>
             <Button
-              color="orange"
+              color="warning"
               variant="light"
               size="compact-md"
               onClick={() => onRate(2)}
@@ -1236,7 +1236,7 @@ function QualityRatingPanel({
           </Tooltip>
           <Tooltip label={t("Board.Practice.GoodHint")}>
             <Button
-              color="blue"
+              color="gold"
               variant="light"
               size="compact-md"
               onClick={() => onRate(3)}
@@ -1254,7 +1254,7 @@ function QualityRatingPanel({
           </Tooltip>
           <Tooltip label={t("Board.Practice.EasyHint")}>
             <Button
-              color="green"
+              color="success"
               variant="light"
               size="compact-md"
               onClick={() => onRate(4)}
@@ -1316,7 +1316,9 @@ function PositionsModal({
                     {t("Board.Practice.Status")}
                   </Text>
                   <Badge
-                    color={c.card.reps === 0 ? "gray" : c.card.due < new Date() ? "yellow" : "blue"}
+                    color={
+                      c.card.reps === 0 ? "gray" : c.card.due < new Date() ? "warning" : "gold"
+                    }
                   >
                     {c.card.reps === 0
                       ? t("Board.Practice.Unseen")
@@ -1444,12 +1446,12 @@ function LogsModal({
                   <Badge
                     color={
                       log.rating === 1
-                        ? "red"
+                        ? "danger"
                         : log.rating === 2
-                          ? "orange"
+                          ? "warning"
                           : log.rating === 3
-                            ? "blue"
-                            : "green"
+                            ? "gold"
+                            : "success"
                     }
                   >
                     {log.rating === 1
@@ -1485,7 +1487,7 @@ function LogsModal({
         })}
       </SimpleGrid>
       {pageError && (
-        <Alert color="red" mt="sm">
+        <Alert color="danger" mt="sm">
           {t("Board.Practice.LogsLoadFailed", { cause: pageError.message })}
         </Alert>
       )}

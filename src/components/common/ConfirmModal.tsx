@@ -76,7 +76,7 @@ function ConfirmModal({
           <Text>{description}</Text>
           <Text>{t("Common.CannotUndo")}</Text>
           {error && (
-            <Text c="red" role="alert">
+            <Text c="danger" role="alert">
               {error}
             </Text>
           )}
@@ -86,7 +86,7 @@ function ConfirmModal({
           <Button variant="default" disabled={pending} onClick={() => onClose()}>
             {t("Common.Cancel")}
           </Button>
-          <Button color="red" loading={pending} onClick={confirm}>
+          <Button color="danger" loading={pending} onClick={confirm}>
             {confirmLabel || t("Common.Delete")}
           </Button>
         </Group>

@@ -86,7 +86,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
             {engine.name}
           </Text>
           {failure && (
-            <Text fz="xs" c="red" role="status">
+            <Text fz="xs" c="danger" role="status">
               {t("Board.Analysis.EngineFailed")}
             </Text>
           )}

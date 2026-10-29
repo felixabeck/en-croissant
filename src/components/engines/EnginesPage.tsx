@@ -295,7 +295,7 @@ function CloudSettings({
         </Stack>
         <Group justify="right">
           <Button
-            color="red"
+            color="danger"
             onClick={() => {
               void (async () => {
                 try {
@@ -548,7 +548,7 @@ function EngineSettings({
 
         <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
         {configFailure && (
-          <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
+          <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
             {configFailure.message}
           </Alert>
         )}
@@ -721,7 +721,7 @@ function EngineSettings({
           >
             {t("Common.Duplicate")}
           </Button>
-          <Button color="red" onClick={() => toggleDeleteModal()}>
+          <Button color="danger" onClick={() => toggleDeleteModal()}>
             {t("Common.Remove")}
           </Button>
         </Group>
@@ -886,7 +886,7 @@ export function EngineName({ engine, compact = false }: { engine: Engine; compac
           fw="bold"
           lineClamp={compact ? undefined : 1}
           style={{ overflowWrap: "anywhere" }}
-          c={hasError ? "red" : undefined}
+          c={hasError ? "danger" : undefined}
         >
           {engine.name} {status}
         </Text>

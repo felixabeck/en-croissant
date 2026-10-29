@@ -406,7 +406,7 @@ export default function ImportModal({
       </Button>
 
       {submitError && (
-        <Text c="red" size="sm" mt="xs">
+        <Text c="danger" size="sm" mt="xs">
           {submitError}
         </Text>
       )}

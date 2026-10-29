@@ -98,7 +98,11 @@ function AddEngine({
                 );
               })}
               {error && (
-                <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
+                <Alert
+                  icon={<IconAlertCircle size="1rem" />}
+                  title={t("Common.Error")}
+                  color="danger"
+                >
                   {t(
                     error instanceof EngineCatalogVerificationError
                       ? "Engines.Add.ErrorCatalog"

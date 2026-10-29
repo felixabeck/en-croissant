@@ -2,7 +2,7 @@ import { wrappingButton } from "@/components/common/wrappingButton";
 import { Badge, type BadgeProps } from "@mantine/core";
 import type { ReactNode } from "react";
 
-export const libraryButtonProps = { color: "blue.8", styles: wrappingButton } as const;
+export const libraryButtonProps = { color: "gold", styles: wrappingButton } as const;
 
 export function LibraryTypeBadge({
   children,
@@ -14,7 +14,7 @@ export function LibraryTypeBadge({
   return (
     <Badge
       size={size}
-      color="blue.9"
+      color="gold"
       maw="100%"
       styles={{
         root: { height: "auto" },

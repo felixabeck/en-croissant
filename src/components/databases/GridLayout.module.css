@@ -257,12 +257,7 @@
   border-style: solid;
 }
 
-[data-mantine-color-scheme="light"] .search {
-  background-color: var(--mantine-color-white);
-  border-color: var(--mantine-color-gray-2);
-}
-
-[data-mantine-color-scheme="dark"] .search {
-  background-color: var(--mantine-color-dark-7);
-  border-color: var(--mantine-color-dark-6);
+[data-mantine-color-scheme] .search {
+  background-color: var(--cf-surface-inset);
+  border-color: var(--cf-border);
 }

@@ -107,13 +107,13 @@ export function LinkedCollection({
   return (
     <Stack gap="xs" miw={0} className="wrap-anywhere" data-linked-collection={current.id}>
       <Text fw={600}>{t("Collections.Linked")}</Text>
-      {!ready && <Alert color="yellow">{t("Collections.Unavailable")}</Alert>}
+      {!ready && <Alert color="warning">{t("Collections.Unavailable")}</Alert>}
       {current.omitted > 0 && (
-        <Alert color="yellow">{t("Collections.Omitted", { omitted: current.omitted })}</Alert>
+        <Alert color="warning">{t("Collections.Omitted", { omitted: current.omitted })}</Alert>
       )}
-      {message && <Alert color="yellow">{message}</Alert>}
+      {message && <Alert color="warning">{message}</Alert>}
       {current.pendingBatch && (
-        <Alert color="yellow">
+        <Alert color="warning">
           <Text>{t("Collections.PendingAppend")}</Text>
           <Button
             {...libraryButtonProps}

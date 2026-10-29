@@ -1,13 +1,12 @@
 import { useTabAtom } from "@/state/tabScope";
 import type { Color } from "@lichess-org/chessground/types";
-import { Box, Text, Tooltip, useMantineTheme } from "@mantine/core";
+import { Box, Text, Tooltip } from "@mantine/core";
 import { useAtom } from "jotai";
 import type { Score } from "@/bindings";
 import { evalBarDisplayFamily, evalOpenFamily } from "@/state/atoms";
 import { formatScore, getWinChance } from "@/utils/score";
 
 function EvalBar({ score, orientation }: { score: Score | null; orientation: Color }) {
-  const theme = useMantineTheme();
   const [evalDisplay, setEvalDisplay] = useAtom(useTabAtom(evalBarDisplayFamily));
   const [, setEvalOpen] = useAtom(useTabAtom(evalOpenFamily));
 
@@ -32,22 +31,22 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
         {
           key: "black",
           height: blackWin,
-          bg: theme.colors.dark[4],
-          textColor: theme.colors.gray[2],
+          bg: "var(--cf-eval-bar-dark)",
+          textColor: "var(--cf-eval-bar-light)",
           label: blackWin >= 20 ? blackWin.toFixed(0) : "",
         },
         {
           key: "draw",
           height: draw,
-          bg: theme.colors.gray[5],
-          textColor: theme.colors.dark[8],
+          bg: "var(--cf-chart-4)",
+          textColor: "var(--cf-eval-bar-dark)",
           label: draw >= 20 ? draw.toFixed(0) : "",
         },
         {
           key: "white",
           height: whiteWin,
-          bg: theme.colors.gray[2],
-          textColor: theme.colors.dark[8],
+          bg: "var(--cf-eval-bar-light)",
+          textColor: "var(--cf-eval-bar-dark)",
           label: whiteWin >= 20 ? whiteWin.toFixed(0) : "",
         },
       ];
@@ -82,7 +81,7 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
           key="black"
           style={{
             height: `${100 - progress}%`,
-            backgroundColor: theme.colors.dark[4],
+            backgroundColor: "var(--cf-eval-bar-dark)",
             transition: "height 0.2s ease",
             display: "flex",
             flexDirection: "column",
@@ -90,7 +89,7 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
         >
           <Text
             fz="xs"
-            c={theme.colors.gray[2]}
+            c={"var(--cf-eval-bar-light)"}
             ta="center"
             py={3}
             mt={orientation === "black" ? "auto" : undefined}
@@ -102,7 +101,7 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
           key="white"
           style={{
             height: `${progress}%`,
-            backgroundColor: theme.colors.gray[2],
+            backgroundColor: "var(--cf-eval-bar-light)",
             transition: "height 0.2s ease",
             display: "flex",
             flexDirection: "column",
@@ -111,7 +110,7 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
           <Text
             fz="xs"
             py={3}
-            c={theme.colors.dark[8]}
+            c={"var(--cf-eval-bar-dark)"}
             ta="center"
             mt={orientation === "white" ? "auto" : undefined}
           >
@@ -129,7 +128,7 @@ function EvalBar({ score, orientation }: { score: Score | null; orientation: Col
   return (
     <Tooltip
       position="right"
-      color={score && score.value.value < 0 ? "dark" : undefined}
+      color="var(--cf-popover)"
       label={score ? formatScore(score.value) : undefined}
       disabled={!score}
     >

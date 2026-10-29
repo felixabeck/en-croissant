@@ -89,7 +89,7 @@ function StatisticsNotice({
   const { t } = useTranslation();
   return (
     <Alert
-      color="yellow"
+      color="warning"
       mt="xs"
       title={
         incomplete
@@ -320,8 +320,8 @@ function Databases() {
         >
           <Center h="100%">
             <Stack w="100%" maw={400} align="center" gap="md">
-              <ThemeIcon size={80} radius="100%" variant="light" color="blue">
-                <Loader color="blue" type="bars" />
+              <ThemeIcon size={80} radius="100%" variant="light" color="gold">
+                <Loader color="gold" type="bars" />
               </ThemeIcon>
               <Title order={3}>{t("Home.Databases.ProcessingGames")}</Title>
               <Progress w="100%" value={progress} animated striped size="md" radius="xl" />
@@ -352,7 +352,7 @@ function Databases() {
           >
             <Center h="100%">
               <Stack align="center" gap="md">
-                <ThemeIcon size={80} radius="100%" variant="light" color="blue">
+                <ThemeIcon size={80} radius="100%" variant="light" color="gold">
                   <IconDatabaseOff size={40} />
                 </ThemeIcon>
                 <Title order={3}>

@@ -8,10 +8,6 @@
   padding: var(--mantine-spacing-md);
 }
 
-[data-mantine-color-scheme="light"] .error {
-  color: var(--mantine-color-red-8);
-}
-
-[data-mantine-color-scheme="dark"] .error {
-  color: var(--mantine-color-red-4);
+[data-mantine-color-scheme] .error {
+  color: var(--cf-destructive);
 }

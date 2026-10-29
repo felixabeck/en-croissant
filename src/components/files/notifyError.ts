@@ -24,7 +24,7 @@ export function notifyUnlessCancelled(
             message = remoteHttpGuidance(remoteRejection);
         }
         notifications.show({
-            color: "red",
+            color: "danger",
             title,
             message,
             ...(remoteRejection

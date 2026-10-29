@@ -11,19 +11,15 @@
   padding-top: 0.3125rem;
   padding-bottom: 0.3125rem;
   min-height: 2rem;
-  color: var(--mantine-color-dark-0);
+  color: var(--cf-foreground);
 }
 
 [data-mantine-color-scheme="light"] .row {
-  color: var(--mantine-color-gray-7);
+  color: var(--cf-foreground);
 }
 
-[data-mantine-color-scheme="light"] .row:hover {
-  background-color: var(--mantine-color-gray-1);
-}
-
-[data-mantine-color-scheme="dark"] .row:hover {
-  background-color: var(--mantine-color-dark-4);
+[data-mantine-color-scheme] .row:hover {
+  background-color: var(--cf-interactive);
 }
 
 .guides {
@@ -37,35 +33,29 @@
   background-size: 1rem 100%;
 }
 
-[data-mantine-color-scheme="light"] .guides {
-  background-image: linear-gradient(to right, var(--mantine-color-gray-3) 1px, transparent 1px);
-}
-
-[data-mantine-color-scheme="dark"] .guides {
-  background-image: linear-gradient(to right, var(--mantine-color-dark-2) 1px, transparent 1px);
+[data-mantine-color-scheme] .guides {
+  background-image: linear-gradient(to right, var(--cf-border) 1px, transparent 1px);
 }
 
 [data-mantine-color-scheme="light"] .selected {
-  background-color: var(--mantine-primary-color-0);
-  color: var(--mantine-color-dark-8);
-  box-shadow:
-    inset 3px 0 0 var(--mantine-primary-color-6),
-    inset 0 0 0 1px var(--mantine-primary-color-2);
+  background-color: color-mix(in srgb, var(--cf-primary) 10%, transparent);
+  color: var(--cf-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cf-primary) 20%, transparent);
   font-weight: 500;
 }
 
 [data-mantine-color-scheme="light"] .selected:hover {
-  background-color: var(--mantine-primary-color-1);
+  background-color: color-mix(in srgb, var(--cf-primary) 10%, transparent);
 }
 
 [data-mantine-color-scheme="dark"] .selected {
-  background-color: var(--mantine-color-dark-5);
-  color: var(--mantine-color-gray-0);
-  box-shadow: inset 2px 0 0 var(--mantine-primary-color-7);
+  background-color: color-mix(in srgb, var(--cf-primary) 10%, transparent);
+  color: var(--cf-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cf-primary) 20%, transparent);
 }
 
 [data-mantine-color-scheme="dark"] .selected:hover {
-  background-color: var(--mantine-color-dark-4);
+  background-color: var(--cf-interactive);
 }
 
 .iconContainer {
@@ -106,11 +96,11 @@
 }
 
 [data-mantine-color-scheme="light"] .dragOver {
-  background-color: var(--mantine-primary-color-1);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-4);
+  background-color: color-mix(in srgb, var(--cf-primary) 10%, transparent);
+  box-shadow: inset 0 0 0 1px var(--cf-primary);
 }
 
 [data-mantine-color-scheme="dark"] .dragOver {
-  background-color: var(--mantine-color-dark-4);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-8);
+  background-color: var(--cf-interactive);
+  box-shadow: inset 0 0 0 1px var(--cf-primary);
 }

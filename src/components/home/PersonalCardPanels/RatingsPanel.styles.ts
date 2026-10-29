@@ -6,7 +6,7 @@ export const tooltipContentStyle = {
 };
 
 export const tooltipCursorStyle = {
-    stroke: "rgba(105, 105, 105, 0.6)",
+    stroke: "var(--cf-border-strong)",
     strokeWidth: 1,
     strokeDasharray: "5 5",
 };
@@ -20,6 +20,6 @@ export const linearGradientProps = {
 };
 
 export const gradientStops = [
-    { offset: "5%", stopColor: "#1971c2", stopOpacity: 1 },
-    { offset: "95%", stopColor: "#1971c2", stopOpacity: 0.1 },
+    { offset: "5%", stopColor: "var(--cf-primary)", stopOpacity: 1 },
+    { offset: "95%", stopColor: "var(--cf-primary)", stopOpacity: 0.1 },
 ];

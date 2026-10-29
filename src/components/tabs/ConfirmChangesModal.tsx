@@ -150,7 +150,7 @@ function ConfirmChangesModal({
             {t("Tab.UnsavedChanges")}
           </Text>
           <Text>{t("Tab.UnsavedChangesConfirm")}</Text>
-          {saveMessage && <Text c="red">{saveMessage}</Text>}
+          {saveMessage && <Text c="danger">{saveMessage}</Text>}
         </div>
 
         <Group justify="right">

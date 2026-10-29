@@ -779,7 +779,7 @@ describe("InfoPanel game loading and cancellation", () => {
       );
       const expectedNotifications =
         owner === "active owner"
-          ? [[{ color: "red", title: "Common.Error", message: "Ordinary page read failed" }]]
+          ? [[{ color: "danger", title: "Common.Error", message: "Ordinary page read failed" }]]
           : [];
       expect(mocks.notify.mock.calls).toEqual(expectedNotifications);
       expect(mocks.logError).not.toHaveBeenCalled();

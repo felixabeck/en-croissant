@@ -67,7 +67,7 @@ test.each(["labelled", "unlabelled"])(
     await act(async () => container.querySelector("button")!.click());
     expect(native.openEngineWorkspace).not.toHaveBeenCalled();
     expect(native.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message:
         outcome === "labelled"
@@ -95,7 +95,7 @@ test("notifies a failure to open an acquired folder", async () => {
   await act(async () => root.render(<OpenFolderButton />));
   await act(async () => container.querySelector("button")!.click());
   expect(native.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "open failed",
   });

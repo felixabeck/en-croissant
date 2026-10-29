@@ -136,16 +136,16 @@ export function AccountCard({
   const accountKey = accountCompletionKey({ provider: type, account: accountUsername });
   const store = useStore();
   const items = stats.map((stat) => {
-    let color = "gray.5";
+    let color = "gray";
     let DiffIcon: React.FC<IconProps> = IconArrowRight;
     if (stat.diff) {
       const sign = Math.sign(stat.diff);
       if (sign === 1) {
         DiffIcon = IconArrowUpRight;
-        color = "green";
+        color = "success";
       } else {
         DiffIcon = IconArrowDownRight;
-        color = "red";
+        color = "danger";
       }
     }
     return (
@@ -256,7 +256,7 @@ export function AccountCard({
             </Text>
             {type === "lichess" && authenticated && (
               <Tooltip label={t("Home.Accounts.Authenticated")}>
-                <Text c="green" lh={0} style={{ cursor: "default" }}>
+                <Text c="success" lh={0} style={{ cursor: "default" }}>
                   <IconCircleCheckFilled size="1.1rem" />
                 </Text>
               </Tooltip>
@@ -361,7 +361,7 @@ export function AccountCard({
             <IconAction
               label={t("Home.Accounts.RemoveAccount")}
               variant="subtle"
-              color="red"
+              color="danger"
               onClick={() =>
                 void runUnlessCancelled(t("Common.Error"), async () => {
                   await logout();
@@ -377,7 +377,7 @@ export function AccountCard({
       <Card.Section inheritPadding py="md">
         {associationIssue && (
           <Alert
-            color="yellow"
+            color="warning"
             px={0}
             miw={0}
             className="wrap-anywhere"
@@ -403,8 +403,8 @@ export function AccountCard({
             </Button>
           </Alert>
         )}
-        {database?.type === "error" && <Alert color="yellow">{database.error}</Alert>}
-        {collectionNotice && <Alert color="yellow">{t("Collections.CommittedPending")}</Alert>}
+        {database?.type === "error" && <Alert color="warning">{database.error}</Alert>}
+        {collectionNotice && <Alert color="warning">{t("Collections.CommittedPending")}</Alert>}
         {migrationWorkspace && database?.type === "success" && (
           <CollectionMigration
             opened

@@ -910,7 +910,7 @@ test("direct recovery notifies once when admitted subscriber failure hides its p
   }
   expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
   expect(mocks.showNotification).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: expect.stringContaining("Direct recovery workspace subscriber failed"),
   });

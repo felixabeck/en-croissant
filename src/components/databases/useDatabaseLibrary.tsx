@@ -202,7 +202,7 @@ export function useDatabaseLibrary(
         <Text fw={500} fz="sm" className="wrap-anywhere">
           {item.filename}
         </Text>
-        <Text c="red" size="sm" className="wrap-anywhere">
+        <Text c="danger" size="sm" className="wrap-anywhere">
           {item.error}
         </Text>
       </Stack>
@@ -292,7 +292,7 @@ export function useDatabaseLibrary(
         data-library-source="databases"
       >
         {failure !== "silent" && (
-          <Stack role="alert" c="red" p={{ base: "xs", sm: "md" }} miw={0}>
+          <Stack role="alert" c="danger" p={{ base: "xs", sm: "md" }} miw={0}>
             <Text className="wrap-anywhere">{loadFailureMessage}</Text>
             {needsFolder ? (
               <Button
@@ -538,7 +538,7 @@ export function useDatabaseLibrary(
               </Button>
             </Group>
           )}
-          <Button {...libraryButtonProps} onClick={() => setDeleteModal(true)} color="red.8">
+          <Button {...libraryButtonProps} onClick={() => setDeleteModal(true)} color="danger">
             {t("Common.Delete")}
           </Button>
         </Group>

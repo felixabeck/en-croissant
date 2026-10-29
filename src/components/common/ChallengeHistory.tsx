@@ -40,12 +40,12 @@ function ChallengeHistory({
                   select(i);
                 }}
                 variant="light"
-                color="green"
-                style={{ border: isCurrent ? "2px solid green" : "none" }}
+                color="success"
+                style={{ border: isCurrent ? "2px solid var(--cf-chart-2)" : "none" }}
               >
-                <IconCheck color="green" />
+                <IconCheck color="var(--cf-chart-2)" />
               </IconAction>
-              <Text ta="center" fz="xs" c="green">
+              <Text ta="center" fz="xs" c="success">
                 {p.label}
               </Text>
             </Stack>
@@ -60,12 +60,12 @@ function ChallengeHistory({
                 onClick={() => select(i)}
                 variant="light"
                 key={i}
-                color="red"
-                style={{ border: isCurrent ? "2px solid red" : "none" }}
+                color="danger"
+                style={{ border: isCurrent ? "2px solid var(--cf-destructive)" : "none" }}
               >
-                <IconX color="red" />
+                <IconX color="var(--cf-destructive)" />
               </IconAction>
-              <Text ta="center" fz="xs" c="red">
+              <Text ta="center" fz="xs" c="danger">
                 {p.label}
               </Text>
             </Stack>
@@ -80,12 +80,12 @@ function ChallengeHistory({
                 onClick={() => select(i)}
                 variant="light"
                 key={i}
-                color="yellow"
-                style={{ border: isCurrent ? "2px solid yellow" : "none" }}
+                color="warning"
+                style={{ border: isCurrent ? "2px solid var(--cf-warning)" : "none" }}
               >
-                <IconDots color="yellow" />
+                <IconDots color="var(--cf-warning)" />
               </IconAction>
-              <Text ta="center" fz="xs" c="yellow">
+              <Text ta="center" fz="xs" c="warning">
                 {hideRating ? "?" : p.label}
               </Text>
             </Stack>

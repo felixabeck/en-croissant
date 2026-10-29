@@ -98,7 +98,7 @@ cg-board square.oc.move-dest:hover {
 }
 
 :focus-visible {
-  outline: 3px solid var(--mantine-primary-color-filled);
+  outline: 3px solid var(--cf-ring);
   outline-offset: 3px;
 }
 
@@ -116,4 +116,25 @@ body {
 .mantine-Switch-track,
 .mantine-Switch-thumb {
   pointer-events: none;
+}
+
+::selection {
+  color: var(--cf-foreground);
+  background: color-mix(in srgb, var(--cf-primary) 20%, transparent);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  letter-spacing: -0.025em;
+}
+
+input[type="number"],
+time,
+.mantine-NumberInput-input,
+.mantine-Progress-label {
+  font-variant-numeric: tabular-nums;
 }

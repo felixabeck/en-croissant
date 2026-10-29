@@ -1,0 +1,14 @@
+.root {
+  background: var(--cf-card);
+  color: var(--cf-card-foreground);
+  border: 1px solid var(--cf-border);
+  border-radius: var(--cf-radius-lg);
+  box-shadow: none;
+}
+
+.root[data-variant="inset"] {
+  background: var(--cf-surface-inset);
+  border-color: color-mix(in srgb, var(--cf-border) 50%, transparent);
+  color: color-mix(in srgb, var(--cf-foreground) 70%, transparent);
+  font-size: var(--mantine-font-size-sm);
+}

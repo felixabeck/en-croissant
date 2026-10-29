@@ -128,7 +128,7 @@ test("notifies when reloading a file fails without clearing its games", async ()
   await clickReload();
 
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });

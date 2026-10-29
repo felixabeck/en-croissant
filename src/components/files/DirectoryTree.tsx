@@ -292,7 +292,7 @@ export default function DirectoryTree({
             <Text size="sm" className="wrap-anywhere">
               {node.name}
             </Text>
-            <Text size="sm" c="red" className="wrap-anywhere">
+            <Text size="sm" c="danger" className="wrap-anywhere">
               {childUnreadableMessage(node.category, t)}
             </Text>
           </Group>
@@ -314,7 +314,7 @@ export default function DirectoryTree({
             </Text>
             {node.type === "file" && (
               <>
-                <Badge size="xs" color="blue.9">
+                <Badge size="xs" color="gold">
                   {node.numGames}
                 </Badge>
                 <LibraryTypeBadge>
@@ -323,7 +323,7 @@ export default function DirectoryTree({
               </>
             )}
             {node.type === "file" && node.readError && (
-              <Text size="sm" c="red" className="wrap-anywhere">
+              <Text size="sm" c="danger" className="wrap-anywhere">
                 {childUnreadableMessage(node.readError, t)}
               </Text>
             )}
@@ -332,7 +332,7 @@ export default function DirectoryTree({
             )}
             <IconAction
               label={t("Common.Delete")}
-              color="red"
+              color="danger"
               variant="subtle"
               size="sm"
               onClick={(event: MouseEvent<HTMLButtonElement>) => {

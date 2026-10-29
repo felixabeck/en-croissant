@@ -172,7 +172,7 @@ test("keeps the modal open and shows a normalized non-cancelled picker failure",
   expect(actions.onWorkspaceChanged).not.toHaveBeenCalled();
   expect(actions.setOpened).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "Safe error",
   });
@@ -194,7 +194,7 @@ test("surfaces an ordinary preview-list failure after workspace selection", asyn
   expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
   expect(actions.setOpened).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "Safe error",
   });
@@ -258,7 +258,7 @@ test("reports a failed download without replacing the installed database list", 
   await act(async () => host.querySelectorAll("button")[1].click());
   expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "Safe error",
   });
@@ -404,7 +404,7 @@ test.each(["picker", "destination"] as const)(
     const actions = await render();
     await act(async () => host.querySelectorAll("button")[surface === "picker" ? 0 : 1].click());
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "This puzzle folder is no longer available. Choose another in Settings.",
     });

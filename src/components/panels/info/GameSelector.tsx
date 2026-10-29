@@ -240,7 +240,7 @@ function GameRow({
               toggleDelete(true);
             }}
             variant="subtle"
-            color="red"
+            color="danger"
             size="xs"
             mr="xs"
             className={classes.deleteBtn}

@@ -446,7 +446,7 @@ test.each([
   "a later page $label discards all rows and resolves the shared promise",
   async ({ error, notifies }) => {
     const expected = notifies
-      ? [[{ color: "red", title: translation.t("Common.Error"), message: error.message }]]
+      ? [[{ color: "danger", title: translation.t("Common.Error"), message: error.message }]]
       : [];
     const laterPage = deferred<StampedGame[]>();
     mocks.visibleIndices = [0, 1, 2];
@@ -490,7 +490,7 @@ test("a header parse failure discards earlier pages and resolves without further
   expect(observed.games).toBe(initial);
   expect(mocks.readGames).toHaveBeenCalledTimes(2);
   expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: translation.t("Common.Error"),
     message: error.message,
   });
@@ -512,7 +512,7 @@ test("both one-row call sites share a failed load with exactly one notification"
   });
   expect(mocks.readGames).toHaveBeenCalledTimes(1);
   expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: translation.t("Common.Error"),
     message: error.message,
   });

@@ -92,16 +92,16 @@ function OpeningsTable({ openings, loading }: { openings: Opening[]; loading: bo
             return (
               <Progress.Root size="xl" className={classes.result}>
                 <Progress.Section value={whitePercent} className={classes.whiteResultsSection}>
-                  <Progress.Label c="black">
+                  <Progress.Label c="var(--cf-eval-bar-dark)">
                     {whitePercent > 10 ? `${whitePercent.toFixed(1)}%` : ""}
                   </Progress.Label>
                 </Progress.Section>
-                <Progress.Section value={drawPercent} color="gray">
+                <Progress.Section value={drawPercent} color="var(--cf-chart-4)">
                   <Progress.Label>
                     {drawPercent > 10 ? `${drawPercent.toFixed(1)}%` : ""}
                   </Progress.Label>
                 </Progress.Section>
-                <Progress.Section value={blackPercent} color="black">
+                <Progress.Section value={blackPercent} color="var(--cf-eval-bar-dark)">
                   <Progress.Label>
                     {blackPercent > 10 ? `${blackPercent.toFixed(1)}%` : ""}
                   </Progress.Label>

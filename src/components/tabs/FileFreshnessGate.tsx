@@ -451,7 +451,7 @@ function FileBackedGate({
         ) : errorMessage ? (
           <>
             <Text>{errorMessage}</Text>
-            <Button color="blue.8" onClick={() => setRetryCount((count) => count + 1)}>
+            <Button color="gold" onClick={() => setRetryCount((count) => count + 1)}>
               {t("FileFreshness.Retry")}
             </Button>
           </>
@@ -474,12 +474,12 @@ function FileBackedGate({
       {errorMessage && <Text className={classes.error}>{errorMessage}</Text>}
       <Group>
         {(conflict || appendAttempted) && (
-          <Button color="blue.8" onClick={() => void reloadFromDisk()} disabled={disabled}>
+          <Button color="gold" onClick={() => void reloadFromDisk()} disabled={disabled}>
             {t("FileFreshness.ReloadFromDisk")}
           </Button>
         )}
         <Button
-          color="blue.8"
+          color="gold"
           onClick={() => void appendAsNewGame()}
           disabled={disabled || appendAttempted}
         >

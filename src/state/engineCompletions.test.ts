@@ -461,7 +461,7 @@ test("reload completion keeps safe root failure guidance across document loss", 
     const run = await runtime();
     await run.completions.initializeEngineCompletions(run.store);
     expect(native.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "Engines.LoadError.RootPermission",
     });
@@ -484,7 +484,7 @@ test("reload completion preserves the safe engine failure snapshot and message",
     const run = await runtime();
     await run.completions.initializeEngineCompletions(run.store);
     expect(native.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: failure.message,
     });
@@ -598,7 +598,7 @@ test("reload completion reports refused startup recovery and retries retained fa
     await run.completions.initializeEngineCompletions(run.store);
     expect(native.show).toHaveBeenCalledTimes(2);
     expect(native.show).toHaveBeenNthCalledWith(2, {
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "Network request failed",
     });
@@ -616,7 +616,7 @@ test("reload completion reports an owner-save failure once and retains it for re
     const run = await runtime();
     await run.completions.initializeEngineCompletions(run.store);
     expect(native.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "Engines.SaveError quota",
     });
@@ -644,7 +644,7 @@ test("shared application reports an owner-save failure once while every caller r
     notifyUnlessCancelled("Common.Error", failure, "engine");
     notifyUnlessCancelled("Common.Error", otherFailure, "engine");
     expect(native.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "prepare refused",
     });
@@ -677,7 +677,7 @@ test("shared retained failure preserves every safe field for every caller and re
     notifyUnlessCancelled("Common.Error", received, "engine");
     notifyUnlessCancelled("Common.Error", otherReceived, "engine");
     expect(native.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "Engines.LoadError.RootPermission",
     });
@@ -693,7 +693,7 @@ test.each(["subscription", "snapshot"])(
         const run = await runtime();
         await expect(run.completions.initializeEngineCompletions(run.store)).rejects.toBe(failure);
         expect(native.show).toHaveBeenCalledExactlyOnceWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: failure.message,
         });
@@ -754,12 +754,12 @@ test("a failed acknowledgement reports its own error after the retained failure 
     );
     expect(native.show).toHaveBeenCalledTimes(2);
     expect(native.show).toHaveBeenNthCalledWith(1, {
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: failure.message,
     });
     expect(native.show).toHaveBeenNthCalledWith(2, {
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: acknowledgementFailure.message,
     });

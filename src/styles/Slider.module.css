@@ -1,0 +1,25 @@
+.track {
+  background: var(--cf-surface-inset);
+}
+
+.bar {
+  background: var(--slider-color, var(--cf-primary));
+}
+
+.thumb {
+  background: var(--cf-card);
+  border: 2px solid var(--slider-color, var(--cf-primary));
+}
+
+.thumb:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.label {
+  background: var(--cf-popover);
+  color: var(--cf-foreground);
+  border: 1px solid var(--cf-border);
+  border-radius: var(--cf-radius-sm);
+  font-variant-numeric: tabular-nums;
+}

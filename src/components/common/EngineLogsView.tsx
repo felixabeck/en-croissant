@@ -153,7 +153,7 @@ export default function EngineLogsView({
               height: rowVirtualizer.getTotalSize(),
               width: "100%",
               position: "relative",
-              fontFamily: "monospace",
+              fontFamily: "var(--mantine-font-family-monospace)",
             }}
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => (
@@ -194,7 +194,7 @@ function LogLine({ log, style }: { log: EngineLog; style: React.CSSProperties })
         px="xs"
         style={{
           ...style,
-          borderBottom: "1px solid var(--mantine-color-dark-5)",
+          borderBottom: "1px solid var(--cf-border)",
         }}
       >
         <Text fz="xs" c="dimmed" fs="italic">
@@ -212,10 +212,15 @@ function LogLine({ log, style }: { log: EngineLog; style: React.CSSProperties })
       px="xs"
       style={{
         ...style,
-        borderBottom: "1px solid var(--mantine-color-dark-5)",
+        borderBottom: "1px solid var(--cf-border)",
       }}
     >
-      <Badge variant="light" color={isGui ? "blue" : "teal"} w="3.5rem" style={{ flexShrink: 0 }}>
+      <Badge
+        variant="light"
+        color={isGui ? "info" : "success"}
+        w="3.5rem"
+        style={{ flexShrink: 0 }}
+      >
         {isGui
           ? t("Engines.Logs.Source.Gui", { defaultValue: "GUI" })
           : t("Engines.Logs.Source.Engine", { defaultValue: "ENG" })}
@@ -226,13 +231,15 @@ function LogLine({ log, style }: { log: EngineLog; style: React.CSSProperties })
         maw={500}
         withArrow
         openDelay={400}
-        styles={{ tooltip: { fontFamily: "monospace", fontSize: "0.75rem" } }}
+        styles={{
+          tooltip: { fontFamily: "var(--mantine-font-family-monospace)", fontSize: "0.75rem" },
+        }}
       >
         <Text
           lineClamp={1}
           fz="xs"
-          ff="monospace"
-          c={isGui ? "blue.3" : "dimmed"}
+          ff="var(--mantine-font-family-monospace)"
+          c={isGui ? "info" : "dimmed"}
           style={{ userSelect: "text", cursor: "default" }}
         >
           {log.value.trim()}

@@ -1,0 +1,44 @@
+.root {
+  background: var(--cf-surface-inset);
+  border: 1px solid color-mix(in srgb, var(--cf-border) 80%, transparent);
+  border-radius: var(--cf-radius-full);
+}
+
+[data-mantine-color-scheme="dark"] .root {
+  background: color-mix(in srgb, white 6%, transparent);
+  border-color: color-mix(in srgb, var(--cf-border) 40%, transparent);
+}
+
+.indicator {
+  background: var(--cf-card);
+  border-radius: var(--cf-radius-full);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--cf-primary) 40%, transparent),
+    0 2px 8px -2px color-mix(in srgb, var(--cf-primary) 30%, transparent);
+}
+
+.control::before {
+  background: transparent;
+}
+
+.label {
+  color: color-mix(in srgb, var(--cf-foreground) 70%, transparent);
+  border-radius: var(--cf-radius-full);
+  font-weight: 500;
+  letter-spacing: 0.025em;
+}
+
+.label[data-active] {
+  color: var(--cf-primary);
+}
+
+.input:focus-visible + .label {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 1px;
+}
+
+@media (hover: hover) {
+  .label:hover:not([data-disabled]) {
+    color: var(--cf-foreground);
+  }
+}

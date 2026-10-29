@@ -7,10 +7,6 @@
   flex-direction: column;
 }
 
-[data-mantine-color-scheme="light"] .card {
-  background-color: var(--mantine-color-white);
-}
-
-[data-mantine-color-scheme="dark"] .card {
-  background-color: var(--mantine-color-dark-7);
+[data-mantine-color-scheme] .card {
+  background-color: var(--cf-surface-inset);
 }

@@ -348,7 +348,7 @@ test("a downloaded database surfaces a rejected reload without listing inside th
   expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
   expect(mocks.getDatabases).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "download refresh failed",
   });
@@ -445,7 +445,7 @@ test.each(["convert", "download"] as const)(
             .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       });
       expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: labelled
           ? "This database folder is no longer available. Choose another."
@@ -468,7 +468,7 @@ test("reports a failed database download destination without replacing the list"
   await act(async () => mocks.progressButtonProps!.onClick());
 
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });
@@ -562,7 +562,7 @@ test("keeps the PGN picker silent on Cancellation and notifies a real failure", 
   mocks.issuePgnWorkspace.mockRejectedValueOnce(new Error("permission denied"));
   await act(async () => pick.click());
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });
@@ -616,7 +616,7 @@ test("keeps the modal open when local conversion fails", async () => {
   expect(mocks.convertPgn).not.toHaveBeenCalled();
   expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });
@@ -821,7 +821,7 @@ test("a committed import closes its mounted modal after reloadDatabases fails an
     "Failed import database refresh failed: reload denied at [path]",
   );
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "reload denied at [path]",
   });
@@ -856,7 +856,7 @@ test.each(["none", "delete", "reloadDatabases", "logger", "refreshLogger"])(
     expect(mocks.getDatabases).not.toHaveBeenCalled();
     expect(reloadDatabases).toHaveBeenCalledExactlyOnceWith();
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: failure.message,
     });
@@ -1039,7 +1039,7 @@ test.each([false, true])(
         ? [
             [
               {
-                color: "red",
+                color: "danger",
                 title: "Common.Error",
                 message: "success refresh failed",
               },

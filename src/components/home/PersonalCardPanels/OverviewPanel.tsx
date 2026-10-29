@@ -158,11 +158,11 @@ const DateChartTooltip = ({
         <p style={{ margin: "0" }}>{`${label}`}</p>
         <p
           style={{
-            color: "var(--mantine-color-blue-filled)",
+            color: "var(--cf-primary)",
             marginTop: "8px",
           }}
         >{`${payload?.[0].name} : ${payload?.[0].value}`}</p>
-        <p style={{ fontSize: "0.75rem", margin: "0", color: "grey" }}>
+        <p style={{ fontSize: "0.75rem", margin: "0", color: "var(--mantine-color-dimmed)" }}>
           {t(isYearSelected ? "Home.Personal.Chart.OpenMonths" : "Home.Personal.Chart.OpenYears")}
         </p>
       </div>
@@ -207,7 +207,7 @@ function DateChart({ dataPerMonth }: { dataPerMonth: { name: string; count: numb
             stroke: "1px solid var(--chart-grid-color)",
           }}
         />
-        <Bar dataKey="count" fill="var(--mantine-color-blue-filled)" name={t("Common.Games")} />
+        <Bar dataKey="count" fill="var(--cf-primary)" name={t("Common.Games")} />
       </BarChart>
     </ResponsiveContainer>
   );

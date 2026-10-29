@@ -29,7 +29,7 @@ async function removeLichessCredential(handle: string | undefined, t: TFunction)
           reason: revocationReasonText(reason, t),
           defaultValue: "Local logout completed. {{reason}} Revocation at Lichess is unconfirmed.",
         }),
-        color: "orange",
+        color: "warning",
       });
   }
   if (removal.state === "removed" && removal.durability_uncertain) {
@@ -38,7 +38,7 @@ async function removeLichessCredential(handle: string | undefined, t: TFunction)
         defaultValue:
           "The account was removed, but the save could not be fully confirmed. Do not retry.",
       }),
-      color: "orange",
+      color: "warning",
     });
   }
 }
@@ -149,7 +149,7 @@ function PlayerSession({
               label={t("Accounts.SaveName", { defaultValue: "Save player name" })}
               size="sm"
               variant="subtle"
-              color="green"
+              color="success"
               onClick={() => {
                 setEdit(false);
                 setSessions((prev) =>
@@ -184,7 +184,7 @@ function PlayerSession({
             label={t("Accounts.Remove", { defaultValue: "Remove account" })}
             size="sm"
             variant="subtle"
-            color="red"
+            color="danger"
             onClick={async () => {
               for (const member of sessions) {
                 const handle = member.lichess?.handle;

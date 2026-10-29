@@ -1,0 +1,25 @@
+.item {
+  border-color: var(--cf-border);
+}
+
+.control {
+  border-radius: var(--cf-radius-lg);
+  color: var(--cf-foreground);
+}
+
+.control[data-active] {
+  background: color-mix(in srgb, var(--cf-primary) 10%, transparent);
+  color: var(--cf-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cf-primary) 20%, transparent);
+}
+
+.control:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 1px;
+}
+
+@media (hover: hover) {
+  .control:hover:not([data-active], :disabled) {
+    background: var(--cf-interactive);
+  }
+}

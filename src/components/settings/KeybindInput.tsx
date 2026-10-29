@@ -101,7 +101,7 @@ function ShortcutInput({
       <IconAction
         label={t("Common.Cancel")}
         variant="outline"
-        color="red"
+        color="danger"
         onClick={() => {
           stop();
         }}
@@ -111,7 +111,7 @@ function ShortcutInput({
       <IconAction
         label={t("Common.Save")}
         variant="outline"
-        color="green"
+        color="success"
         disabled={stringed === ""}
         onClick={() => {
           stop();

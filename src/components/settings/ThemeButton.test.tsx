@@ -24,10 +24,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 installMatchMediaStub();
 installResizeObserverStub();
 
-const theme = mergeMantineTheme(
-  DEFAULT_THEME,
-  createAppTheme({ primaryColor: "blue", spellCheck: true, fontSize: 100 }),
-);
+const theme = mergeMantineTheme(DEFAULT_THEME, createAppTheme({ spellCheck: true, fontSize: 100 }));
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;

@@ -23,7 +23,7 @@ export function SessionPersistenceNotice() {
 
   return (
     <Alert
-      color="orange"
+      color="warning"
       variant="outline"
       bg="var(--mantine-color-body)"
       title={title}

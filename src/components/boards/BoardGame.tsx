@@ -1325,12 +1325,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           ) : (
             <>
               {commandError && (
-                <Text c="red" role="alert">
+                <Text c="danger" role="alert">
                   {translateGameCommandError(t, commandError)}
                 </Text>
               )}
               {interruption && (
-                <Text c="red" role="alert">
+                <Text c="danger" role="alert">
                   {t("Board.Opponent.Interrupted", {
                     reason:
                       interruption.reason === "engineTaskFailed"
@@ -1461,7 +1461,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                     {gameState === "playing" && (
                       <Button
                         variant="default"
-                        color="red"
+                        color="danger"
                         onClick={isEngineVsEngine ? handleAbort : handleResign}
                         leftSection={<IconX />}
                         loading={pendingCommand === "abort" || pendingCommand === "resign"}

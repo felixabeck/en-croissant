@@ -330,7 +330,7 @@ test.each(["event-first", "command-first"])(
     expect(caught).not.toBe(failed.outcome.state === "failed" ? failed.outcome.result : null);
     expect(isErrorReported(caught)).toBe(true);
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "import failed",
     });
@@ -552,7 +552,7 @@ test.each([true, false])(
     await clickDownload();
     expect(mocks.importAccountGames).not.toHaveBeenCalled();
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: labelled
         ? "This database folder is no longer available. Choose another."
@@ -567,7 +567,7 @@ test.each(["succeeded", "failed"] as const)(
     snapshot = [completion(state)];
     await renderCards();
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: state === "failed" ? "import failed" : "refresh failed",
     });
@@ -649,7 +649,7 @@ test.each([
     host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click(),
   );
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: `${prop} failed`,
   });

@@ -266,7 +266,7 @@ export function useFileWorkspace(
       if (owns(owner)) setPending(false);
     }
     if (durabilityUncertain)
-      notifications.show({ color: "orange", message: durabilityUncertainMessage(t) });
+      notifications.show({ color: "warning", message: durabilityUncertainMessage(t) });
   }
   const directories = (
     entries: Entry[],
@@ -467,7 +467,7 @@ export function useFileWorkspace(
             <Button
               size="xs"
               {...libraryButtonProps}
-              color="red.8"
+              color="danger"
               onClick={() => setPurgeTarget(trashed)}
             >
               {t("Files.DeletePermanently", { defaultValue: "Delete permanently" })}
@@ -487,7 +487,7 @@ export function useFileWorkspace(
         {!workspace ? (
           <Text c="dimmed">{t("Files.EmptyWorkspace")}</Text>
         ) : failure !== "silent" ? (
-          <Text c="red" role="alert" className="wrap-anywhere">
+          <Text c="danger" role="alert" className="wrap-anywhere">
             {loadFailureMessage}
           </Text>
         ) : !data ? (
@@ -496,7 +496,7 @@ export function useFileWorkspace(
           </Text>
         ) : null}
         {actionError && !moveTarget && (
-          <Text c="red" role="alert">
+          <Text c="danger" role="alert">
             {actionError}
           </Text>
         )}
@@ -543,7 +543,7 @@ export function useFileWorkspace(
               <Button
                 size="xs"
                 {...libraryButtonProps}
-                color="red.8"
+                color="danger"
                 onClick={() => setDeleteTarget(selected)}
               >
                 {t("Files.Trash", { defaultValue: "Trash" })}
@@ -683,7 +683,7 @@ export function useFileWorkspace(
               {t("Files.Move", { defaultValue: "Move" })}
             </Button>
             {actionError && (
-              <Text c="red" role="alert">
+              <Text c="danger" role="alert">
                 {actionError}
               </Text>
             )}

@@ -187,7 +187,7 @@ function RatingsPanel({
                 name="Rating"
                 dataKey="player_elo"
                 type="monotone"
-                stroke="var(--mantine-color-blue-filled)"
+                stroke="var(--cf-primary)"
                 strokeWidth={2}
                 strokeOpacity={1}
                 fillOpacity={0.25}

@@ -17,9 +17,9 @@
 }
 
 .error {
-  color: var(--mantine-color-red-text);
+  color: var(--cf-destructive);
 }
 
 .discardButton {
-  --button-color: var(--mantine-color-red-9);
+  --button-color: var(--cf-destructive);
 }

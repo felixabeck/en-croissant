@@ -452,3 +452,32 @@ test("mounts App after a recoverable public save outcome", async () => {
   expect(renderedChild().type).toBe(App);
   expect(logFailureSafely).not.toHaveBeenCalled();
 });
+
+test("startup removes the obsolete accent preference once without hydrating it", async () => {
+  localStorage.setItem("mantine-primary-color", '"red"');
+  const remove = vi.spyOn(Storage.prototype, "removeItem");
+  try {
+    const { startApplication } = await import("./bootstrap");
+    await startApplication();
+    await startApplication();
+    expect(localStorage.getItem("mantine-primary-color")).toBeNull();
+    expect(remove.mock.calls.filter(([key]) => key === "mantine-primary-color")).toHaveLength(1);
+    expect(renderedChild().type).toBe(App);
+  } finally {
+    remove.mockRestore();
+  }
+});
+
+test("refused obsolete-accent removal never blocks startup", async () => {
+  const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation((key) => {
+    if (key === "mantine-primary-color") throw new Error("storage refused");
+  });
+  try {
+    const { startApplication } = await import("./bootstrap");
+    await expect(startApplication()).resolves.toBeUndefined();
+    expect(initializeWorkspace).toHaveBeenCalledOnce();
+    expect(renderedChild().type).toBe(App);
+  } finally {
+    remove.mockRestore();
+  }
+});

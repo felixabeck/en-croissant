@@ -1,0 +1,16 @@
+.root {
+  border-radius: var(--cf-radius-full);
+  font-weight: 600;
+  letter-spacing: 0.025em;
+}
+
+.root[data-variant="light"],
+.root[data-variant="outline"] {
+  background: var(--cf-badge-background);
+  color: var(--cf-badge-tone);
+  border: 1px solid var(--cf-badge-border);
+}
+
+.root[data-variant="filled"] {
+  color: var(--cf-badge-foreground, var(--badge-color));
+}

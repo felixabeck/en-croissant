@@ -1,0 +1,16 @@
+.root {
+  background: var(--cf-card);
+  color: var(--cf-foreground);
+  border: 1px solid var(--cf-border);
+  border-radius: var(--cf-radius-lg);
+  box-shadow: var(--cf-shadow-elevated);
+}
+
+.title,
+.description {
+  color: var(--cf-foreground);
+}
+
+.title {
+  font-weight: 600;
+}

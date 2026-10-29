@@ -1,4 +1,3 @@
-import type { MantineColor } from "@mantine/core";
 import type { SetStateAction } from "react";
 import { atom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
@@ -557,13 +556,8 @@ export const pieceSetAtom = atomWithStorage<string>(
 );
 export const boardImageAtom = atomWithStorage<string>(
     "board-image",
-    "gray.svg",
-    createPreferenceStorage("gray.svg"),
-);
-export const primaryColorAtom = atomWithStorage<MantineColor>(
-    "mantine-primary-color",
-    "blue",
-    createPreferenceStorage<MantineColor>("blue"),
+    "chessriddle.svg",
+    createPreferenceStorage("chessriddle.svg"),
 );
 // Mount and remount synchronize with the document owner, never with an absent or stale key.
 const sessionStateAtom = atom<SessionPersistenceSnapshot | null>(null);

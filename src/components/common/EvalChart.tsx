@@ -1,14 +1,5 @@
 import { AreaChart } from "@mantine/charts";
-import {
-  Alert,
-  Box,
-  LoadingOverlay,
-  Paper,
-  SegmentedControl,
-  Stack,
-  Text,
-  useMantineTheme,
-} from "@mantine/core";
+import { Alert, Box, LoadingOverlay, Paper, SegmentedControl, Stack, Text } from "@mantine/core";
 import equal from "fast-deep-equal";
 import { useAtom } from "jotai";
 import { useCallback, useContext, useMemo } from "react";
@@ -71,7 +62,6 @@ function EvalChart(props: EvalChartProps) {
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
   const goToMove = useStore(store, (s) => s.goToMove);
-  const theme = useMantineTheme();
 
   function gradientOffset(data: DataPoint[]) {
     const dataMax = Math.max(...data.map((i) => (i.yValue !== "none" ? i.yValue : 0)));
@@ -168,27 +158,27 @@ function EvalChart(props: EvalChartProps) {
             curveType="monotone"
             data={data}
             dataKey={"name"}
-            series={[{ name: "yValue", color: "gray.5" }]}
+            series={[{ name: "yValue", color: "var(--cf-border-strong)" }]}
             connectNulls={false}
             withXAxis={false}
             withYAxis={false}
             yAxisProps={{ domain: [-1, 1] }}
             type="split"
             fillOpacity={0.8}
-            splitColors={["gray.1", "black"]}
+            splitColors={["var(--cf-eval-bar-light)", "var(--cf-eval-bar-dark)"]}
             splitOffset={colouroffset}
             activeDotProps={{ r: 3, strokeWidth: 1 }}
             dotProps={{ r: 0 }}
             referenceLines={[
               {
                 x: currentPositionName,
-                color: theme.colors[theme.primaryColor][7],
+                color: "var(--cf-primary)",
               },
               ...(middlegamePositionName
                 ? [
                     {
                       x: middlegamePositionName,
-                      color: "gray.5",
+                      color: "var(--cf-border-strong)",
                       strokeDasharray: "5 5",
                       label: t("Board.Analysis.Middlegame"),
                       labelPosition: "insideTopLeft" as const,
@@ -199,7 +189,7 @@ function EvalChart(props: EvalChartProps) {
                 ? [
                     {
                       x: endgamePositionName,
-                      color: "gray.5",
+                      color: "var(--cf-border-strong)",
                       strokeDasharray: "5 5",
                       label: t("Board.Analysis.Endgame"),
                       labelPosition: "insideTopLeft" as const,
@@ -235,9 +225,9 @@ function EvalChart(props: EvalChartProps) {
               data={data}
               dataKey={"name"}
               series={[
-                { name: "White", color: "white" },
-                { name: "Draw", color: "gray" },
-                { name: "Black", color: "black" },
+                { name: "White", color: "var(--cf-eval-bar-light)" },
+                { name: "Draw", color: "var(--cf-chart-4)" },
+                { name: "Black", color: "var(--cf-eval-bar-dark)" },
               ]}
               connectNulls={false}
               withXAxis={false}
@@ -250,13 +240,13 @@ function EvalChart(props: EvalChartProps) {
                 [
                   {
                     x: currentPositionName,
-                    color: theme.colors[theme.primaryColor][7],
+                    color: "var(--cf-primary)",
                   },
                   ...(endgamePositionName
                     ? [
                         {
                           x: endgamePositionName,
-                          color: "gray.5",
+                          color: "var(--cf-border-strong)",
                           strokeDasharray: "5 5",
                           label: t("Board.Analysis.Endgame"),
                         },

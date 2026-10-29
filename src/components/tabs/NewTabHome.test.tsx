@@ -199,7 +199,7 @@ test("notifies when opening a recent file is denied without creating a tab", asy
   });
 
   expect(fixtures.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });
@@ -220,7 +220,7 @@ test("notifies when counting games for a recent file is denied without creating 
   });
 
   expect(fixtures.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });

@@ -8,6 +8,7 @@ import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
 import { boardImageAtom, moveMethodAtom } from "@/state/atoms";
 
 const BOARD_COORDINATE_COLORS: Record<string, { white: string; black: string }> = {
+  chessriddle: { white: "#e8ceab", black: "#bc7944" },
   blue: { white: "#dee3e6", black: "#788a94" },
   blue2: { white: "#97b2c7", black: "#546f82" },
   blue3: { white: "#d9e0e6", black: "#315991" },

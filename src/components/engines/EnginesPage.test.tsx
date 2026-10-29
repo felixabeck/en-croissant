@@ -257,7 +257,7 @@ describe("EngineName binary inspection state", () => {
     expect(host.textContent).toContain("Stockfish");
     expect(host.textContent).not.toContain("(file missing)");
     expect(host.textContent).not.toContain("(Error)");
-    expect(host.querySelector('[data-color="red"]')).toBeNull();
+    expect(host.querySelector('[data-color="danger"]')).toBeNull();
   });
 
   test("renders the existing missing-file copy when the engine file is absent", async () => {
@@ -267,7 +267,7 @@ describe("EngineName binary inspection state", () => {
 
     expect(mocks.fileExists).toHaveBeenCalledWith(engine.handle.id);
     expect(host.textContent).toContain("Stockfish (file missing)");
-    expect(host.querySelector('[data-color="red"]')).not.toBeNull();
+    expect(host.querySelector('[data-color="danger"]')).not.toBeNull();
   });
 
   test("renders Error without claiming the file is missing when inspection rejects", async () => {
@@ -279,7 +279,7 @@ describe("EngineName binary inspection state", () => {
     expect(mocks.fileExists).toHaveBeenCalledTimes(1);
     expect(host.textContent).toContain("Stockfish (Error)");
     expect(host.textContent).not.toContain("(file missing)");
-    expect(host.querySelector('[data-color="red"]')).not.toBeNull();
+    expect(host.querySelector('[data-color="danger"]')).not.toBeNull();
   });
 });
 

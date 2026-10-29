@@ -5,7 +5,7 @@
   bottom: -1px;
   height: auto;
   background-color: transparent;
-  color: var(--mantine-primary-color-7);
+  color: var(--cf-primary);
   z-index: 0;
 }
 
@@ -14,5 +14,5 @@
 }
 
 [data-mantine-color-scheme="dark"] .label {
-  color: var(--mantine-color-gray-3);
+  color: var(--cf-foreground);
 }

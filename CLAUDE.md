@@ -11,6 +11,7 @@ GitHub remote, not this project's name.
 | --- | --- |
 | `src-tauri/src/` | Rust: commands, engine supervision, SQLite/Diesel database, PGN parsing, OAuth |
 | `src/` | React renderer: components, state, utils |
+| `DESIGN.md` | ChessRiddle design source, semantic tokens, controls, typography and board defaults |
 | `src/bindings/generated.ts` | **Generated** by Specta from the Rust command/event registry — never hand-edited |
 | `src/platform/` | The renderer's only sanctioned door to Tauri (`tauri.ts`, `native.ts`, `errors.ts`) |
 | `src/state/` | Jotai atoms + per-tab zustand tree stores with `sessionStorage` persistence |

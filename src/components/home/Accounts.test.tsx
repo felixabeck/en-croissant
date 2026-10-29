@@ -234,7 +234,7 @@ describe("account authentication", () => {
       expect(lookup).toHaveBeenCalledTimes(1);
       assertion?.();
       expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: `${provider} lookup failed`,
       });
@@ -255,7 +255,7 @@ describe("account authentication", () => {
     expect(document.querySelector("[role='dialog']")).toBeNull();
     expect(mocks.notificationsShow).toHaveBeenCalledWith({
       message: "Home.Accounts.LinkDurabilityUncertain",
-      color: "orange",
+      color: "warning",
     });
     expect(JSON.stringify(mocks.notificationsShow.mock.calls)).not.toContain(
       "Home.Accounts.AuthenticationFailed",
@@ -274,7 +274,7 @@ describe("account authentication", () => {
     expect(document.querySelector("[role='dialog']")).not.toBeNull();
     expect(mocks.notificationsShow).toHaveBeenCalledWith({
       message: "Home.Accounts.AuthenticationFailed",
-      color: "red",
+      color: "danger",
     });
     expect(JSON.stringify(mocks.notificationsShow.mock.calls)).not.toContain(backendError);
     expect(JSON.stringify(mocks.notificationsShow.mock.calls)).not.toContain("private-token");

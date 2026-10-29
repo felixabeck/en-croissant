@@ -471,7 +471,7 @@ function GameSelectorAccordion({
       if (!isCurrentOwner(ownerId, fileKey, ownerStore)) return;
       setGames(new Map());
       notifications.show({
-        color: "red",
+        color: "danger",
         title: t("Common.Error"),
         message: t("Files.RemoveGameStale", {
           defaultValue:

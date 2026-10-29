@@ -194,7 +194,7 @@ function PgnInput() {
         {({ copied, copy }) => (
           <IconAction
             label={copied ? t("Common.Copied") : t("Menu.Edit.Copy")}
-            color={copied ? "teal" : "gray"}
+            color={copied ? "success" : "gray"}
             variant="subtle"
             onClick={copy}
             style={{ position: "absolute", top: 15, right: 15 }}

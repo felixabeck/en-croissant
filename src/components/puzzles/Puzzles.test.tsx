@@ -628,7 +628,7 @@ test("a still-owned first wrong metadata failure reports once without losing ela
   expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
     title: "Common.Error",
     message: "owned wrong metadata failed",
-    color: "red",
+    color: "danger",
   });
   await humanMove("d7", "d5");
   expect(storedPuzzles()[0].timeSpent).toBe(timeSpent);
@@ -857,7 +857,7 @@ test.each(["resolve", "error"] as const)(
     expect(mocks.playSound).toHaveBeenCalledOnce();
     expect(mocks.notificationShow.mock.calls).toEqual(
       outcome === "error"
-        ? [[{ title: "Common.Error", message: "owned metadata failed", color: "red" }]]
+        ? [[{ title: "Common.Error", message: "owned metadata failed", color: "danger" }]]
         : [],
     );
   },
@@ -1410,7 +1410,7 @@ test("atomic pair rejection reports a malformed live suffix through the real sto
   expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
     title: "Common.Error",
     message: "MoveInput.InvalidMove (2)",
-    color: "red",
+    color: "danger",
   });
 });
 
@@ -1595,7 +1595,7 @@ test("View solution reports a thrown store subscriber and releases playing owner
     await act(async () => solutionButton().click());
     expect(mocks.notificationShow).toHaveBeenCalledWith(
       expect.objectContaining({
-        color: "red",
+        color: "danger",
         message: "playback subscriber failed",
       }),
     );
@@ -1775,7 +1775,7 @@ test.each(rejectedCandidates)(
       expect(mocks.playSound).not.toHaveBeenCalled();
       expect(mocks.getThemesForPuzzle).not.toHaveBeenCalled();
       expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message,
       });
@@ -1842,7 +1842,7 @@ test.each(rejectedCandidates)(
       expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toBeNull();
       expect(mocks.playSound).toHaveBeenCalledOnce();
       expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message,
       });
@@ -2934,7 +2934,7 @@ test.each([
     expect(treeStore.getState().currentNode().san).toBe("Nf3");
     expect(atoms.get(puzzleTimerFamily("puzzles-test"))).toEqual(newerTimer);
     expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "admission subscriber failed",
     });
@@ -3057,7 +3057,7 @@ test("an oversized incoming puzzle reports the German quota message and leaves t
   expect(treeStore.getState()).toBe(before);
   expect(sessionStorage.getItem("puzzles-test")).toBe(bytes);
   expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: deDECatalogue.translation["Common.Error"],
     message: deDECatalogue.translation["Common.StorageQuotaExceeded"],
   });
@@ -3089,7 +3089,7 @@ test.each(["workspace", "listing"] as const)(
       );
       await vi.waitFor(() =>
         expect(mocks.notificationShow).toHaveBeenCalledWith({
-          color: "red",
+          color: "danger",
           title: "Common.Error",
           message: labelled
             ? "This puzzle folder is no longer available. Choose another in Settings."
@@ -3125,7 +3125,7 @@ test.each(["permission", "child", "cancellation"] as const)(
         : [
             [
               {
-                color: "red",
+                color: "danger",
                 title: "Common.Error",
                 message:
                   outcome === "permission"
@@ -3157,7 +3157,7 @@ test("reports a current theme database failure without showing the unavailable a
   await renderPuzzles();
   await vi.waitFor(() => {
     expect(mocks.notificationShow).toHaveBeenCalledWith(
-      expect.objectContaining({ color: "red", message: "no such table: themes" }),
+      expect.objectContaining({ color: "danger", message: "no such table: themes" }),
     );
   });
   expect(outdatedAlert()).toBeUndefined();
@@ -3168,7 +3168,7 @@ test("reports an ordinary missing-resource theme failure without the unavailable
   await renderPuzzles();
   await vi.waitFor(() => {
     expect(mocks.notificationShow).toHaveBeenCalledWith(
-      expect.objectContaining({ color: "red", message: "native failed" }),
+      expect.objectContaining({ color: "danger", message: "native failed" }),
     );
   });
   expect(outdatedAlert()).toBeUndefined();
@@ -3226,7 +3226,7 @@ test("reports a current puzzle request failure", async () => {
   });
   await vi.waitFor(() =>
     expect(mocks.notificationShow).toHaveBeenCalledWith(
-      expect.objectContaining({ color: "red", message: "puzzle query failed" }),
+      expect.objectContaining({ color: "danger", message: "puzzle query failed" }),
     ),
   );
   expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
@@ -3546,7 +3546,7 @@ test("applied deletion converges state, closes the modal and still reports clean
   await vi.waitFor(() => {
     expect(store.get(selectedPuzzleDbAtom)).toBeNull();
     expect(mocks.notificationShow).toHaveBeenCalledWith(
-      expect.objectContaining({ color: "red", message: applied.message }),
+      expect.objectContaining({ color: "danger", message: applied.message }),
     );
   });
   expect(store.get(puzzleTimerFamily("puzzles-test"))).toBeNull();

@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => {
   const telemetryEnabledAtom = {};
   const fontSizeAtom = {};
   const pieceSetAtom = {};
-  const primaryColorAtom = {};
   const spellCheckAtom = {};
 
   return {
@@ -41,7 +40,6 @@ const mocks = vi.hoisted(() => {
     telemetryEnabledAtom,
     fontSizeAtom,
     pieceSetAtom,
-    primaryColorAtom,
     spellCheckAtom,
   };
 });
@@ -74,7 +72,6 @@ vi.mock("@/platform/analytics", () => ({ analytics: mocks.analytics }));
 vi.mock("@/state/atoms", () => ({
   fontSizeAtom: mocks.fontSizeAtom,
   pieceSetAtom: mocks.pieceSetAtom,
-  primaryColorAtom: mocks.primaryColorAtom,
   referenceDbAtom: mocks.referenceDbAtom,
   spellCheckAtom: mocks.spellCheckAtom,
   telemetryEnabledAtom: mocks.telemetryEnabledAtom,
@@ -193,7 +190,6 @@ beforeEach(() => {
   atomValues = new Map<object, unknown>([
     [mocks.fontSizeAtom, 120],
     [mocks.pieceSetAtom, "staunty"],
-    [mocks.primaryColorAtom, "blue"],
     [mocks.spellCheckAtom, true],
   ]);
   mocks.useAtomValue.mockImplementation((atom: object) => atomValues.get(atom));
@@ -570,7 +566,6 @@ describe("App", () => {
 
     expect(document.documentElement.style.fontSize).toBe("120%");
     expect(mocks.createAppTheme).toHaveBeenCalledExactlyOnceWith({
-      primaryColor: "blue",
       spellCheck: true,
       fontSize: 120,
     });
@@ -589,7 +584,6 @@ describe("App", () => {
     expect(document.documentElement.style.fontSize).toBe("200%");
     expect(mocks.createAppTheme).toHaveBeenCalledTimes(2);
     expect(mocks.createAppTheme).toHaveBeenLastCalledWith({
-      primaryColor: "blue",
       spellCheck: true,
       fontSize: 200,
     });

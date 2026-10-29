@@ -672,7 +672,7 @@ const durabilityCopy = englishCatalogue.translation["Common.DurabilityUncertain"
 
 function expectDurabilityNotice() {
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "orange",
+    color: "warning",
     message: durabilityCopy,
   });
   expect(container.textContent).not.toContain(refusalCopy["Files.OperationFailed"]);
@@ -1662,7 +1662,7 @@ test("failed collection selection notifies without changing the workspace", asyn
 
   expect(mocks.setWorkspace).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "permission denied",
   });
@@ -1826,7 +1826,7 @@ describe("listing failures", () => {
     click("Change collection");
     await settle();
     expect(mocks.notify).toHaveBeenCalledWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "This collection changed. Choose another.",
     });

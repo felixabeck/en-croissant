@@ -1,0 +1,71 @@
+.root {
+  border-radius: var(--cf-radius-lg);
+  font-weight: 600;
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.root[data-size="xs"],
+.root[data-size="sm"],
+.root[data-size="compact-lg"],
+.root[data-size="compact-xl"] {
+  border-radius: var(--cf-radius-md);
+}
+
+.root[data-size="compact-xs"],
+.root[data-size="compact-sm"],
+.root[data-size="compact-md"] {
+  border-radius: var(--cf-radius-sm);
+}
+
+.root[data-variant="filled"] {
+  color: var(--cf-button-foreground, var(--button-color));
+}
+
+.root[data-variant="default"],
+.root[data-variant="light"] {
+  background: var(--cf-interactive);
+  border: 1px solid color-mix(in srgb, var(--cf-button-tone) 20%, transparent);
+  color: var(--cf-button-secondary-color);
+}
+
+.root[data-variant="subtle"],
+.root[data-variant="transparent"] {
+  color: var(--cf-button-ghost-color);
+}
+
+.root:focus-visible {
+  outline: 2px solid var(--cf-button-focus);
+  outline-offset: 2px;
+}
+
+.root:disabled,
+.root[data-disabled] {
+  opacity: 0.5;
+}
+
+@media (hover: hover) {
+  .root[data-variant="filled"]:hover:not(:disabled, [data-disabled]) {
+    box-shadow: var(--cf-button-shadow);
+  }
+
+  .root[data-variant="default"]:hover:not(:disabled, [data-disabled]),
+  .root[data-variant="light"]:hover:not(:disabled, [data-disabled]) {
+    background: var(--cf-interactive-hover);
+    border-color: color-mix(in srgb, var(--cf-button-tone) 40%, transparent);
+  }
+
+  .root[data-variant="subtle"]:hover:not(:disabled, [data-disabled]),
+  .root[data-variant="transparent"]:hover:not(:disabled, [data-disabled]) {
+    background: color-mix(in srgb, var(--cf-muted) 80%, transparent);
+    color: var(--cf-button-secondary-color);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    transition: none;
+  }
+}

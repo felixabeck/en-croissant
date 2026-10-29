@@ -1,0 +1,13 @@
+.tooltip {
+  color: var(--cf-popover-foreground);
+  background: var(--cf-popover);
+  border: 1px solid var(--cf-border);
+  border-radius: var(--cf-radius-sm);
+  box-shadow: var(--cf-shadow-elevated);
+  font-size: var(--mantine-font-size-xs);
+}
+
+.arrow {
+  background: var(--cf-popover);
+  border-color: var(--cf-border);
+}

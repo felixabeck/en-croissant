@@ -643,7 +643,7 @@ test("initial ready-reference cache reset can deliver the second native query fa
   expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
     title: "Common.Error",
     message: "Repertoire coverage query failed",
-    color: "red",
+    color: "danger",
   });
 
   // Once metadata and the independent cache are ready, the same-FEN ordinary edit owns
@@ -868,7 +868,7 @@ test.each([
     expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
       title: "Common.Error",
       message: failure.message,
-      color: "red",
+      color: "danger",
     });
     expect(host.textContent).not.toContain("Collections.Unavailable");
     expect(host.textContent).toContain("Common.Error");
@@ -1059,7 +1059,7 @@ test("a refused Italian preset preserves the reported black-to-move tree and all
   expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
     title: "Common.Error",
     message: expect.stringContaining("(1)"),
-    color: "red",
+    color: "danger",
   });
   expect(host.textContent).not.toContain("Board.Practice.Build.GoToStart");
 });
@@ -1122,7 +1122,7 @@ test("reports the current-position query failure", async () => {
     expect(mocks.notificationShow).toHaveBeenCalledWith({
       title: "Common.Error",
       message: "position query failed",
-      color: "red",
+      color: "danger",
     }),
   );
 });
@@ -1142,7 +1142,7 @@ test("reports the current coverage query failure", async () => {
     expect(mocks.notificationShow).toHaveBeenCalledWith({
       title: "Common.Error",
       message: "coverage query failed",
-      color: "red",
+      color: "danger",
     }),
   );
 });
@@ -1253,7 +1253,7 @@ test("an unchecked or failed selected reference is unavailable and recovers thro
     expect(mocks.notificationShow).toHaveBeenCalledWith({
       title: "Common.Error",
       message: "reference currency failed",
-      color: "red",
+      color: "danger",
     });
     mocks.collection.mockResolvedValue(null);
     await act(async () => focus());

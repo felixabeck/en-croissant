@@ -5,12 +5,7 @@
   overflow: hidden;
 }
 
-[data-mantine-color-scheme="light"] .logo {
-  fill: var(--mantine-color-black);
-  stroke: var(--mantine-color-black);
-}
-
-[data-mantine-color-scheme="dark"] .logo {
-  fill: var(--mantine-color-white);
-  stroke: var(--mantine-color-white);
+[data-mantine-color-scheme] .logo {
+  fill: var(--cf-foreground);
+  stroke: var(--cf-foreground);
 }

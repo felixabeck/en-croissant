@@ -1,0 +1,31 @@
+.content {
+  background: var(--cf-card);
+  color: var(--cf-foreground);
+  border: 1px solid var(--cf-border);
+  border-radius: var(--cf-radius-lg);
+  box-shadow: var(--cf-shadow-elevated);
+}
+
+.header {
+  background: var(--cf-card);
+  color: var(--cf-foreground);
+  border-bottom: 1px solid var(--cf-border);
+}
+
+.title {
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.close {
+  color: var(--mantine-color-dimmed);
+  border-radius: var(--cf-radius-full);
+}
+
+@media (hover: hover) {
+  .close:hover {
+    background: var(--cf-interactive-hover);
+    color: var(--cf-foreground);
+  }
+}

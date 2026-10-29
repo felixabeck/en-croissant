@@ -282,7 +282,7 @@ describe("Player group account removal", () => {
     expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
     expect(decodeCompressedOrJson(localStorage.getItem("sessions"))).toEqual([]);
     expect(mocks.notificationsShow.mock.calls.map(([warning]) => warning)).toEqual(
-      messages.map((message) => ({ message, color: "orange" })),
+      messages.map((message) => ({ message, color: "warning" })),
     );
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
   });
@@ -580,7 +580,7 @@ describe("Lichess account removal", () => {
       expect(mocks.removeLichessAccount).toHaveBeenCalledExactlyOnceWith("native-handle");
       expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
         message: "Home.Accounts.RevocationPending Lichess.Revocation.Unconfirmed",
-        color: "orange",
+        color: "warning",
       });
       expect(mocks.notificationsShow.mock.calls[0][0].message).not.toContain(
         "unexpected_revocation_outcome",
@@ -617,7 +617,7 @@ describe("Lichess account removal", () => {
     expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
     expect(mocks.notificationsShow).toHaveBeenCalledWith({
       message: "Home.Accounts.RemoveDurabilityUncertain",
-      color: "orange",
+      color: "warning",
     });
   });
 

@@ -82,7 +82,7 @@ function GameCard({
           <IconAction
             label={t("Databases.Game.Delete")}
             variant="subtle"
-            color="red"
+            color="danger"
             disabled={!game}
             pending={deleting}
             onClick={() => void deleteGame()}

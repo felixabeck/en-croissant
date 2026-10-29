@@ -238,7 +238,7 @@ describe("FileCard", () => {
     {
       failure: "ordinary error",
       error: new Error("Failed to read game B"),
-      notifications: [{ color: "red", title: "Common.Error", message: "Failed to read game B" }],
+      notifications: [{ color: "danger", title: "Common.Error", message: "Failed to read game B" }],
     },
     { failure: "cancellation", error: cancellationError(), notifications: [] },
   ])("clears A's preview after B's $failure", async ({ error, notifications }) => {
@@ -338,7 +338,7 @@ describe("FileCard", () => {
     expect(container.querySelector("[data-testid='game-selector']")).not.toBeNull();
     expect(mocks.showNotification).toHaveBeenCalledTimes(1);
     expect(mocks.showNotification).toHaveBeenCalledWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: error.message,
     });

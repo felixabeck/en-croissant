@@ -14,9 +14,9 @@ export function SideInput({
 }) {
   const { t } = useTranslation();
   const data = [
-    { label: t("Fen.White"), color: "white" },
-    { label: t("Fen.Black"), color: "black" },
-    { label: t("Board.Database.Local.Result.Any"), color: "gray" },
+    { label: t("Fen.White"), color: "white", fill: "var(--cf-eval-bar-light)" },
+    { label: t("Fen.Black"), color: "black", fill: "var(--cf-eval-bar-dark)" },
+    { label: t("Board.Database.Local.Result.Any"), color: "gray", fill: "var(--cf-muted)" },
   ];
   const selected =
     (sides === "WhiteBlack" && role === "player") || (sides === "BlackWhite" && role === "opponent")
@@ -45,7 +45,7 @@ export function SideInput({
             height: 18,
             borderRadius: "50%",
             display: "inline-block",
-            backgroundColor: item.color,
+            backgroundColor: item.fill,
           }}
         />
       }
@@ -66,7 +66,7 @@ export function SideInput({
               height: 18,
               borderRadius: "50%",
               display: "inline-block",
-              backgroundColor: selected.color,
+              backgroundColor: selected.fill,
             }}
           />
         </UnstyledButton>

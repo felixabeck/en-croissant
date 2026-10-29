@@ -341,7 +341,7 @@ function DatabasePanel() {
           hasReferenceDatabase={!!effectiveReferenceDatabase}
         >
           {hasGameFailures && (
-            <Alert color="yellow" style={{ flexShrink: 0 }}>
+            <Alert color="warning" style={{ flexShrink: 0 }}>
               {openingData?.games.length
                 ? t("Board.Database.GamesIncomplete", {
                     defaultValue: "Could not load these games: {{games}}",
@@ -395,7 +395,7 @@ function PanelWithError(props: {
   let children = props.children;
   if (props.missingExplorerAuthentication && props.type !== "local") {
     children = (
-      <Alert color="yellow">
+      <Alert color="warning">
         {t("Board.Database.ExplorerAuthRequired1")}{" "}
         <Link to="/accounts">{t("Home.Accounts.Users")}</Link>{" "}
         {t("Board.Database.ExplorerAuthRequired2")}
@@ -403,7 +403,7 @@ function PanelWithError(props: {
     );
   }
   if (props.error) {
-    children = <Alert color="red">{props.error.toString()}</Alert>;
+    children = <Alert color="danger">{props.error.toString()}</Alert>;
   }
   if (props.type === "local" && !props.hasReferenceDatabase) {
     children = <NoDatabaseWarning />;

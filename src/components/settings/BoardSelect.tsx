@@ -5,6 +5,7 @@ import { boardImageAtom } from "@/state/atoms";
 import { SettingsCombobox } from "./SettingsCombobox";
 
 const boardImages: string[] = [
+  "chessriddle.svg",
   "blue.png",
   "blue2.jpg",
   "blue3.jpg",

@@ -56,7 +56,7 @@ for (const locale of ["en-US", "de-DE"] as const) {
                     );
                     expect(notifications.show).toHaveBeenCalledExactlyOnceWith(
                         expect.objectContaining({
-                            color: "red",
+                            color: "danger",
                             title: "Error",
                             message: catalogue.t(key),
                         }),
@@ -80,7 +80,7 @@ for (const locale of ["en-US", "de-DE"] as const) {
                     domain,
                 );
                 expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
-                    color: "red",
+                    color: "danger",
                     title: "Error",
                     message:
                         domain === "files"
@@ -108,7 +108,7 @@ for (const locale of ["en-US", "de-DE"] as const) {
                 domain,
             );
             expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
-                color: "red",
+                color: "danger",
                 title: "Error",
                 message: catalogue.t(key),
             });
@@ -154,7 +154,7 @@ test("keeps the pinned Cancellation display silent", () => {
 test("notifies a real failure", () => {
     notifyUnlessCancelled("Common.Error", new Error("permission denied"));
     expect(notifications.show).toHaveBeenCalledWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "permission denied",
     });
@@ -172,7 +172,7 @@ test("only explicitly marked errors skip notification, without changing equivale
     expect(notifications.show).not.toHaveBeenCalled();
     notifyUnlessCancelled("Common.Error", otherFailure, "engine");
     expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: otherFailure.message,
     });
@@ -214,7 +214,7 @@ test("files cleanup notifications select localized copy without changing other d
 test("does not treat abort-like diagnostics as picker cancellation", () => {
     notifyUnlessCancelled("Common.Error", new Error("connection aborted"));
     expect(notifications.show).toHaveBeenCalledWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "connection aborted",
     });
@@ -223,7 +223,7 @@ test("does not treat abort-like diagnostics as picker cancellation", () => {
 test("notifies a real listener failure with the common error title", () => {
     notifyListenerError(new Error("listener unavailable"));
     expect(notifications.show).toHaveBeenCalledWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "listener unavailable",
     });
@@ -251,7 +251,7 @@ test("runUnlessCancelled notifies a real failure and does not return a value", a
         }),
     ).resolves.toBeUndefined();
     expect(notifications.show).toHaveBeenCalledWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "permission denied",
     });
@@ -279,12 +279,12 @@ test.each([
     );
     expect(notifications.show).toHaveBeenCalledTimes(2);
     expect(notifications.show).toHaveBeenNthCalledWith(1, {
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message,
     });
     expect(notifications.show).toHaveBeenNthCalledWith(2, {
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message,
     });
@@ -299,7 +299,7 @@ test.each(["database", "puzzle", "engine", "files"] as const)(
             domain,
         );
         expect(notifications.show).toHaveBeenCalledWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "workspace root changed",
         });
@@ -332,7 +332,7 @@ test.each(["puzzle", "engine"] as const)(
             domain,
         );
         expect(notifications.show).toHaveBeenCalledWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "listing bound reached",
         });

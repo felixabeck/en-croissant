@@ -693,7 +693,7 @@ function Board({
             height={BAR_HEIGHT}
           >
             {error && (
-              <Text ta="center" c="red">
+              <Text ta="center" c="danger">
                 {translateChessopsError(t, error)}
               </Text>
             )}

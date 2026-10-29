@@ -1,0 +1,16 @@
+.root[data-variant="transparent"],
+.root[data-variant="subtle"] {
+  color: var(--ai-color, var(--cf-foreground));
+}
+
+.root:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .root[data-variant="transparent"]:hover:not(:disabled, [data-disabled]),
+  .root[data-variant="subtle"]:hover:not(:disabled, [data-disabled]) {
+    background: var(--cf-interactive-hover);
+  }
+}

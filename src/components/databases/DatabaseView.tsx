@@ -87,7 +87,7 @@ function DatabaseView() {
         <Center ref={ref} h="100%">
           {resolution.status === "loading" && listingFailure(error) !== "silent" ? (
             <Stack role="alert" align="center">
-              <Text c="red" className="wrap-anywhere">
+              <Text c="danger" className="wrap-anywhere">
                 {databaseLoadFailureMessage(error, t)}
               </Text>
               <Button onClick={() => void mutate()}>
@@ -108,7 +108,7 @@ function DatabaseView() {
       <Box p="sm" h="100%">
         <Center ref={ref} h="100%">
           <Stack align="center" role={preserveUnread ? "alert" : undefined}>
-            <Text c={preserveUnread ? "red" : "dimmed"} className="wrap-anywhere">
+            <Text c={preserveUnread ? "danger" : "dimmed"} className="wrap-anywhere">
               {preserveUnread
                 ? unreadMatches.length === 1
                   ? unreadMatches[0].error

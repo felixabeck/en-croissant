@@ -20,7 +20,6 @@ import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   fontSizeAtom,
   pieceSetAtom,
-  primaryColorAtom,
   referenceDbAtom,
   spellCheckAtom,
   telemetryEnabledAtom,
@@ -111,7 +110,7 @@ async function installUpdate(update: Update, signal: AbortSignal) {
     if (signal.aborted) return;
     warn(`Failed to install update ${update.version}: ${e}`);
     notifications.show({
-      color: "red",
+      color: "danger",
       title: t("Updater.InstallFailed"),
       message: String(e),
     });
@@ -200,7 +199,6 @@ export function useAppStartup() {
 }
 
 export default function App() {
-  const primaryColor = useAtomValue(primaryColorAtom);
   const pieceSet = useAtomValue(pieceSetAtom);
   const fontSize = useAtomValue(fontSizeAtom);
   const spellCheck = useAtomValue(spellCheckAtom);
@@ -214,10 +212,7 @@ export default function App() {
     document.documentElement.style.fontSize = `${fontSize}%`;
   }, [fontSize]);
 
-  const theme = useMemo(
-    () => createAppTheme({ primaryColor, spellCheck, fontSize }),
-    [primaryColor, spellCheck, fontSize],
-  );
+  const theme = useMemo(() => createAppTheme({ spellCheck, fontSize }), [spellCheck, fontSize]);
 
   return (
     <DndProvider backend={HTML5Backend}>

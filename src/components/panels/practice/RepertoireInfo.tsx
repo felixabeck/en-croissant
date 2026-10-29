@@ -387,7 +387,7 @@ function RepertoireInfo() {
     return (
       <Stack h="100%" p="sm" className={`${paneClasses.root} ${paneClasses.content}`}>
         <TreeStatsBar stats={stats} t={t} />
-        <Alert icon={<IconInfoCircle />} color={selectedReference ? "yellow" : undefined}>
+        <Alert icon={<IconInfoCircle />} color={selectedReference ? "warning" : undefined}>
           {selectedReference
             ? t("Collections.Unavailable", {
                 defaultValue:
@@ -864,7 +864,7 @@ function CoverageFeedback({
       <Alert
         className={paneClasses.feedback}
         classNames={{ body: paneClasses.feedbackBody }}
-        color="red"
+        color="danger"
         title={t("Common.Error")}
       >
         <Button
@@ -908,10 +908,10 @@ function CoverageFeedback({
       <Divider />
       <Paper p="sm" withBorder>
         <Group gap="xs" justify="center">
-          <ThemeIcon size="sm" color="green" variant="light" radius="xl">
+          <ThemeIcon size="sm" color="success" variant="light" radius="xl">
             <IconCheck size={14} />
           </ThemeIcon>
-          <Text fz="sm" c="green" fw={500}>
+          <Text fz="sm" c="success" fw={500}>
             {t("Board.Practice.Build.NoGapsFound")}
           </Text>
         </Group>
@@ -922,9 +922,9 @@ function CoverageFeedback({
 
 function getCoverageColor(coverage: number): string {
   if (coverage <= 0) return "gray";
-  if (coverage < 0.33) return "red";
-  if (coverage < 0.67) return "yellow";
-  return "green";
+  if (coverage < 0.33) return "danger";
+  if (coverage < 0.67) return "warning";
+  return "success";
 }
 
 function MoveRow({
@@ -957,7 +957,7 @@ function MoveRow({
       px="xs"
       className={classes.moveRow}
       style={{
-        borderBottom: "1px solid var(--mantine-color-dark-5)",
+        borderBottom: "1px solid var(--cf-border)",
         borderRadius: 0,
         opacity: dimmed ? 0.45 : 1,
       }}
@@ -968,7 +968,7 @@ function MoveRow({
             {notation}
           </Text>
           {move.inRepertoire && (
-            <ThemeIcon size="xs" color="green" variant="transparent">
+            <ThemeIcon size="xs" color="success" variant="transparent">
               <IconCheck size={12} />
             </ThemeIcon>
           )}
@@ -991,13 +991,13 @@ function MoveRow({
             withArrow
           >
             <Progress.Root size="xl" w={100}>
-              <Progress.Section value={wPct} color="white">
-                {wPct > 20 && <Progress.Label c="black">{wPct}</Progress.Label>}
+              <Progress.Section value={wPct} color="var(--cf-eval-bar-light)">
+                {wPct > 20 && <Progress.Label c="var(--cf-eval-bar-dark)">{wPct}</Progress.Label>}
               </Progress.Section>
-              <Progress.Section value={dPct} color="gray">
+              <Progress.Section value={dPct} color="var(--cf-chart-4)">
                 {dPct > 20 && <Progress.Label>{dPct}</Progress.Label>}
               </Progress.Section>
-              <Progress.Section value={bPct} color="dark">
+              <Progress.Section value={bPct} color="var(--cf-eval-bar-dark)">
                 {bPct > 20 && <Progress.Label>{bPct}</Progress.Label>}
               </Progress.Section>
             </Progress.Root>
@@ -1045,7 +1045,7 @@ function GapButton({
       py="sm"
       px="xs"
       style={{
-        borderBottom: "1px solid var(--mantine-color-dark-5)",
+        borderBottom: "1px solid var(--cf-border)",
         borderRadius: 0,
       }}
     >

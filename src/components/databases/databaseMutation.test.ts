@@ -60,7 +60,7 @@ describe("database conversion refresh outcome", () => {
                     "Failed import database refresh failed: reload denied at [path]",
                 );
                 expect(notify).toHaveBeenCalledExactlyOnceWith({
-                    color: "red",
+                    color: "danger",
                     title: "Common.Error",
                     message: "reload denied at [path]",
                 });
@@ -124,7 +124,7 @@ describe("database conversion refresh outcome", () => {
             ),
         ).resolves.toBe(result);
         expect(notify).toHaveBeenCalledExactlyOnceWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "This database folder is no longer available. Choose another.",
         });
@@ -154,7 +154,7 @@ describe("database conversion refresh outcome", () => {
                 "Failed import database refresh failed: reload denied at [path]",
             );
             expect(notify).toHaveBeenCalledExactlyOnceWith({
-                color: "red",
+                color: "danger",
                 title: "Common.Error",
                 message: message === "Cancellation" ? "reload denied at [path]" : message,
             });
@@ -402,7 +402,7 @@ describe("PGN export picker", () => {
             setLoading,
         });
         expect(notify).toHaveBeenCalledWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "permission denied",
         });
@@ -489,7 +489,7 @@ describe("Add Games picker", () => {
             runConversion,
         });
         expect(notify).toHaveBeenCalledWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "permission denied",
         });
@@ -508,7 +508,7 @@ describe("Add Games picker", () => {
         expect(runConversion).toHaveBeenCalledOnce();
         expect(store.get(databaseConversionStateAtom)).toEqual([]);
         expect(notify).toHaveBeenCalledWith({
-            color: "red",
+            color: "danger",
             title: "Common.Error",
             message: "convert failed",
         });

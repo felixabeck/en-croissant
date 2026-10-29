@@ -778,7 +778,7 @@ test.each(["new import", "add games"])(
       "Failed import database refresh failed: reload denied at [path]",
     );
     expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "reload denied at [path]",
     });
@@ -958,7 +958,7 @@ test("AccountCard native import failure clears the conversion it owns", async ()
     expect(conversionState()).toEqual([]);
   });
   expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "convert failed",
   });
@@ -1192,7 +1192,7 @@ test("a failed database rename surfaces an error notification", async () => {
   await editDatabaseSetting("Common.Name", "input", "Renamed");
   await waitForSettingsDebounce();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "rename failed",
   });
@@ -1233,7 +1233,7 @@ test.each(
     expect(buttonByText(label)?.getAttribute("data-loading")).toBeNull();
     expect(mocks.notify.mock.calls).toEqual(
       outcome === "failed"
-        ? [[{ color: "red", title: "Common.Error", message: "cleanup failed" }]]
+        ? [[{ color: "danger", title: "Common.Error", message: "cleanup failed" }]]
         : [],
     );
     expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + 1);
@@ -1252,7 +1252,7 @@ test("a failed player merge surfaces an error notification", async () => {
 
   expect(mocks.mergePlayers).toHaveBeenCalledExactlyOnceWith(handleB, 1, 2);
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: "merge failed",
   });
@@ -1315,7 +1315,7 @@ test.each([
     expect(indexCheckbox().checked).toBe(outcome === "failed" ? indexed : !indexed);
     expect(mocks.notify.mock.calls).toEqual(
       outcome === "failed"
-        ? [[{ color: "red", title: "Common.Error", message: "index failed" }]]
+        ? [[{ color: "danger", title: "Common.Error", message: "index failed" }]]
         : [],
     );
     expect(indexCheckbox().disabled).toBe(false);

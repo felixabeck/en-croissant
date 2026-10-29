@@ -64,7 +64,7 @@ function createAccountObserver(store: Store) {
                 if (completion.publication && completion.publication.durability !== "Durable") {
                     notifications.show({
                         message: i18n.t("Home.Accounts.DownloadDurabilityUncertain"),
-                        color: "orange",
+                        color: "warning",
                     });
                 }
                 if (failure) {

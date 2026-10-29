@@ -49,6 +49,11 @@ async function closeSplashscreenSafely(): Promise<void> {
  * native account metadata has reconciled into public renderer sessions. */
 export function startApplication(): Promise<void> {
   if (applicationStartup) return applicationStartup;
+  try {
+    localStorage.removeItem("mantine-primary-color");
+  } catch {
+    // The retired appearance preference must never block startup when storage is refused.
+  }
   let workspaceReadFailure = false;
   try {
     initializeWorkspace();

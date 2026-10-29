@@ -574,7 +574,7 @@ test.each(["mounted", "unmounted", "remounted", "cancelled", "abort-message"] as
         : [
             [
               {
-                color: "red",
+                color: "danger",
                 title: "Common.Error",
                 message: view === "abort-message" ? "Canceled" : "Current lexer refused PGN",
               },

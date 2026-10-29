@@ -196,7 +196,7 @@ const hotkeys = vi.mocked(useHotkeys);
 
 function expectNotification(error: AppError) {
   expect(mocks.showNotification).toHaveBeenCalledWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: error.message,
   });
@@ -805,7 +805,7 @@ describe("BoardAnalysis add game durability", () => {
       message: "Could not refresh the PGN game count",
     });
     expect(mocks.showNotification).not.toHaveBeenCalledWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "FileFreshness.AddGameChanged",
     });
@@ -903,7 +903,7 @@ describe("BoardAnalysis add game durability", () => {
           : [
               [
                 {
-                  color: "red",
+                  color: "danger",
                   title: "Common.Error",
                   message: "Autosave failed",
                 },
@@ -962,7 +962,7 @@ describe("BoardAnalysis add game durability", () => {
 
     expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin.kind).toBe("file");
     expect(mocks.showNotification).not.toHaveBeenCalledWith({
-      color: "red",
+      color: "danger",
       title: "Common.Error",
       message: "Tab.SaveMayHaveBeenWritten",
     });

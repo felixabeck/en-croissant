@@ -1,0 +1,12 @@
+.dropdown {
+  background: var(--cf-popover);
+  color: var(--cf-popover-foreground);
+  border: 1px solid color-mix(in srgb, var(--cf-primary) 15%, transparent);
+  border-radius: var(--cf-radius-lg);
+  box-shadow: var(--cf-shadow-elevated);
+}
+
+.arrow {
+  background: var(--cf-popover);
+  border-color: color-mix(in srgb, var(--cf-primary) 15%, transparent);
+}

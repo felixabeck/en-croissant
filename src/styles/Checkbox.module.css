@@ -1,0 +1,27 @@
+.input {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--cf-radius-xs);
+  border: 2px solid color-mix(in srgb, var(--cf-muted-foreground) 40%, transparent);
+  background: transparent;
+}
+
+.inner {
+  width: 20px;
+  height: 20px;
+}
+
+.input:checked,
+.input[data-indeterminate] {
+  background: var(--cf-primary);
+  border-color: var(--cf-primary);
+}
+
+.icon {
+  color: var(--cf-primary-foreground);
+}
+
+.input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 2px;
+}

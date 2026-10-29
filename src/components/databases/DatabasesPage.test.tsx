@@ -540,7 +540,7 @@ describe("database folder recovery", () => {
       await clickChoose();
       expect(mocks.getDatabaseWorkspace).toHaveBeenCalledTimes(calls);
       expect(mocks.notify.mock.calls).toEqual(
-        message === "Cancellation" ? [] : [[{ color: "red", title: "Error", message }]],
+        message === "Cancellation" ? [] : [[{ color: "danger", title: "Error", message }]],
       );
       await clickChoose();
       expect(mocks.issueDatabaseWorkspace).toHaveBeenCalledTimes(2);
@@ -552,7 +552,7 @@ describe("database folder recovery", () => {
     mocks.issueDatabaseWorkspace.mockRejectedValueOnce(failure("changed", "conflict"));
     await clickChoose();
     expect(mocks.notify).toHaveBeenCalledWith({
-      color: "red",
+      color: "danger",
       title: "Error",
       message: "This database folder changed. Choose another.",
     });

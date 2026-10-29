@@ -446,7 +446,7 @@ test.each(["event-first", "command-first"] as const)(
       );
       expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
-          color: "red",
+          color: "danger",
           title: "Common.Error",
           message: "The service denied access to this request.",
         }),

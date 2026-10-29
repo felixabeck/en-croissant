@@ -132,9 +132,9 @@ function OutcomeBadge({
     .exhaustive();
 
   const color = match(category)
-    .with("win", () => (turn === "white" ? "white" : "black"))
-    .with("loss", () => (turn === "white" ? "black" : "white"))
-    .otherwise(() => "gray");
+    .with("win", () => (turn === "white" ? "var(--cf-eval-bar-light)" : "var(--cf-eval-bar-dark)"))
+    .with("loss", () => (turn === "white" ? "var(--cf-eval-bar-dark)" : "var(--cf-eval-bar-light)"))
+    .otherwise(() => "var(--cf-muted-foreground)");
 
   const label = wins
     ? normalizedCategory
@@ -145,7 +145,18 @@ function OutcomeBadge({
 
   return (
     <Group p="xs">
-      <Badge autoContrast color={color}>
+      <Badge
+        variant="filled"
+        color={color}
+        styles={{
+          root: {
+            color:
+              color === "var(--cf-eval-bar-dark)"
+                ? "var(--cf-eval-bar-light)"
+                : "var(--cf-eval-bar-dark)",
+          },
+        }}
+      >
         {label}
       </Badge>
       {["blessed-loss", "cursed-win", "maybe-win", "maybe-loss"].includes(category) && wins && (

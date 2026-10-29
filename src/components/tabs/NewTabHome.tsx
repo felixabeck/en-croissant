@@ -59,7 +59,7 @@ function RecentFileDuePositions({ file }: { file: string }) {
   if (stats.due + stats.unseen === 0) return null;
 
   return (
-    <Badge size="sm" variant="light" color="orange" leftSection={<IconTarget size="0.75rem" />}>
+    <Badge size="sm" variant="light" color="warning" leftSection={<IconTarget size="0.75rem" />}>
       {stats.due + stats.unseen} {t("Board.Practice.Due")}
     </Badge>
   );

@@ -2,34 +2,25 @@
   cursor: pointer;
   border-style: solid;
   padding: 1rem;
-  border-radius: var(--mantine-radius-md);
-  border-width: 2px;
-  border-color: transparent;
-  box-shadow: var(--mantine-shadow-xs);
+  border-radius: var(--cf-radius-lg);
+  border-width: 1px;
+  border-color: var(--cf-border);
+  background-color: var(--cf-card);
+  box-shadow: none;
 }
 
-[data-mantine-color-scheme="light"] .card {
-  background-color: var(--mantine-color-white);
-  border-color: var(--mantine-color-gray-2);
-}
-
-[data-mantine-color-scheme="dark"] .card {
-  background-color: var(--mantine-color-dark-6);
-  border-color: var(--mantine-color-dark-4);
+[data-mantine-color-scheme] .card {
+  background-color: var(--cf-card);
+  border-color: var(--cf-border);
 }
 
 .card:hover {
   box-shadow: var(--mantine-shadow-md);
 }
 
-[data-mantine-color-scheme="light"] .card:hover {
-  background-color: var(--mantine-color-white);
-  border-color: var(--mantine-color-gray-4);
-}
-
-[data-mantine-color-scheme="dark"] .card:hover {
-  background-color: var(--mantine-color-dark-5);
-  border-color: var(--mantine-color-dark-3);
+[data-mantine-color-scheme] .card:hover {
+  background-color: var(--cf-card);
+  border-color: color-mix(in srgb, var(--cf-primary) 20%, transparent);
 }
 
 .label {
@@ -52,12 +43,12 @@
 }
 
 .error {
-  border-color: var(--mantine-color-red-6) !important;
+  border-color: var(--cf-destructive) !important;
   border-width: 1px;
 }
 
 .error:hover {
-  border-color: var(--mantine-color-red-6);
+  border-color: var(--cf-destructive);
 }
 
 .selected {

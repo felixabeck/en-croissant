@@ -64,7 +64,7 @@ function Accounts() {
   const showAuthenticationFailed = useCallback(() => {
     notifications.show({
       message: t("Home.Accounts.AuthenticationFailed"),
-      color: "red",
+      color: "danger",
     });
   }, [t]);
 
@@ -74,7 +74,7 @@ function Accounts() {
         defaultValue:
           "The account is linked, but the save could not be fully confirmed. Do not retry.",
       }),
-      color: "orange",
+      color: "warning",
     });
   }, [t]);
 

@@ -16,7 +16,7 @@ afterEach(() => {
 test("notifies a real persistence failure", () => {
     reportPersistError(new Error("storage unavailable"));
     expect(notifications.show).toHaveBeenCalledWith({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: "storage unavailable",
     });

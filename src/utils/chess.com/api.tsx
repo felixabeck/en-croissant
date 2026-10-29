@@ -42,7 +42,7 @@ export async function getChessComAccount(player: string): Promise<ChessComStats 
     notifications.show({
       title: t("ChessCom.FetchAccountFailed"),
       message: t("ChessCom.InvalidResponse", { value: player }),
-      color: "red",
+      color: "danger",
       icon: <IconX />,
     });
     return null;
@@ -89,7 +89,7 @@ export async function getChesscomGame(gameURL: string) {
       notifications.show({
         title: t("ChessCom.EventUrlUnsupported"),
         message: t("ChessCom.EventUrlUnsupportedMessage"),
-        color: "red",
+        color: "danger",
         icon: <IconX />,
       });
       return null;
@@ -98,7 +98,7 @@ export async function getChesscomGame(gameURL: string) {
     notifications.show({
       title: t("ChessCom.UnsupportedUrlFormat"),
       message: t("ChessCom.UnsupportedUrlFormatMessage"),
-      color: "red",
+      color: "danger",
       icon: <IconX />,
     });
     return null;
@@ -120,7 +120,7 @@ export async function getChesscomGame(gameURL: string) {
     notifications.show({
       title: t("ChessCom.FetchGameFailed"),
       message: t("ChessCom.InvalidResponse", { value: gameURL }),
-      color: "red",
+      color: "danger",
       icon: <IconX />,
     });
     return null;

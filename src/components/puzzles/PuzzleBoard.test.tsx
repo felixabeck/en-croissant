@@ -119,7 +119,7 @@ test.each(["malformed", "e7e4"])(
     expect(mocks.playSound).not.toHaveBeenCalled();
     expect(mocks.notify).toHaveBeenCalledWith(
       expect.objectContaining({
-        color: "red",
+        color: "danger",
         title: "Common.Error",
         message: `${enUSCatalogue.translation["MoveInput.InvalidMove"]} (2)`,
       }),
@@ -236,7 +236,7 @@ test("PuzzleBoard rejects a malformed selected sequence before recording a wrong
   expect(changeCompletion).not.toHaveBeenCalled();
   expect(mocks.playSound).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
+    color: "danger",
     title: "Common.Error",
     message: `${enUSCatalogue.translation["MoveInput.InvalidMove"]} (2)`,
   });

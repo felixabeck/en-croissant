@@ -66,7 +66,6 @@ import { analytics } from "@/platform/analytics";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
-import ColorControl from "./ColorControl";
 import FontSizeSlider from "./FontSizeSlider";
 import KeybindInput from "./KeybindInput";
 import PiecesSelect from "./PiecesSelect";
@@ -464,18 +463,6 @@ export default function Page() {
         description: t("Settings.Appearance.BoardImage.Desc"),
         keywords: ["board", "image", "texture"],
         render: () => <BoardSelect />,
-      },
-      {
-        id: "accent-color",
-        category: "appearance",
-        title: t("Settings.Appearance.AccentColor"),
-        description: t("Settings.Appearance.AccentColor.Desc"),
-        keywords: ["accent", "color", "primary"],
-        render: () => (
-          <div style={{ width: 200, maxWidth: "100%" }}>
-            <ColorControl />
-          </div>
-        ),
       },
       // Repertoire settings
       {

@@ -97,7 +97,7 @@ export default function PieceComponent({
           backgroundPosition: "center",
           zIndex: 100,
           cursor: onClick ? "pointer" : "default",
-          border: selected ? "2px solid #228be6" : "2px solid transparent",
+          border: selected ? "2px solid var(--cf-primary)" : "2px solid transparent",
           borderRadius: "4px",
         }}
       />

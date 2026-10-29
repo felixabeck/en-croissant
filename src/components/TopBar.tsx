@@ -1,13 +1,4 @@
-import {
-  Box,
-  Button,
-  getDefaultZIndex,
-  Group,
-  Image,
-  Menu,
-  Text,
-  useComputedColorScheme,
-} from "@mantine/core";
+import { Box, Button, getDefaultZIndex, Group, Image, Menu, Text } from "@mantine/core";
 import { getCurrentWebviewWindow } from "@/platform/native";
 import { IconMenu2 } from "@tabler/icons-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -175,11 +166,6 @@ function TopBar({
       menuArea.current?.querySelector("button")?.focus({ preventScroll: true });
     }
   }, [compact]);
-  // Mantine's own scheme, not the OS preference. `useColorScheme` from @mantine/hooks
-  // reads prefers-color-scheme and ignores the in-app Theme setting entirely, so a dark
-  // app on a light desktop painted these labels dark-7 on the dark bar and the menu bar
-  // looked empty. `useComputedColorScheme` resolves the app scheme, "auto" included.
-  const colorScheme = useComputedColorScheme("dark");
   const [isMaximized, setIsMaximized] = useState(false);
   const windowControls = useMemo(
     () => bindWindowControls(appWindow, (error) => notifyUnlessCancelled(t("Common.Error"), error)),
@@ -247,10 +233,7 @@ function TopBar({
                       styles={{
                         root: {
                           transform: "none",
-                          color:
-                            colorScheme === "dark"
-                              ? "var(--mantine-color-gray-2)"
-                              : "var(--mantine-color-dark-7)",
+                          color: "var(--cf-foreground)",
                         },
                         label: {
                           fontWeight: "normal",
@@ -258,7 +241,6 @@ function TopBar({
                       }}
                       fz="0.8rem"
                       variant="subtle"
-                      color={colorScheme === "dark" ? "gray" : "dark"}
                       size="compact-xs"
                     >
                       {action.label}

@@ -207,7 +207,6 @@ test.each(states)(
     const button = host.querySelector("button");
     expect(button?.textContent).toBe("Try again");
     expect(createAppTheme).toHaveBeenCalledExactlyOnceWith({
-      primaryColor: "blue",
       spellCheck: false,
       fontSize: 100,
     });

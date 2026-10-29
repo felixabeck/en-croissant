@@ -1,0 +1,20 @@
+.track {
+  border-radius: var(--cf-radius-full);
+  background: color-mix(in srgb, var(--cf-muted-foreground) 30%, transparent);
+  border-color: transparent;
+}
+
+.input:checked + .track {
+  background: var(--cf-primary);
+  border-color: var(--cf-primary);
+}
+
+.thumb {
+  background: var(--cf-card);
+  border-color: transparent;
+}
+
+.input:focus-visible + .track {
+  outline: 2px solid color-mix(in srgb, var(--cf-ring) 30%, transparent);
+  outline-offset: 2px;
+}

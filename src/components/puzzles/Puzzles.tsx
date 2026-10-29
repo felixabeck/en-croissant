@@ -596,7 +596,7 @@ function PuzzleSessionView() {
           notifications.show({
             title: t("Common.Error"),
             message: normalizeError(error).message,
-            color: "red",
+            color: "danger",
           });
         }
       }
@@ -809,7 +809,7 @@ function PuzzleSessionView() {
                   );
                 } catch (error) {
                   notifications.show({
-                    color: "red",
+                    color: "danger",
                     title: t("Common.Error"),
                     message: normalizeError(error).message,
                   });
@@ -844,7 +844,7 @@ function PuzzleSessionView() {
             <Group gap="xs">
               <IconAction
                 label={t("Puzzle.DeleteDatabase")}
-                color="red"
+                color="danger"
                 disabled={!effectiveSelectedDb}
                 onClick={() => setDeleteModalOpened(true)}
               >
@@ -871,7 +871,7 @@ function PuzzleSessionView() {
                     <Alert
                       icon={<IconAlertTriangle />}
                       title={t("Puzzle.DatabaseOutdated")}
-                      color="yellow"
+                      color="warning"
                     >
                       {t("Puzzle.DatabaseOutdatedDesc")}
                     </Alert>
@@ -982,7 +982,7 @@ function PuzzleSessionView() {
               <Text
                 fw={700}
                 size="lg"
-                c={accuracy === null ? "dimmed" : accuracy >= 50 ? "teal" : "orange"}
+                c={accuracy === null ? "dimmed" : accuracy >= 50 ? "success" : "warning"}
               >
                 {accuracy !== null ? `${accuracy}%` : unavailableValue}
               </Text>
@@ -996,7 +996,7 @@ function PuzzleSessionView() {
                 <Text fw={700} size="lg">
                   {currentStreak}
                 </Text>
-                <IconFlame size={20} color="orange" />
+                <IconFlame size={20} color="var(--cf-warning)" />
               </Group>
             </Paper>
 
