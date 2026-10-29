@@ -10799,3 +10799,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Smallest change that makes the default board match ChessRiddle. Reversal path: restore the `gray.svg` default in `src/state/atoms.ts`. Recorded on the build branch as entry 09 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
 * **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"259670cc365020395adf4ebf705e4c60756eb73ed58ad4666daa48fe689334d6","input_sha256":"65666f92929b569e3aa651b987759f407432b3d07ab5e6057fa7c3e6638c0d4e","kind":"mutation-receipt","operation":"0707d4ed705dbce3be870132670b607c18eb765ab57c538f85626cebae18b4c4","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-23"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-24 — How are fonts loaded under the Tauri CSP?
+
+* **Question:** ChessRiddle uses Inter, JetBrains Mono and a Merida figurine font through next/font. How does ChessFable load them?
+* **Governs:** -
+* **Chosen:** Copy ChessRiddle's exact `.woff2` subset files into `public/fonts/` and declare them with `@font-face`, `unicode-range` and `font-display: swap`. The CSP stays unchanged (`default-src 'self'` covers same-origin fonts).
+* **Rejected:** A CDN (needs a CSP widening and network access); Fontsource packages (extra CSS in the bundle budget for subsets ChessFable does not ship).
+* **Reason:** Same files as ChessRiddle, offline, no security-scope change, and font binaries are not counted by the bundle budget. Reversal path: delete `public/fonts/` and the font stylesheet. Recorded on the build branch as entry 10 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
+* **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"69893cfd1414ee81ce116c1308289cdd001d9d7eb436eca7a27cbd78bbacd169","input_sha256":"c85f2e35d5bc128cb7145ed29da5b9de30a4c5fd97240b51b9da31c6879af18c","kind":"mutation-receipt","operation":"dcae95b81a3df36171a9c87eb3381371990f148ec56ed5b0f6ec10dbf82d6811","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-24"],"target":"decisions-ledger","v":1} -->
