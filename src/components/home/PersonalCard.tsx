@@ -1,5 +1,5 @@
 import { Box, Flex, Paper, Select, Tabs, Text } from "@mantine/core";
-import { IconInfoCircle } from "@tabler/icons-react";
+import { Info } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { useContext, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -54,7 +54,7 @@ function PersonalPlayerCard({
             right={0}
             onClick={() => setOpened(true)}
           >
-            <IconInfoCircle />
+            <Info />
           </IconAction>
         )}
         {setName ? (

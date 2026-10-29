@@ -1,5 +1,5 @@
 import { Box, Button, Group, Progress } from "@mantine/core";
-import { IconX } from "@tabler/icons-react";
+import { X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyListenerError } from "@/components/files/notifyError";
@@ -131,7 +131,7 @@ function ProgressButton({
           style={{ flexShrink: 0 }}
           onClick={() => void handleCancel()}
         >
-          <IconX size="1rem" />
+          <X size="1rem" />
         </IconAction>
       )}
     </Group>

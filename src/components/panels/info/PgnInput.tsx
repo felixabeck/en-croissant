@@ -10,7 +10,7 @@ import {
   Text,
   Textarea,
 } from "@mantine/core";
-import { IconCheck, IconCopy } from "@tabler/icons-react";
+import { Check, Copy } from "lucide-react";
 import deepEqual from "fast-deep-equal";
 import { useAtom } from "jotai";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -199,11 +199,7 @@ function PgnInput() {
             onClick={copy}
             style={{ position: "absolute", top: 15, right: 15 }}
           >
-            {copied ? (
-              <IconCheck style={{ width: rem(16) }} />
-            ) : (
-              <IconCopy style={{ width: rem(16) }} />
-            )}
+            {copied ? <Check style={{ width: rem(16) }} /> : <Copy style={{ width: rem(16) }} />}
           </IconAction>
         )}
       </CopyButton>

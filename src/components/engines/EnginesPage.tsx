@@ -23,16 +23,7 @@ import {
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import AppModal from "../common/AppModal";
-import {
-  IconAlertCircle,
-  IconCloud,
-  IconCopy,
-  IconCpu,
-  IconFolder,
-  IconPhotoPlus,
-  IconPlus,
-  IconSearch,
-} from "@tabler/icons-react";
+import { AlertCircle, Cloud, Copy, Brain, Folder, ImagePlus, Plus, Search } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -132,7 +123,7 @@ export default function EnginesPage() {
               <Input
                 size="sm"
                 style={{ flexGrow: 1, minWidth: 0 }}
-                leftSection={<IconSearch size="1rem" />}
+                leftSection={<Search size="1rem" />}
                 placeholder={t("Common.Search")}
                 value={search}
                 onChange={(e) => setSearch(e.currentTarget.value)}
@@ -143,7 +134,7 @@ export default function EnginesPage() {
                 size="lg"
                 onClick={() => setOpened(true)}
               >
-                <IconPlus size="1rem" />
+                <Plus size="1rem" />
               </IconAction>
             </Group>
             <Divider />
@@ -183,7 +174,7 @@ export default function EnginesPage() {
               <Center h="100%">
                 <Stack align="center" gap="sm">
                   <ThemeIcon size={64} radius="100%" variant="light" color="gray">
-                    <IconCpu size={32} />
+                    <Brain size={32} />
                   </ThemeIcon>
                   <Text c="dimmed" fw={500} ta="center">
                     {hasSearch ? t("Common.NoResults") : t("Engines.Empty.NoInstalled")}
@@ -208,7 +199,7 @@ export default function EnginesPage() {
             <Center h="100%">
               <Stack align="center" gap="sm">
                 <ThemeIcon size={80} radius="100%" variant="light" color="gray">
-                  <IconCpu size={40} />
+                  <Brain size={40} />
                 </ThemeIcon>
                 <Text c="dimmed" fw={500} size="lg">
                   {t("Engines.Settings.NoEngine")}
@@ -532,7 +523,7 @@ function EngineSettings({
                   }}
                   onClick={changeImage}
                 >
-                  <IconPhotoPlus size="2.5rem" />
+                  <ImagePlus size="2.5rem" />
                 </IconAction>
               }
             />
@@ -548,7 +539,7 @@ function EngineSettings({
 
         <Divider variant="dashed" label={t("Engines.Settings.AdvancedSettings")} />
         {configFailure && (
-          <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
+          <Alert icon={<AlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
             {configFailure.message}
           </Alert>
         )}
@@ -597,7 +588,7 @@ function EngineSettings({
                         />
                         <Button
                           variant="default"
-                          leftSection={<IconFolder size="1rem" />}
+                          leftSection={<Folder size="1rem" />}
                           onClick={() => {
                             void runUnlessCancelled(t("Common.Error"), async () => {
                               const draft = attachmentDraft.current;
@@ -620,7 +611,7 @@ function EngineSettings({
                       <Button
                         key={v.name}
                         variant="default"
-                        leftSection={<IconFolder size="1rem" />}
+                        leftSection={<Folder size="1rem" />}
                         onClick={() => {
                           void runUnlessCancelled(t("Common.Error"), async () => {
                             const draft = attachmentDraft.current;
@@ -686,7 +677,7 @@ function EngineSettings({
             {t("Engines.Settings.Reset")}
           </Button>
           <Button
-            leftSection={<IconCopy size="1rem" />}
+            leftSection={<Copy size="1rem" />}
             variant="default"
             onClick={() => {
               const owner = actionOwner.current;
@@ -879,7 +870,7 @@ export function EngineName({ engine, compact = false }: { engine: Engine; compac
       <EnginePortrait
         engine={engine}
         imageProps={{ h: "2.5rem", fit: "contain", flex: 0 }}
-        fallback={engine.type !== "local" ? <IconCloud size="2.5rem" /> : <IconCpu size="2.5rem" />}
+        fallback={engine.type !== "local" ? <Cloud size="2.5rem" /> : <Brain size="2.5rem" />}
       />
       <Stack gap={0} miw={0}>
         <Text

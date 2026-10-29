@@ -1,5 +1,5 @@
 import { Collapse, Divider, Group, ScrollArea, Stack, Text, useMantineTheme } from "@mantine/core";
-import { IconChevronDown } from "@tabler/icons-react";
+import { ChevronDown } from "lucide-react";
 import { atom, useAtom } from "jotai";
 import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
@@ -74,7 +74,7 @@ function AnnotationPanel() {
                 transform: showMoreSymbols ? "rotate(180deg)" : "rotate(0deg)",
               }}
             >
-              <IconChevronDown size="1rem" />
+              <ChevronDown size="1rem" />
             </IconAction>
           }
         />

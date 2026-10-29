@@ -1,5 +1,5 @@
 import { Alert, Center, Loader, ScrollArea, SimpleGrid } from "@mantine/core";
-import { IconAlertCircle } from "@tabler/icons-react";
+import { AlertCircle } from "lucide-react";
 import { useStore } from "jotai";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -73,7 +73,7 @@ export default function UpgradeEngineModal({
         </Center>
       )}
       {error ? (
-        <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
+        <Alert icon={<AlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
           {t(
             error instanceof EngineCatalogVerificationError
               ? "Engines.Upgrade.ErrorCatalog"

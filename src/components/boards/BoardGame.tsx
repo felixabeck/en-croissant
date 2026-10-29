@@ -14,13 +14,7 @@ import {
   Text,
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
-import {
-  IconArrowsExchange,
-  IconFileText,
-  IconPlus,
-  IconX,
-  IconZoomCheck,
-} from "@tabler/icons-react";
+import { ArrowRightLeft, FileText, Plus, X, ScanSearch } from "lucide-react";
 import type { Piece } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { makeUci, parseUci } from "chessops";
@@ -1316,7 +1310,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                       flex={0}
                       onClick={() => toggleLogsOpened()}
                     >
-                      <IconX size="1.2rem" />
+                      <X size="1.2rem" />
                     </IconAction>
                   </>
                 }
@@ -1355,7 +1349,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                           label={t("Board.Action.SwapColors", { defaultValue: "Swap colors" })}
                           onClick={cycleColor}
                         >
-                          <IconArrowsExchange />
+                          <ArrowRightLeft />
                         </IconAction>
                         <Text flex={1} ta="center" fz="lg" fw="bold">
                           {match(inputColor)
@@ -1463,7 +1457,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                         variant="default"
                         color="danger"
                         onClick={isEngineVsEngine ? handleAbort : handleResign}
-                        leftSection={<IconX />}
+                        leftSection={<X />}
                         loading={pendingCommand === "abort" || pendingCommand === "resign"}
                         disabled={pendingCommand !== null}
                       >
@@ -1471,14 +1465,14 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                       </Button>
                     )}
                     {gameState === "gameOver" && (
-                      <Button variant="default" onClick={handleNewGame} leftSection={<IconPlus />}>
+                      <Button variant="default" onClick={handleNewGame} leftSection={<Plus />}>
                         {t("Home.NewGame")}
                       </Button>
                     )}
                     <Button
                       variant="default"
                       onClick={() => changeToAnalysisMode()}
-                      leftSection={<IconZoomCheck />}
+                      leftSection={<ScanSearch />}
                     >
                       {t("Board.Analysis.Analyze")}
                     </Button>
@@ -1487,7 +1481,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
                       <Button
                         variant="default"
                         onClick={() => toggleLogsOpened()}
-                        leftSection={<IconFileText size="1rem" />}
+                        leftSection={<FileText size="1rem" />}
                       >
                         {t("Board.Analysis.Logs")}
                       </Button>

@@ -2,13 +2,7 @@ import { useTabAtom, useOwnerTab, useOwnerTabId } from "@/state/tabScope";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Paper, Portal, Stack, Tabs } from "@mantine/core";
 import { useHotkeys, useToggle, type HotkeyItem } from "@mantine/hooks";
-import {
-  IconDatabase,
-  IconInfoCircle,
-  IconNotes,
-  IconTargetArrow,
-  IconZoomCheck,
-} from "@tabler/icons-react";
+import { Database, Info, NotebookPen, Crosshair, ScanSearch } from "lucide-react";
 import type { Piece } from "chessops";
 import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -258,12 +252,12 @@ function BoardAnalysis() {
             <Tabs.List grow={!compactTabs}>
               {[
                 ...(isRepertoire
-                  ? [{ value: "practice", title: t("Board.Tabs.Practice"), Icon: IconTargetArrow }]
+                  ? [{ value: "practice", title: t("Board.Tabs.Practice"), Icon: Crosshair }]
                   : []),
-                { value: "analysis", title: t("Board.Tabs.Analysis"), Icon: IconZoomCheck },
-                { value: "database", title: t("Board.Tabs.Database"), Icon: IconDatabase },
-                { value: "annotate", title: t("Board.Tabs.Annotate"), Icon: IconNotes },
-                { value: "info", title: t("Board.Tabs.Info"), Icon: IconInfoCircle },
+                { value: "analysis", title: t("Board.Tabs.Analysis"), Icon: ScanSearch },
+                { value: "database", title: t("Board.Tabs.Database"), Icon: Database },
+                { value: "annotate", title: t("Board.Tabs.Annotate"), Icon: NotebookPen },
+                { value: "info", title: t("Board.Tabs.Info"), Icon: Info },
               ].map(({ value, title, Icon }) => (
                 <Tabs.Tab key={value} value={value} leftSection={<Icon size="1rem" />}>
                   {title}

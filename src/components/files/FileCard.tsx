@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { Box, Divider, Group, Stack, Text } from "@mantine/core";
 import { LibraryTypeBadge } from "@/components/library/presentation";
-import { IconEdit } from "@tabler/icons-react";
+import { Pencil } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -114,7 +114,7 @@ function FileCard({
             disabled={previewOmitted || selected.numGames <= 0 || page >= selected.numGames}
           />
           <IconAction label={t("Files.EditMetadata")} size="sm" onClick={onEditMetadata}>
-            <IconEdit />
+            <Pencil />
           </IconAction>
         </Group>
         <Text ta="center" c="dimmed" miw={0}>

@@ -1,6 +1,6 @@
 import { wrappingButton } from "@/components/common/wrappingButton";
 import { Button } from "@mantine/core";
-import { IconZoomCheck } from "@tabler/icons-react";
+import { ScanSearch } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -67,7 +67,7 @@ export function OpenGameButton({
   return (
     <Button
       variant="light"
-      leftSection={<IconZoomCheck size="1.2rem" />}
+      leftSection={<ScanSearch size="1.2rem" />}
       disabled={disabled || pending}
       aria-busy={pending}
       onClick={() => void onOpen()}

@@ -7,9 +7,9 @@ import { OpponentForm } from "./OpponentForm";
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconCpu: () => null,
-  IconUser: () => null,
+vi.mock("lucide-react", () => ({
+  Brain: () => null,
+  User: () => null,
 }));
 vi.mock("@/components/common/GoModeInput", () => ({ default: () => null }));
 vi.mock("@/components/common/TimeInput", () => ({ default: () => null }));

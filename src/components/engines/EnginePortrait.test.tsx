@@ -112,9 +112,9 @@ async function expectPortraits(src: string) {
 }
 function expectFallbacks() {
   expect(card().querySelector("img")).toBeNull();
-  expect(card().querySelector(".tabler-icon-cpu")).not.toBeNull();
+  expect(card().querySelector(".lucide-brain")).not.toBeNull();
   expect(selectImage().querySelector("img")).toBeNull();
-  expect(selectImage().querySelector(".tabler-icon-photo-plus")).not.toBeNull();
+  expect(selectImage().querySelector(".lucide-image-plus")).not.toBeNull();
 }
 
 beforeEach(() => {
@@ -179,7 +179,7 @@ test.each(["bundled", "custom"])(
     expect(checkboxes()).toHaveLength(2);
     expect(checkboxes()[0].checked).toBe(loaded);
     expect(checkboxes()[1].checked).toBe(loaded);
-    expect(host.querySelector(".tabler-icon-cpu")).not.toBeNull();
+    expect(host.querySelector(".lucide-brain")).not.toBeNull();
     expect(save).not.toHaveBeenCalled();
     await act(async () => image.click());
     expect(save).toHaveBeenCalledOnce();
@@ -290,6 +290,6 @@ test("cloud engines retain their cloud fallback without catalog resolution", asy
   records = [{ type: "lichess", id: "cloud", name: "Cloud", url: "https://lichess.org" }];
   await render();
   expect(card().querySelector("img")).toBeNull();
-  expect(card().querySelector(".tabler-icon-cloud")).not.toBeNull();
+  expect(card().querySelector(".lucide-cloud")).not.toBeNull();
   expect(mocks.verify).not.toHaveBeenCalled();
 });

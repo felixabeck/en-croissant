@@ -199,11 +199,11 @@ vi.mock("@mantine/core", () => ({
   }),
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconAlertCircle: () => null,
-  IconDatabase: () => null,
-  IconTrophy: () => null,
-  IconX: () => null,
+vi.mock("lucide-react", () => ({
+  AlertCircle: () => null,
+  Database: () => null,
+  Trophy: () => null,
+  X: () => null,
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

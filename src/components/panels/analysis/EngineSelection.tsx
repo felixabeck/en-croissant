@@ -1,5 +1,5 @@
 import { Center, Checkbox, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
-import { IconCloud, IconCpu } from "@tabler/icons-react";
+import { Cloud, Brain } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { memo } from "react";
@@ -17,9 +17,7 @@ function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () 
         <EnginePortrait
           engine={engine}
           imageProps={{ w: "1.5rem" }}
-          fallback={
-            engine.type !== "local" ? <IconCloud size="1.5rem" /> : <IconCpu size="1.5rem" />
-          }
+          fallback={engine.type !== "local" ? <Cloud size="1.5rem" /> : <Brain size="1.5rem" />}
         />
         <Text lineClamp={1} fz="sm">
           {engine.name}

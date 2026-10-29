@@ -39,10 +39,10 @@ vi.mock("@mantine/core", () => {
     Table: { Tr: Container, Td: Container, Th: Container },
   };
 });
-vi.mock("@tabler/icons-react", () => ({
-  IconCheck: () => null,
-  IconChevronDown: () => null,
-  IconCopy: () => null,
+vi.mock("lucide-react", () => ({
+  Check: () => null,
+  ChevronDown: () => null,
+  Copy: () => null,
 }));
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({ label, onClick, children, disabled }: any) => (

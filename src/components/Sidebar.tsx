@@ -1,12 +1,5 @@
 import { AppShellSection, Stack, Tooltip } from "@mantine/core";
-import {
-  type Icon,
-  IconChess,
-  IconCpu,
-  IconDatabase,
-  IconSettings,
-  IconUser,
-} from "@tabler/icons-react";
+import { type LucideIcon, ChessKnight, Brain, Library, Settings, User } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import cx from "clsx";
 import { useTranslation } from "react-i18next";
@@ -20,7 +13,7 @@ import classes from "./Sidebar.module.css";
 type SidebarPath = "/" | "/accounts" | "/library" | "/databases" | "/engines" | "/settings";
 
 interface NavbarLinkProps {
-  icon: Icon;
+  icon: LucideIcon;
   label: string;
   target?: DatabaseRouteTarget | { to: SidebarPath };
   matchPath: SidebarPath;
@@ -46,21 +39,21 @@ function NavbarLink({ matchPath, target = { to: matchPath }, icon: Icon, label }
         className={cx(classes.link, active && classes.active)}
         aria-current={active ? "page" : undefined}
       >
-        <Icon size="1.5rem" stroke={1.5} />
+        <Icon size="1.5rem" strokeWidth={2} />
       </Link>
     </Tooltip>
   );
 }
 
 const linksdata = [
-  { icon: IconChess, labelKey: "SideBar.Board", matchPath: "/" },
-  { icon: IconUser, labelKey: "SideBar.User", matchPath: "/accounts" },
+  { icon: ChessKnight, labelKey: "SideBar.Board", matchPath: "/" },
+  { icon: User, labelKey: "SideBar.User", matchPath: "/accounts" },
   {
-    icon: IconDatabase,
+    icon: Library,
     labelKey: "SideBar.Library",
     matchPath: "/library",
   },
-  { icon: IconCpu, labelKey: "SideBar.Engines", matchPath: "/engines" },
+  { icon: Brain, labelKey: "SideBar.Engines", matchPath: "/engines" },
 ] as const;
 
 export function SideBar() {
@@ -85,7 +78,7 @@ export function SideBar() {
       </AppShellSection>
       <AppShellSection>
         <Stack justify="center" gap={0}>
-          <NavbarLink icon={IconSettings} label={t("SideBar.Settings")} matchPath="/settings" />
+          <NavbarLink icon={Settings} label={t("SideBar.Settings")} matchPath="/settings" />
         </Stack>
       </AppShellSection>
     </>

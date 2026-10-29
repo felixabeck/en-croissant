@@ -142,7 +142,7 @@ vi.mock("@mantine/core", () => ({
     </label>
   ),
 }));
-vi.mock("@tabler/icons-react", () => ({ IconAlertCircle: () => null, IconX: () => null }));
+vi.mock("lucide-react", () => ({ AlertCircle: () => null, X: () => null }));
 
 import { TauriCommandError } from "@/platform/tauri";
 import { convertLocalDatabase } from "./AddDatabase";

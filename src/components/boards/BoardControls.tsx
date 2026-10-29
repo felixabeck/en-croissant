@@ -1,16 +1,16 @@
 import { useTabAtom, useOwnerTab } from "@/state/tabScope";
 import { Stack } from "@mantine/core";
 import {
-  IconArrowBack,
-  IconCamera,
-  IconDeviceFloppy,
-  IconEdit,
-  IconEditOff,
-  IconEraser,
-  IconSwitchVertical,
-  IconTarget,
-  IconZoomCheck,
-} from "@tabler/icons-react";
+  Undo2,
+  Camera,
+  Save,
+  Pencil,
+  PencilOff,
+  Eraser,
+  ArrowUpDown,
+  Target,
+  ScanSearch,
+} from "lucide-react";
 import { tauri } from "@/platform/tauri";
 import domtoimage from "dom-to-image";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -96,7 +96,7 @@ function BoardControls({
   return (
     <Stack gap={4} align="center">
       <IconAction label={t("Board.Action.TakeSnapshot")} onClick={() => takeSnapshot()}>
-        <IconCamera size="1.2rem" />
+        <Camera size="1.2rem" />
       </IconAction>
       {canTakeBack && onTakeBack && (
         <IconAction
@@ -104,7 +104,7 @@ function BoardControls({
           onClick={() => onTakeBack()}
           pending={takeBackPending}
         >
-          <IconArrowBack />
+          <Undo2 />
         </IconAction>
       )}
       <IconAction
@@ -115,15 +115,11 @@ function BoardControls({
         )}
         onClick={changeTabType}
       >
-        {currentTab?.type === "analysis" ? (
-          <IconTarget size="1.2rem" />
-        ) : (
-          <IconZoomCheck size="1.2rem" />
-        )}
+        {currentTab?.type === "analysis" ? <Target size="1.2rem" /> : <ScanSearch size="1.2rem" />}
       </IconAction>
       {!eraseDrawablesOnClick && (
         <IconAction label={t("Board.Action.ClearDrawings")} onClick={() => clearShapes()}>
-          <IconEraser size="1.2rem" />
+          <Eraser size="1.2rem" />
         </IconAction>
       )}
       {(!disableVariations || allowEditing) && (
@@ -132,7 +128,7 @@ function BoardControls({
           onClick={() => toggleEditingMode()}
           pressed={editingMode}
         >
-          {editingMode ? <IconEditOff size="1.2rem" /> : <IconEdit size="1.2rem" />}
+          {editingMode ? <PencilOff size="1.2rem" /> : <Pencil size="1.2rem" />}
         </IconAction>
       )}
 
@@ -142,7 +138,7 @@ function BoardControls({
           onClick={() => saveFile()}
           variant={dirty && !autoSave ? "default" : "transparent"}
         >
-          <IconDeviceFloppy size="1.2rem" />
+          <Save size="1.2rem" />
         </IconAction>
       )}
       <IconAction
@@ -151,7 +147,7 @@ function BoardControls({
         })}
         onClick={() => toggleOrientation()}
       >
-        <IconSwitchVertical size="1.2rem" />
+        <ArrowUpDown size="1.2rem" />
       </IconAction>
     </Stack>
   );

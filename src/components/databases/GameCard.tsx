@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { Box, Divider, Group, Paper, Stack, Text } from "@mantine/core";
-import { IconTrash } from "@tabler/icons-react";
+import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useContext, useEffect, useRef, useState } from "react";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -87,7 +87,7 @@ function GameCard({
             pending={deleting}
             onClick={() => void deleteGame()}
           >
-            <IconTrash size="1.2rem" stroke={1.5} />
+            <Trash2 size="1.2rem" strokeWidth={2} />
           </IconAction>
         </Group>
         <Divider />

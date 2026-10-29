@@ -2,7 +2,7 @@ import { useOwnerTab } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
-import { IconPlus } from "@tabler/icons-react";
+import { Plus } from "lucide-react";
 import { errorUnlessCancelled, normalizeError } from "@/platform/errors";
 import { useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
 import { use, useEffect, useRef, useState } from "react";
@@ -626,7 +626,7 @@ function GameSelectorAccordion({
                     addGame();
                   }}
                 >
-                  <IconPlus size="0.9rem" />
+                  <Plus size="0.9rem" />
                 </IconAction>
               )}
             </Group>

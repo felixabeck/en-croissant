@@ -1,7 +1,7 @@
 import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { Box, Center, Group, Text, useMantineTheme, VisuallyHidden } from "@mantine/core";
-import { IconChevronRight } from "@tabler/icons-react";
+import { ChevronRight } from "lucide-react";
 import {
   makeSquare,
   makeUci,
@@ -512,7 +512,7 @@ function Board({
                       e.preventDefault();
                     }}
                   >
-                    <IconChevronRight />
+                    <ChevronRight />
                   </IconAction>
                 </Center>
               )}

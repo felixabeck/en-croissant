@@ -17,7 +17,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { IconAlertCircle } from "@tabler/icons-react";
+import { AlertCircle } from "lucide-react";
 import { useSetAtom } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -230,11 +230,7 @@ function AddDatabase({
                 );
               })}
               {error && (
-                <Alert
-                  icon={<IconAlertCircle size="1rem" />}
-                  title={t("Common.Error")}
-                  color="danger"
-                >
+                <Alert icon={<AlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
                   {t(
                     error instanceof CatalogVerificationError
                       ? "Databases.Add.ErrorCatalog"

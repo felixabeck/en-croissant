@@ -1,5 +1,5 @@
 import { Paper, Stack, Tabs, Text, useMantineTheme } from "@mantine/core";
-import { IconEye } from "@tabler/icons-react";
+import { Eye } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { DataTable, type DataTableSortStatus } from "mantine-datatable";
@@ -178,7 +178,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
                         });
                       }}
                     >
-                      <IconEye size="1rem" stroke={1.5} />
+                      <Eye size="1rem" strokeWidth={2} />
                     </IconAction>
                   ),
                 },

@@ -16,14 +16,14 @@ import {
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import {
-  IconGripVertical,
-  IconPinned,
-  IconPinnedOff,
-  IconPlayerPause,
-  IconPlayerPlay,
-  IconSettings,
-  IconTargetArrow,
-} from "@tabler/icons-react";
+  GripVertical,
+  Pin,
+  PinOff,
+  Pause,
+  Play,
+  Settings as SettingsIcon,
+  Crosshair,
+} from "lucide-react";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import { memo, startTransition, useCallback } from "react";
@@ -172,7 +172,7 @@ function BestMovesComponent({
             }}
             style={{ marginLeft: 12 }}
           >
-            {settings.enabled ? <IconPlayerPause size="1rem" /> : <IconPlayerPlay size="1rem" />}
+            {settings.enabled ? <Pause size="1rem" /> : <Play size="1rem" />}
           </IconAction>
         </Stack>
         <Accordion.Control>
@@ -199,7 +199,7 @@ function BestMovesComponent({
             variant="transparent"
             style={{ marginTop: "auto", marginBottom: "auto" }}
           >
-            <IconTargetArrow color={threat ? "red" : undefined} size="1rem" />
+            <Crosshair color={threat ? "red" : undefined} size="1rem" />
           </IconAction>
           <IconAction
             label={isDetached ? t("Board.Analysis.Unpin") : t("Board.Analysis.Pin")}
@@ -213,7 +213,7 @@ function BestMovesComponent({
             variant={isDetached ? "light" : "transparent"}
             style={{ marginTop: "auto", marginBottom: "auto" }}
           >
-            {isDetached ? <IconPinnedOff size="1rem" /> : <IconPinned size="1rem" />}
+            {isDetached ? <PinOff size="1rem" /> : <Pin size="1rem" />}
           </IconAction>
           <IconAction
             label={t("Engines.Settings.AdvancedSettings")}
@@ -222,7 +222,7 @@ function BestMovesComponent({
             onClick={() => toggleSettingsOn()}
             style={{ marginTop: "auto", marginBottom: "auto" }}
           >
-            <IconSettings size="1rem" />
+            <SettingsIcon size="1rem" />
           </IconAction>
           <IconAction
             label={t("Board.Analysis.ReorderEngine")}
@@ -230,7 +230,7 @@ function BestMovesComponent({
             style={{ marginRight: 8, marginTop: "auto", marginBottom: "auto", cursor: "grab" }}
             {...dragHandleProps}
           >
-            <IconGripVertical size="1rem" />
+            <GripVertical size="1rem" />
           </IconAction>
         </Group>
       </Box>

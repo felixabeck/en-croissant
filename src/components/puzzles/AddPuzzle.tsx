@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { Alert, Box, Button, Divider, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
-import { IconAlertCircle } from "@tabler/icons-react";
+import { AlertCircle } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
@@ -85,7 +85,7 @@ function AddPuzzle({
             );
           })}
           {error && (
-            <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
+            <Alert icon={<AlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
               {t(
                 error instanceof CatalogVerificationError
                   ? "Databases.Add.ErrorCatalog"

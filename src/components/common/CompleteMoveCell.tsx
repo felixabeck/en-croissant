@@ -1,13 +1,6 @@
 import { useOwnerTab } from "@/state/tabScope";
 import { Box, Menu, Text } from "@mantine/core";
-import {
-  IconArrowsJoin,
-  IconChevronsUp,
-  IconChevronUp,
-  IconCopy,
-  IconFlag,
-  IconX,
-} from "@tabler/icons-react";
+import { Merge, ArrowUpRight, Copy, Flag, Trash2 } from "lucide-react";
 import equal from "fast-deep-equal";
 import { memo, useContext, useMemo, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -187,7 +180,7 @@ function TranspositionAction({ onClick }: { onClick: () => void }) {
       size="xs"
       onClick={onClick}
     >
-      <IconArrowsJoin size="0.875rem" />
+      <Merge size="0.875rem" />
     </IconAction>
   );
 }
@@ -238,7 +231,7 @@ function OpenMoveMenu({
       <Menu.Dropdown>
         {tabFile?.metadata.type === "repertoire" && (
           <Menu.Item
-            leftSection={<IconFlag size="0.875rem" />}
+            leftSection={<Flag size="0.875rem" />}
             onClick={() => {
               actions.setStart(path);
               onClose();
@@ -248,7 +241,7 @@ function OpenMoveMenu({
           </Menu.Item>
         )}
         <Menu.Item
-          leftSection={<IconChevronsUp size="0.875rem" />}
+          leftSection={<ArrowUpRight size="0.875rem" />}
           onClick={() => {
             actions.promoteToMainline(path);
             onClose();
@@ -257,7 +250,7 @@ function OpenMoveMenu({
           {t("Menu.PromoteToMainLine")}
         </Menu.Item>
         <Menu.Item
-          leftSection={<IconChevronUp size="0.875rem" />}
+          leftSection={<ArrowUpRight size="0.875rem" />}
           onClick={() => {
             actions.promoteVariation(path);
             onClose();
@@ -266,7 +259,7 @@ function OpenMoveMenu({
           {t("Menu.PromoteVariation")}
         </Menu.Item>
         <Menu.Item
-          leftSection={<IconCopy size="0.875rem" />}
+          leftSection={<Copy size="0.875rem" />}
           onClick={() => {
             actions.copyVariationPgn(path);
             onClose();
@@ -276,7 +269,7 @@ function OpenMoveMenu({
         </Menu.Item>
         <Menu.Item
           color="red"
-          leftSection={<IconX size="0.875rem" />}
+          leftSection={<Trash2 size="0.875rem" />}
           onClick={() => {
             actions.deleteMove(path);
             onClose();

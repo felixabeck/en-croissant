@@ -11,7 +11,7 @@ import {
 } from "@mantine/core";
 import { DateInput } from "@mantine/dates";
 import { useHotkeys } from "@mantine/hooks";
-import { IconDotsVertical } from "@tabler/icons-react";
+import { EllipsisVertical } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import dayjs from "dayjs";
 import { useAtom } from "jotai";
@@ -234,7 +234,7 @@ function GameTable() {
             style={{ flexGrow: 0 }}
             onClick={() => toggleOpenedSettings()}
           >
-            <IconDotsVertical size="1rem" />
+            <EllipsisVertical size="1rem" />
           </IconAction>
         </Flex>
       }

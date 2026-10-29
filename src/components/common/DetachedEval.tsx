@@ -1,6 +1,6 @@
 import { useOwnerTabId } from "@/state/tabScope";
 import { Group, Paper, Text, useMantineTheme } from "@mantine/core";
-import { IconPinnedOff, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react";
+import { PinOff, Pause, Play } from "lucide-react";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
@@ -76,11 +76,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
             onClick={() => setSettings((s) => ({ ...s, enabled: !s.enabled }))}
             pressed={settings.enabled}
           >
-            {settings.enabled ? (
-              <IconPlayerPause size="0.875rem" />
-            ) : (
-              <IconPlayerPlay size="0.875rem" />
-            )}
+            {settings.enabled ? <Pause size="0.875rem" /> : <Play size="0.875rem" />}
           </IconAction>
           <Text fw={700} fz="sm" style={{ whiteSpace: "nowrap" }}>
             {engine.name}
@@ -123,7 +119,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
           )}
         </Group>
         <IconAction label={t("Engine.Unpin")} size="sm" variant="subtle" onClick={onClose}>
-          <IconPinnedOff size="0.875rem" />
+          <PinOff size="0.875rem" />
         </IconAction>
       </Group>
     </Paper>

@@ -1,12 +1,6 @@
 import { LibraryTypeBadge } from "@/components/library/presentation";
 import { Badge, Box, Group, Text } from "@mantine/core";
-import {
-  IconFileDescription,
-  IconFolder,
-  IconFolderOpen,
-  IconFolderSymlink,
-  IconTrash,
-} from "@tabler/icons-react";
+import { FileText, Folder, FolderOpen, FolderSymlink, Trash2 } from "lucide-react";
 import { useAtom } from "jotai";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
@@ -301,12 +295,12 @@ export default function DirectoryTree({
             <>
               {isDirectory ? (
                 open ? (
-                  <IconFolderOpen size={16} />
+                  <FolderOpen size={16} />
                 ) : (
-                  <IconFolder size={16} />
+                  <Folder size={16} />
                 )
               ) : (
-                <IconFileDescription size={16} />
+                <FileText size={16} />
               )}
             </>
             <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
@@ -340,7 +334,7 @@ export default function DirectoryTree({
                 void onRequestDelete(node);
               }}
             >
-              <IconTrash size={16} aria-hidden />
+              <Trash2 size={16} aria-hidden />
             </IconAction>
             <IconAction
               label={t("Files.Move")}
@@ -351,7 +345,7 @@ export default function DirectoryTree({
                 onRequestMove?.(node);
               }}
             >
-              <IconFolderSymlink size={16} aria-hidden />
+              <FolderSymlink size={16} aria-hidden />
             </IconAction>
           </Group>
         )}

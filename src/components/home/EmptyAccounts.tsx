@@ -1,5 +1,5 @@
 import { Button, Center, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconUserPlus } from "@tabler/icons-react";
+import { UserPlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 export function EmptyAccounts({ onAddAccount }: { onAddAccount: () => void }) {
@@ -11,7 +11,7 @@ export function EmptyAccounts({ onAddAccount }: { onAddAccount: () => void }) {
     <Center style={{ flex: "1 0 auto" }} maw="100%" miw={0}>
       <Stack align="center" gap="md" maw="100%" miw={0}>
         <ThemeIcon size={80} radius="100%" variant="light" color="gold">
-          <IconUserPlus size={40} />
+          <UserPlus size={40} />
         </ThemeIcon>
         <Title order={3} ta="center" className="wrap-anywhere">
           {t("Home.Accounts.Empty.Title")}

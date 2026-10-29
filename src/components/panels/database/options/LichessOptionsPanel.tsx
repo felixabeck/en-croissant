@@ -1,13 +1,6 @@
 import { Group, Select, Stack, TextInput } from "@mantine/core";
 import { MonthPickerInput } from "@mantine/dates";
-import {
-  IconChevronRight,
-  IconChevronsRight,
-  IconClockHour4,
-  IconFlame,
-  IconHourglassHigh,
-  IconSend,
-} from "@tabler/icons-react";
+import { ChevronRight, ChevronsRight, Clock4, Flame, Hourglass, Send } from "lucide-react";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
@@ -37,12 +30,12 @@ const LichessOptionsPanel = () => {
   function mapTimeControl(speed: LichessGameSpeed): ToggleButtonGroupOption<LichessGameSpeed> {
     const name = `${speed.charAt(0).toUpperCase()}${speed.slice(1)}`;
     const icon = match(speed)
-      .with("ultraBullet", () => <IconChevronsRight />)
-      .with("bullet", () => <IconChevronRight />)
-      .with("blitz", () => <IconFlame />)
-      .with("rapid", () => <IconHourglassHigh />)
-      .with("classical", () => <IconClockHour4 />)
-      .with("correspondence", () => <IconSend />)
+      .with("ultraBullet", () => <ChevronsRight />)
+      .with("bullet", () => <ChevronRight />)
+      .with("blitz", () => <Flame />)
+      .with("rapid", () => <Hourglass />)
+      .with("classical", () => <Clock4 />)
+      .with("correspondence", () => <Send />)
       .exhaustive();
     return {
       content: icon,

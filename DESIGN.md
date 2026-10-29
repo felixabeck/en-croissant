@@ -85,23 +85,96 @@ and existing per-board coordinate colours retain their board meaning.
 
 ## Icon identities
 
-Phase 1 retains Tabler imports. The reviewed Phase 2 migrates them together to
-ChessRiddle's pinned Lucide library. The target identities are:
+Every migrated icon imports from `lucide-react`, pinned exactly to `1.61.0`, the
+ChessRiddle version. The rail uses monochrome catalogue `ui` identities. The
+following table records the implemented mapping. Reference paths are relative to
+`chess-tactics-app/frontend/`. A source reference identifies the matched artwork
+and meaning. Entries marked closest by meaning have no exact reference slot.
 
-| Meaning | Lucide identity |
-| --- | --- |
-| Appearance, board, sound, privacy | `Palette`, `ChessKnight`, `Volume2`, `Shield` |
-| Settings, account, puzzles, trophy | `Settings`, `User`, `Puzzle`, `Trophy` |
-| Guide, library, statistics, history | `Info`, `Library`, `ChartNoAxesCombined`, `History` |
-| Engine, analysis | `Brain`, `ScanSearch` |
-| First, previous, next, last move | `ChevronFirst`, `ChevronLeft`, `ChevronRight`, `ChevronLast` |
-| Play, pause, delete, close | `Play`, `Pause`, `Trash2`, `X` |
-| Copy, visible, hidden, search, expand | `Copy`, `Eye`, `EyeOff`, `Search`, `ChevronDown` |
+| ChessFable slot | Lucide export | ChessRiddle source or fallback |
+| --- | --- | --- |
+| Board, play and game tabs | `ChessKnight` | `shared/icon-catalog.json:664` |
+| Account and human opponent | `User` | `shared/icon-catalog.json:655` |
+| Library rail | `Library` | `shared/icon-catalog.json:790` |
+| Engine rail, local engine portraits and computer opponent | `Brain` | `web/src/components/analysis/EnginePanel.tsx:272` |
+| Settings and engine configuration | `Settings` | `shared/icon-catalog.json:793` |
+| Appearance category | `Palette` | `shared/icon-catalog.json:661` |
+| Sound category | `Volume2` | `shared/icon-catalog.json:667` |
+| Privacy category | `Shield` | `shared/icon-catalog.json:676` |
+| Puzzle tabs and new puzzle card | `Puzzle` | `shared/icon-catalog.json:757` |
+| Tournament and engine rating | `Trophy` | `shared/icon-catalog.json:721` |
+| Information and help | `Info` | `shared/icon-catalog.json:697` |
+| Analysis tabs and actions | `ScanSearch` | `web/src/components/analysis/AnalyzePuzzleButton.tsx:60` |
+| First, previous, next, last move | `ChevronFirst`, `ChevronLeft`, `ChevronRight`, `ChevronLast` | `web/src/components/analysis/ControlButtons.tsx:39`, `web/src/components/analysis/ControlButtons.tsx:48`, `web/src/components/analysis/ControlButtons.tsx:57`, `web/src/components/analysis/ControlButtons.tsx:66` |
+| Start and pause one or all engines | `Play`, `Pause` | `web/src/components/puzzle/MoveAnnouncerControls.tsx:149`, `web/src/components/puzzle/MoveAnnouncerControls.tsx:149` |
+| Delete move, game, file, database or account | `Trash2` | `web/src/components/puzzle/DeleteMoveAffordance.tsx:30` |
+| Close tab, cancel and clear session | `X` | `web/src/components/ui/Modal.tsx:188` |
+| Copy and copy confirmation | `Copy`, `Check` | `web/src/components/entityEditor/EntityEditorHeader.tsx:161`, `web/src/components/puzzle/MoveInputPanel.tsx:261` |
+| Challenge results: correct, incorrect and incomplete | `CircleCheckBig`, `CircleX`, `CircleEllipsis` | `web/src/components/puzzle/PuzzleFeedbackCard.tsx:61` |
+| Show and hide notation | `Eye`, `EyeOff` | `web/src/components/ui/PasswordField.tsx:57`, `web/src/components/ui/PasswordField.tsx:57` |
+| Search inputs | `Search` | `web/src/components/ui/SearchInput.tsx:60` |
+| Expand analysis or repertoire line | `ChevronDown` | `web/src/components/analysis/EngineAnalysisLines.tsx:188` |
+| Collapse repertoire line | `ChevronRight` | `web/src/components/analysis/VariationMoveList.tsx:142` |
+| Promote variation or mainline | `ArrowUpRight` | `web/src/components/analysis/VariationMoveList.tsx:394` |
+| Back from database | `ArrowLeft` | `web/src/components/entityEditor/EntityEditorHeader.tsx:113` |
+| Next and previous database record, return to practice position | `ArrowRight`, `ArrowLeft` | `web/src/components/puzzle/ReviewActionDock.tsx:22`, `web/src/components/entityEditor/EntityEditorHeader.tsx:113` |
+| Rename and edit metadata | `Pencil` | `web/src/components/profile/ProfileHeader.tsx:71` |
+| Repertoire file, review and settings | `BookOpen` | `web/src/components/puzzle/OpeningSelect.tsx:432` |
+| Upload engine portrait | `ImagePlus` | `web/src/components/feedback/FeedbackModal.tsx:396` |
+| Refresh account or engine logs | `RefreshCw` | `web/src/components/settings/AccountSettings.tsx:291` |
+| Reset keybindings or reload file | `RotateCcw` | `web/src/components/settings/SettingsSidebar.tsx:97` |
+| Error alerts | `AlertCircle` | `web/src/components/entityEditor/EntityAutosaveStatus.tsx:32` |
+| Authenticated account status | `CircleCheckBig` | Closest by meaning, reference success status uses the same icon in `web/src/components/history/AttemptHistoryItem.tsx:59` |
+| More actions | `Ellipsis` | `web/src/components/profile/ProfileActionsMenu.tsx:71` |
+| Engine drag and resize handles | `GripVertical` | `web/src/components/entityEditor/SortableReorderList.tsx:20` |
+| Compact application menu | `Menu` | `web/src/components/layout/Header.tsx:11` |
+| Add an account | `UserPlus` | `shared/icon-catalog.json:700` |
+| Download account games | `Download` | `web/src/components/legal/WithdrawalFormLink.tsx:1` |
+| Practice streak | `Flame` | `shared/icon-catalog.json:763` |
+| Captured pawn and knight | `ChessPawn`, `ChessKnight` | `shared/icon-catalog.json:691`, `shared/icon-catalog.json:664` |
+| Take back a move and leave practice line | `Undo2` | Closest by meaning |
+| Swap players | `ArrowRightLeft` | Closest by meaning |
+| Join transposition and show variations | `Merge`, `Split` | Closest by meaning |
+| Show and hide comments | `MessageSquare`, `MessageSquareOff` | Closest by meaning |
+| Normal and table notation | `List`, `TableProperties` | Closest by meaning |
+| Annotate panel | `NotebookPen` | Closest by meaning |
+| Practice target and due badge | `Target` | Closest by meaning |
+| Threats, repertoire practice tab and new repertoire | `Crosshair` | Closest by meaning |
+| Pin and unpin engine | `Pin`, `PinOff` | Closest by meaning |
+| Stop engine | `Square` | Closest by meaning |
+| Generic engine selector | `ChevronsUpDown` | Closest by meaning |
+| Board snapshot | `Camera` | Closest by meaning, reference capture uses the same icon in `web/src/components/feedback/FeedbackModal.tsx:4` |
+| Disable position editing | `PencilOff` | Closest by meaning |
+| Erase drawings, save file and flip board | `Eraser`, `Save`, `ArrowUpDown` | Closest by meaning |
+| File, PGN and game report | `File`, `FileText` | Closest by meaning |
+| Import game and export engine logs | `FileInput`, `FileOutput` | Closest by meaning |
+| Directory, open directory and move file | `Folder`, `FolderOpen`, `FolderSymlink` | Closest by meaning |
+| Database and empty database list | `Database`, `DatabaseX` | Closest by meaning |
+| Cloud engine | `Cloud` | Closest by meaning |
+| External FIDE profile | `ExternalLink` | `web/src/components/puzzle/SourceGameLink.tsx:17` |
+| Advanced filters and log filter | `EllipsisVertical`, `ListFilter` | Closest by meaning |
+| Empty engine logs | `Terminal` | Closest by meaning |
+| Repertoire start and Anarchy category | `Flag` | Closest by meaning |
+| Inputs and keybindings categories | `Mouse`, `Keyboard` | Closest by meaning |
+| Automatic, dark and light theme | `Monitor`, `Moon`, `Sun` | Closest by meaning |
+| Recent file time | `Clock` | Closest by meaning |
+| Account statistic increase and decrease | `ArrowUpRight`, `ArrowDownRight` | Closest by meaning |
+| Warning alert | `TriangleAlert` | Closest by meaning |
+| Expand and collapse a variation | `Plus`, `Minus` | Closest by meaning, numeric stepping uses the same icons in `web/src/components/entityEditor/EntityNumericStepper.tsx:4` |
+| Add game, tab, database or engine | `Plus` | Closest by meaning |
+| Ultra-bullet, bullet, blitz, rapid, classical and correspondence | `ChevronsRight`, `ChevronRight`, `Flame`, `Hourglass`, `Clock4`, `Send` | Closest by meaning for time controls |
+| Captured bishop, rook and queen | `ChessBishop`, `ChessRook`, `ChessQueen` | Closest by meaning |
 
-Use the same artwork for meanings with a ChessRiddle counterpart. Other meanings
-use the closest Lucide identity. The narrow sidebar uses monochrome icons, with
-16px control icons, 20px navigation icons and stroke 2. Existing native window
-control SVGs and the chessboard artwork remain.
+Existing rendered sizes are retained for this import and JSX migration, including
+the rail's 24px icons and compact 12–14px slots. This follows Phase 2's explicit
+size-preservation constraint. ChessRiddle's reference uses 16px inline controls
+(`web/src/app/globals.css:1077`) and 20px medium/large icon buttons
+(`web/src/components/ui/IconButton.tsx:10`). Lucide's default stroke width is 2,
+and explicit Tabler stroke props are replaced with `strokeWidth={2}`. Sizes can
+be reconciled separately when layout changes are authorised.
+
+`IconAction` keeps its existing accessible labels, tooltips and pending treatment.
+The native window-control SVGs in `TopBar.tsx` and local chessboard artwork remain.
 
 ## Board defaults and maintenance
 

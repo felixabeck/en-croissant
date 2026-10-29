@@ -1,5 +1,5 @@
 import { Button, Group, Kbd } from "@mantine/core";
-import { IconCheck, IconX } from "@tabler/icons-react";
+import { Check, X } from "lucide-react";
 import { platform } from "@/platform/native";
 import cx from "clsx";
 import { useAtom } from "jotai";
@@ -106,7 +106,7 @@ function ShortcutInput({
           stop();
         }}
       >
-        <IconX />
+        <X />
       </IconAction>
       <IconAction
         label={t("Common.Save")}
@@ -124,7 +124,7 @@ function ShortcutInput({
           }));
         }}
       >
-        <IconCheck />
+        <Check />
       </IconAction>
     </Group>
   );

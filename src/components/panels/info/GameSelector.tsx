@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { Box, Group, ScrollArea, Text } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
-import { IconX } from "@tabler/icons-react";
+import { Trash2 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import cx from "clsx";
 import { useAtomValue } from "jotai";
@@ -245,7 +245,7 @@ function GameRow({
             mr="xs"
             className={classes.deleteBtn}
           >
-            <IconX size={12} />
+            <Trash2 size={12} />
           </IconAction>
         )}
       </Group>

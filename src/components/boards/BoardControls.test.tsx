@@ -24,16 +24,16 @@ vi.mock("@mantine/core", () => ({
   Stack: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-vi.mock("@tabler/icons-react", () => ({
-  IconArrowBack: () => null,
-  IconCamera: () => null,
-  IconDeviceFloppy: () => null,
-  IconEdit: () => null,
-  IconEditOff: () => null,
-  IconEraser: () => null,
-  IconSwitchVertical: () => null,
-  IconTarget: () => null,
-  IconZoomCheck: () => null,
+vi.mock("lucide-react", () => ({
+  Undo2: () => null,
+  Camera: () => null,
+  Save: () => null,
+  Pencil: () => null,
+  PencilOff: () => null,
+  Eraser: () => null,
+  ArrowUpDown: () => null,
+  Target: () => null,
+  ScanSearch: () => null,
 }));
 
 vi.mock("@/components/common/IconAction", () => ({

@@ -105,14 +105,14 @@ vi.mock("@mantine/core", async () => {
     Button: Wrapper,
   };
 });
-vi.mock("@tabler/icons-react", () => ({
-  IconArrowDownRight: () => null,
-  IconArrowRight: () => null,
-  IconArrowUpRight: () => null,
-  IconCircleCheckFilled: () => null,
-  IconDownload: () => null,
-  IconRefresh: () => null,
-  IconTrash: () => null,
+vi.mock("lucide-react", () => ({
+  ArrowDownRight: () => null,
+  ArrowRight: () => null,
+  ArrowUpRight: () => null,
+  CircleCheckBig: () => null,
+  Download: () => null,
+  RefreshCw: () => null,
+  Trash2: () => null,
 }));
 vi.mock("./LichessLogo", () => ({ default: () => null }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

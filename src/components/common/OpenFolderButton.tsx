@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { IconFolder } from "@tabler/icons-react";
+import { Folder } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { IconAction } from "./IconAction";
 import { runUnlessCancelled } from "@/components/files/notifyError";
@@ -19,7 +19,7 @@ function OpenFolderButton() {
   }
   return (
     <IconAction label={t("Common.OpenFolder")} onClick={() => openEngineWorkspace()}>
-      <IconFolder size="1.5rem" />
+      <Folder size="1.5rem" />
     </IconAction>
   );
 }

@@ -7,7 +7,7 @@ import {
   Stack,
   TextInput,
 } from "@mantine/core";
-import { IconPlus } from "@tabler/icons-react";
+import { Plus } from "lucide-react";
 import { useAtom, useAtomValue } from "jotai";
 import { notifications } from "@mantine/notifications";
 import { useCallback, useRef, useState } from "react";
@@ -146,7 +146,7 @@ function Accounts() {
             fullWidth
             className="wrap-button"
             variant="light"
-            rightSection={<IconPlus size="1rem" />}
+            rightSection={<Plus size="1rem" />}
             onClick={() => setOpen(true)}
           >
             {t("Home.Accounts.Add")}

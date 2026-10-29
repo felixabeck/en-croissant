@@ -18,15 +18,7 @@ import {
   Text,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import {
-  IconAlertTriangle,
-  IconFlame,
-  IconPlus,
-  IconSettings,
-  IconTrash,
-  IconX,
-  IconZoomCheck,
-} from "@tabler/icons-react";
+import { TriangleAlert, Flame, Plus, Settings, Trash2, X, ScanSearch } from "lucide-react";
 import { makeSquare } from "chessops";
 import { useAtom, useStore as useAtomStore } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -848,14 +840,14 @@ function PuzzleSessionView() {
                 disabled={!effectiveSelectedDb}
                 onClick={() => setDeleteModalOpened(true)}
               >
-                <IconTrash size={20} />
+                <Trash2 size={20} />
               </IconAction>
               <IconAction
                 label={t("SideBar.Settings")}
                 pressed={settingsOpened}
                 onClick={() => setSettingsOpened((o) => !o)}
               >
-                <IconSettings size={20} />
+                <Settings size={20} />
               </IconAction>
             </Group>
           </Group>
@@ -869,7 +861,7 @@ function PuzzleSessionView() {
                 <Stack gap="md">
                   {themesTableMissing && (
                     <Alert
-                      icon={<IconAlertTriangle />}
+                      icon={<TriangleAlert />}
                       title={t("Puzzle.DatabaseOutdated")}
                       color="warning"
                     >
@@ -996,7 +988,7 @@ function PuzzleSessionView() {
                 <Text fw={700} size="lg">
                   {currentStreak}
                 </Text>
-                <IconFlame size={20} color="var(--cf-warning)" />
+                <Flame size={20} color="var(--cf-warning)" />
               </Group>
             </Paper>
 
@@ -1038,7 +1030,7 @@ function PuzzleSessionView() {
                 disabled={!effectiveSelectedDb}
                 onClick={() => generatePuzzle(effectiveSelectedDb!, true)}
               >
-                <IconPlus />
+                <Plus />
               </IconAction>
               <IconAction
                 label={t("Puzzle.AnalyzePosition")}
@@ -1060,7 +1052,7 @@ function PuzzleSessionView() {
                   });
                 }}
               >
-                <IconZoomCheck />
+                <ScanSearch />
               </IconAction>
               <IconAction
                 label={t("Puzzle.ClearSession")}
@@ -1078,7 +1070,7 @@ function PuzzleSessionView() {
                   setIsPlayingSolution(false);
                 }}
               >
-                <IconX />
+                <X />
               </IconAction>
             </Group>
           </Group>

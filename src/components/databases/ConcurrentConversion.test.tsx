@@ -238,18 +238,18 @@ vi.mock("@mantine/core", async () => ({
   Title: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconAlertCircle: () => null,
-  IconArrowDownRight: () => null,
-  IconArrowRight: () => null,
-  IconArrowUpRight: () => null,
-  IconCircleCheckFilled: () => null,
-  IconDatabase: () => null,
-  IconDownload: () => null,
-  IconPlus: () => null,
-  IconRefresh: () => null,
-  IconSearch: () => null,
-  IconTrash: () => null,
+vi.mock("lucide-react", () => ({
+  AlertCircle: () => null,
+  ArrowDownRight: () => null,
+  ArrowRight: () => null,
+  ArrowUpRight: () => null,
+  CircleCheckBig: () => null,
+  Database: () => null,
+  Download: () => null,
+  Plus: () => null,
+  RefreshCw: () => null,
+  Search: () => null,
+  Trash2: () => null,
 }));
 
 import { useDatabaseLibrary } from "./useDatabaseLibrary";

@@ -12,7 +12,7 @@ vi.mock("@/utils/db", () => ({ query_players: mocks.queryPlayers }));
 vi.mock("@/platform/tauri", () => ({ tauri: { getPlayer: mocks.getPlayer } }));
 vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: mocks.notify }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@tabler/icons-react", () => ({ IconSearch: () => null }));
+vi.mock("lucide-react", () => ({ Search: () => null }));
 vi.mock("@mantine/core", () => ({
   Autocomplete: ({
     value,

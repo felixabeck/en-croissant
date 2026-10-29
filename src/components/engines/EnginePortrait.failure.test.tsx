@@ -1,5 +1,5 @@
 import { type ImageProps, MantineProvider, UnstyledButton } from "@mantine/core";
-import { IconCpu, IconPhotoPlus } from "@tabler/icons-react";
+import { Brain, ImagePlus } from "lucide-react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig, type Cache } from "swr";
@@ -50,7 +50,7 @@ async function render(engine = installed(), imageProps?: ImageProps) {
       <MantineProvider env="test">
         <SWRConfig value={{ provider: () => cache }}>
           <div data-surface="card">
-            <EnginePortrait engine={engine} imageProps={imageProps} fallback={<IconCpu />} />
+            <EnginePortrait engine={engine} imageProps={imageProps} fallback={<Brain />} />
           </div>
           <div data-surface="editor">
             <EnginePortrait
@@ -59,7 +59,7 @@ async function render(engine = installed(), imageProps?: ImageProps) {
               selectImage={{ label, onClick: select }}
               fallback={
                 <UnstyledButton type="button" aria-label={label} onClick={select}>
-                  <IconPhotoPlus />
+                  <ImagePlus />
                 </UnstyledButton>
               }
             />
@@ -96,8 +96,8 @@ async function fail(failedImages = images()) {
 
 function expectFallbacks() {
   expect(images()).toHaveLength(0);
-  expect(surface("card").querySelector(".tabler-icon-cpu")).not.toBeNull();
-  expect(surface("editor").querySelector(".tabler-icon-photo-plus")).not.toBeNull();
+  expect(surface("card").querySelector(".lucide-brain")).not.toBeNull();
+  expect(surface("editor").querySelector(".lucide-image-plus")).not.toBeNull();
   const buttons = surface("editor").querySelectorAll("button");
   expect(buttons).toHaveLength(1);
   expect(buttons[0].getAttribute("aria-label")).toBe(label);
@@ -123,7 +123,7 @@ test("bundled image errors restore the CPU card fallback and clickable editor fa
   await expectPortraits(first.image);
   await fail([surface("card").querySelector("img")!]);
   expect(surface("card").querySelector("img")).toBeNull();
-  expect(surface("card").querySelector(".tabler-icon-cpu")).not.toBeNull();
+  expect(surface("card").querySelector(".lucide-brain")).not.toBeNull();
   expect(surface("editor").querySelector("img")?.getAttribute("src")).toBe(first.image);
   await fail();
   expectFallbacks();

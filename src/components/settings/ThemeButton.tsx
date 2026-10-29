@@ -5,7 +5,7 @@ import {
   SegmentedControl,
   useMantineColorScheme,
 } from "@mantine/core";
-import { IconDeviceDesktop, IconMoon, IconSun } from "@tabler/icons-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 export default function ThemeButton() {
@@ -24,7 +24,7 @@ export default function ThemeButton() {
             value: "auto",
             label: (
               <Center>
-                <IconDeviceDesktop size="1rem" stroke={1.5} />
+                <Monitor size="1rem" strokeWidth={2} />
                 <Box ml={10}>{t("Settings.Appearance.Theme.Auto")}</Box>
               </Center>
             ),
@@ -33,7 +33,7 @@ export default function ThemeButton() {
             value: "light",
             label: (
               <Center>
-                <IconSun size="1rem" stroke={1.5} />
+                <Sun size="1rem" strokeWidth={2} />
                 <Box ml={10}>{t("Settings.Appearance.Theme.Light")}</Box>
               </Center>
             ),
@@ -42,7 +42,7 @@ export default function ThemeButton() {
             value: "dark",
             label: (
               <Center>
-                <IconMoon size="1rem" stroke={1.5} />
+                <Moon size="1rem" strokeWidth={2} />
                 <Box ml={10}>{t("Settings.Appearance.Theme.Dark")}</Box>
               </Center>
             ),

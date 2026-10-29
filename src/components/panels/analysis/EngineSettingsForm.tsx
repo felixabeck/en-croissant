@@ -1,6 +1,6 @@
 import { useOwnerTabId } from "@/state/tabScope";
 import { Checkbox, Group, type MantineColor, Stack, Text } from "@mantine/core";
-import { IconPlayerStopFilled, IconSettings } from "@tabler/icons-react";
+import { Square, Settings } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useMemo } from "react";
@@ -149,7 +149,7 @@ function EngineSettingsForm({
                   }
                 }}
               >
-                <IconPlayerStopFilled size="1rem" />
+                <Square size="1rem" />
               </IconAction>
             )}
             <AdvancedSettings engineId={engine.id} />
@@ -220,7 +220,7 @@ function AdvancedSettings({ engineId }: { engineId: string }) {
         });
       }}
     >
-      <IconSettings size="1rem" />
+      <Settings size="1rem" />
     </IconAction>
   );
 }

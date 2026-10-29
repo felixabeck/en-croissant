@@ -1,6 +1,6 @@
 import { useTabAtom } from "@/state/tabScope";
 import { Box, rgba, useMantineTheme } from "@mantine/core";
-import { IconFlag } from "@tabler/icons-react";
+import { Flag } from "lucide-react";
 import { useAtom } from "jotai";
 import type { ReactNode, RefObject } from "react";
 import { showCommentsFamily, moveNotationTypeAtom } from "@/state/atoms";
@@ -70,7 +70,7 @@ function MoveCell(props: MoveCellProps) {
       onContextMenu={props.onContextMenu}
     >
       <Box component="span" className={classes.moveText}>
-        {props.isStart && <IconFlag style={{ marginRight: 5 }} size="0.875rem" />}
+        {props.isStart && <Flag style={{ marginRight: 5 }} size="0.875rem" />}
         {moveNotationType === "symbols" ? addPieceSymbol(props.move) : props.move}
         {showComments ? formatNagGlyphs(props.annotations) : ""}
       </Box>

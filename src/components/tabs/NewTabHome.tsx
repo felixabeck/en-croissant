@@ -23,13 +23,13 @@ import CreateRepertoireModal from "./CreateRepertoireModal";
 import ImportModal from "./ImportModal";
 import classes from "./NewTabHome.module.css";
 import {
-  IconChess,
-  IconClock,
-  IconFileImport,
-  IconPuzzle,
-  IconTarget,
-  IconTargetArrow,
-} from "@tabler/icons-react";
+  ChessKnight,
+  Clock,
+  FileInput as FileInputIcon,
+  Puzzle,
+  Target,
+  Crosshair,
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -59,7 +59,7 @@ function RecentFileDuePositions({ file }: { file: string }) {
   if (stats.due + stats.unseen === 0) return null;
 
   return (
-    <Badge size="sm" variant="light" color="warning" leftSection={<IconTarget size="0.75rem" />}>
+    <Badge size="sm" variant="light" color="warning" leftSection={<Target size="0.75rem" />}>
       {stats.due + stats.unseen} {t("Board.Practice.Due")}
     </Badge>
   );
@@ -93,7 +93,7 @@ function RecentFileRow({ file, onOpen }: { file: RecentFile; onOpen: (file: Rece
         <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
           <Tooltip label={dayjs(file.lastOpened).format(recentFileDateFormat)}>
             <Group gap={4} wrap="nowrap">
-              <IconClock size={14} style={{ color: "var(--mantine-color-dimmed)" }} />
+              <Clock size={14} style={{ color: "var(--mantine-color-dimmed)" }} />
               <Text size="xs" c="dimmed">
                 {dayjs(file.lastOpened).fromNow()}
               </Text>
@@ -168,7 +168,7 @@ export default function NewTabHome({ id }: { id: string }) {
 
   const cards = [
     {
-      icon: <IconChess size={60} />,
+      icon: <ChessKnight size={60} />,
       title: t("Home.Card.PlayChess.Title"),
       description: t("Home.Card.PlayChess.Desc"),
       label: t("Home.Card.PlayChess.Button"),
@@ -196,7 +196,7 @@ export default function NewTabHome({ id }: { id: string }) {
       },
     },
     {
-      icon: <IconTargetArrow size={60} />,
+      icon: <Crosshair size={60} />,
       title: t("Home.Card.NewRepertoire.Title"),
       description: t("Home.Card.NewRepertoire.Desc"),
       label: t("Home.Card.NewRepertoire.Button"),
@@ -205,7 +205,7 @@ export default function NewTabHome({ id }: { id: string }) {
       },
     },
     {
-      icon: <IconFileImport size={60} />,
+      icon: <FileInputIcon size={60} />,
       title: t("Home.Card.ImportGame.Title"),
       description: t("Home.Card.ImportGame.Desc"),
       label: t("Home.Card.ImportGame.Button"),
@@ -214,7 +214,7 @@ export default function NewTabHome({ id }: { id: string }) {
       },
     },
     {
-      icon: <IconPuzzle size={60} />,
+      icon: <Puzzle size={60} />,
       title: t("Home.Card.Puzzle.Title"),
       description: t("Home.Card.Puzzle.Desc"),
       label: t("Home.Card.Puzzle.Button"),
@@ -265,7 +265,7 @@ export default function NewTabHome({ id }: { id: string }) {
           </Text>
           {recentFiles.length === 0 ? (
             <Stack align="center" justify="center" h={200} gap="xs">
-              <IconClock size={48} style={{ opacity: 0.3 }} />
+              <Clock size={48} style={{ opacity: 0.3 }} />
               <Text c="dimmed">{t("Home.RecentFiles.NoRecentFiles")}</Text>
             </Stack>
           ) : (

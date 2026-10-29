@@ -2,7 +2,7 @@ import type { Key } from "@lichess-org/chessground/types";
 import { Box, CopyButton, Flex, Portal, rem, Table, Text, Tooltip } from "@mantine/core";
 import { useForceUpdate } from "@mantine/hooks";
 import { IconAction } from "@/components/common/IconAction";
-import { IconCheck, IconChevronDown, IconCopy } from "@tabler/icons-react";
+import { Check, ChevronDown, Copy } from "lucide-react";
 import { chessgroundMove } from "chessops/compat";
 import { makeFen } from "chessops/fen";
 import { parseSan } from "chessops/san";
@@ -148,7 +148,7 @@ function AnalysisRow({
               }}
               onClick={() => setOpen(!open)}
             >
-              <IconChevronDown size={16} />
+              <ChevronDown size={16} />
             </IconAction>
             {open && (
               <CopyButton value={engineOutput} timeout={2000}>
@@ -161,9 +161,9 @@ function AnalysisRow({
                     onClick={copy}
                   >
                     {copied ? (
-                      <IconCheck style={{ width: rem(16) }} />
+                      <Check style={{ width: rem(16) }} />
                     ) : (
-                      <IconCopy style={{ width: rem(16) }} />
+                      <Copy style={{ width: rem(16) }} />
                     )}
                   </IconAction>
                 )}

@@ -82,14 +82,14 @@ vi.mock("@mantine/core", () => ({
   Title: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
   UnstyledButton: ({ children }: { children: React.ReactNode }) => <button>{children}</button>,
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconCloud: () => <svg aria-label="cloud" />,
-  IconCopy: () => null,
-  IconCpu: () => <svg aria-label="cpu" />,
-  IconFolder: () => null,
-  IconPhotoPlus: () => null,
-  IconPlus: () => null,
-  IconSearch: () => null,
+vi.mock("lucide-react", () => ({
+  Cloud: () => <svg aria-label="cloud" />,
+  Copy: () => null,
+  Brain: () => <svg aria-label="cpu" />,
+  Folder: () => null,
+  ImagePlus: () => null,
+  Plus: () => null,
+  Search: () => null,
 }));
 vi.mock("../common/LocalImage", () => ({ default: () => <img alt="engine" /> }));
 vi.mock("../common/ConfirmModal", () => ({

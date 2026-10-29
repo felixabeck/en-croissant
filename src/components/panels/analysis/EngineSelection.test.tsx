@@ -64,7 +64,7 @@ vi.mock("@mantine/core", () => ({
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("@tabler/icons-react", () => ({ IconCloud: () => null, IconCpu: () => null }));
+vi.mock("lucide-react", () => ({ Cloud: () => null, Brain: () => null }));
 vi.mock("@/components/common/LocalImage", () => ({ default: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

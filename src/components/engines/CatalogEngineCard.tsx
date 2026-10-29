@@ -1,5 +1,5 @@
 import { Box, Button, Group, Image, Paper, Text } from "@mantine/core";
-import { IconDatabase, IconTrophy } from "@tabler/icons-react";
+import { Database, Trophy } from "lucide-react";
 import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import type { DefaultEngine } from "@/utils/engines";
@@ -51,11 +51,11 @@ export default function CatalogEngineCard({
             {engine.name} {engine.version}
           </Text>
           <Group wrap="nowrap" gap="xs" fz={adding ? "xs" : undefined}>
-            <IconTrophy size="1rem" />
+            <Trophy size="1rem" />
             <Text size="xs">{`${engine.elo} ELO`}</Text>
           </Group>
           <Group wrap="nowrap" gap="xs" mb="xs" fz={adding ? "xs" : undefined}>
-            <IconDatabase size="1rem" />
+            <Database size="1rem" />
             <Text size="xs">{formatBytes(engine.downloadSize ?? 0)}</Text>
           </Group>
           {recovery ? (

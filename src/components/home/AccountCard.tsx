@@ -15,15 +15,15 @@ import {
 import { CollectionMigration } from "@/components/library/LinkedCollection";
 import { ensureFileWorkspace } from "@/utils/files";
 import {
-  IconArrowDownRight,
-  IconArrowRight,
-  IconArrowUpRight,
-  IconCircleCheckFilled,
-  IconDownload,
-  type IconProps,
-  IconRefresh,
-  IconTrash,
-} from "@tabler/icons-react";
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
+  CircleCheckBig,
+  Download,
+  type LucideProps,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -137,14 +137,14 @@ export function AccountCard({
   const store = useStore();
   const items = stats.map((stat) => {
     let color = "gray";
-    let DiffIcon: React.FC<IconProps> = IconArrowRight;
+    let DiffIcon: React.FC<LucideProps> = ArrowRight;
     if (stat.diff) {
       const sign = Math.sign(stat.diff);
       if (sign === 1) {
-        DiffIcon = IconArrowUpRight;
+        DiffIcon = ArrowUpRight;
         color = "success";
       } else {
-        DiffIcon = IconArrowDownRight;
+        DiffIcon = ArrowDownRight;
         color = "danger";
       }
     }
@@ -257,7 +257,7 @@ export function AccountCard({
             {type === "lichess" && authenticated && (
               <Tooltip label={t("Home.Accounts.Authenticated")}>
                 <Text c="success" lh={0} style={{ cursor: "default" }}>
-                  <IconCircleCheckFilled size="1.1rem" />
+                  <CircleCheckBig size="1.1rem" />
                 </Text>
               </Tooltip>
             )}
@@ -273,7 +273,7 @@ export function AccountCard({
                 })
               }
             >
-              <IconRefresh size="1rem" />
+              <RefreshCw size="1rem" />
             </IconAction>
             <IconAction
               label={t("Home.Accounts.DownloadGames")}
@@ -356,7 +356,7 @@ export function AccountCard({
                 }
               }}
             >
-              <IconDownload size="1rem" />
+              <Download size="1rem" />
             </IconAction>
             <IconAction
               label={t("Home.Accounts.RemoveAccount")}
@@ -368,7 +368,7 @@ export function AccountCard({
                 })
               }
             >
-              <IconTrash size="1rem" />
+              <Trash2 size="1rem" />
             </IconAction>
           </Group>
         </Group>

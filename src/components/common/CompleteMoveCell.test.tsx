@@ -19,15 +19,14 @@ vi.mock("@/utils/tabs", () => ({
   getTabFile: (tab: unknown) => (tab ? { metadata: { type: "repertoire" } } : undefined),
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@tabler/icons-react", () => {
+vi.mock("lucide-react", () => {
   const Icon = () => null;
   return {
-    IconArrowsJoin: Icon,
-    IconChevronsUp: Icon,
-    IconChevronUp: Icon,
-    IconCopy: Icon,
-    IconFlag: Icon,
-    IconX: Icon,
+    Merge: Icon,
+    ArrowUpRight: Icon,
+    Copy: Icon,
+    Flag: Icon,
+    Trash2: Icon,
   };
 });
 vi.mock("@/components/common/Comment", () => ({

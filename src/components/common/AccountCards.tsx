@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { Divider, Group, ScrollArea, Stack, Text, TextInput } from "@mantine/core";
-import { IconCheck, IconEdit, IconX } from "@tabler/icons-react";
+import { Check, Pencil, Trash2 } from "lucide-react";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { TFunction } from "i18next";
 import { useEffect, useRef, useState } from "react";
@@ -165,7 +165,7 @@ function PlayerSession({
                 );
               }}
             >
-              <IconCheck />
+              <Check />
             </IconAction>
           ) : (
             <IconAction
@@ -177,7 +177,7 @@ function PlayerSession({
                 setEdit(true);
               }}
             >
-              <IconEdit />
+              <Pencil />
             </IconAction>
           )}
           <IconAction
@@ -212,7 +212,7 @@ function PlayerSession({
               }
             }}
           >
-            <IconX />
+            <Trash2 />
           </IconAction>
         </Group>
       </Group>

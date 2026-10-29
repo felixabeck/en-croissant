@@ -29,11 +29,11 @@ vi.mock("react-i18next", () => ({
     t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
   }),
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconArrowBackUp: () => null,
-  IconChess: () => null,
-  IconTrophy: () => null,
-  IconUser: () => null,
+vi.mock("lucide-react", () => ({
+  ArrowLeft: () => null,
+  ChessKnight: () => null,
+  Trophy: () => null,
+  User: () => null,
 }));
 vi.mock("@mantine/core", () => ({
   Box: ({ children }: { children: ReactNode }) => <div>{children}</div>,

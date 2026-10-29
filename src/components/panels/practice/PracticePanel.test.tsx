@@ -185,17 +185,17 @@ vi.mock("@/components/common/IconAction", () => ({
   ),
 }));
 vi.mock("./RepertoireInfo", () => ({ default: () => null }));
-vi.mock("@tabler/icons-react", () => {
+vi.mock("lucide-react", () => {
   const Icon = () => null;
   return {
-    IconArrowBack: Icon,
-    IconArrowRight: Icon,
-    IconBook: Icon,
-    IconCheck: Icon,
-    IconFlame: Icon,
-    IconInfoCircle: Icon,
-    IconTarget: Icon,
-    IconX: Icon,
+    Undo2: Icon,
+    ArrowRight: Icon,
+    BookOpen: Icon,
+    Check: Icon,
+    Flame: Icon,
+    Info: Icon,
+    Target: Icon,
+    X: Icon,
   };
 });
 vi.mock("@mantine/core", () => {

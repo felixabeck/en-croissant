@@ -16,7 +16,7 @@ vi.mock("zustand", () => ({
 vi.mock("jotai", () => ({ useAtom: () => [[], vi.fn()], useSetAtom: () => vi.fn() }));
 vi.mock("@/state/atoms", () => ({ activeTabAtom: {}, tabsAtom: {} }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@tabler/icons-react", () => ({ IconEye: () => null }));
+vi.mock("lucide-react", () => ({ Eye: () => null }));
 // Keep the table boundary interactive and render the records supplied by TournamentCard.
 vi.mock("mantine-datatable", () => ({
   DataTable: ({

@@ -1,5 +1,5 @@
 import { Avatar, Badge, Card, Center, Divider, Group, Stack, Text } from "@mantine/core";
-import { IconCloud } from "@tabler/icons-react";
+import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
 import { getFidePlayer } from "@/utils/lichess/api";
@@ -51,7 +51,7 @@ function FideInfo({
               rel="noreferrer"
             >
               <IconAction label={t("Databases.FIDE.OpenProfile")}>
-                <IconCloud />
+                <ExternalLink />
               </IconAction>
             </a>
           )}

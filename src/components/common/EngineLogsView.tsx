@@ -10,7 +10,7 @@ import {
   TextInput,
   Tooltip,
 } from "@mantine/core";
-import { IconFileExport, IconFilter, IconRefresh, IconTerminal2 } from "@tabler/icons-react";
+import { FileOutput, ListFilter, RefreshCw, Terminal } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { tauri } from "@/platform/tauri";
 import { useAtomValue } from "jotai";
@@ -96,7 +96,7 @@ export default function EngineLogsView({
               variant="default"
               onClick={onRefresh}
             >
-              <IconRefresh size="1.1rem" />
+              <RefreshCw size="1.1rem" />
             </IconAction>
           )}
           <IconAction
@@ -105,7 +105,7 @@ export default function EngineLogsView({
             variant="default"
             onClick={() => void exportLogs()}
           >
-            <IconFileExport size="1.1rem" />
+            <FileOutput size="1.1rem" />
           </IconAction>
         </Group>
 
@@ -126,7 +126,7 @@ export default function EngineLogsView({
         <TextInput
           aria-label={t("Engines.Logs.Filter.Label", { defaultValue: "Filter logs" })}
           placeholder={t("Engines.Logs.Filter.Placeholder", { defaultValue: "Filter logs..." })}
-          leftSection={<IconFilter size="0.9rem" />}
+          leftSection={<ListFilter size="0.9rem" />}
           value={search}
           onChange={(e) => setSearch(e.currentTarget.value)}
           flex={1}
@@ -139,7 +139,7 @@ export default function EngineLogsView({
 
       {filteredLogs.length === 0 ? (
         <Stack align="center" justify="center" flex={1} gap="xs">
-          <IconTerminal2 size="2.5rem" opacity={0.3} />
+          <Terminal size="2.5rem" opacity={0.3} />
           <Text ta="center" c="dimmed" fz="sm">
             {logs.length === 0
               ? t("Engines.Logs.Empty", { defaultValue: "No logs available yet" })

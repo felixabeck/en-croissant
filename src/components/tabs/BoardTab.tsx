@@ -1,6 +1,6 @@
 import { Tabs } from "@mantine/core";
 import type { DraggableProvidedDragHandleProps } from "@hello-pangea/dnd";
-import { IconChess, IconDatabase, IconPuzzle, IconZoomCheck } from "@tabler/icons-react";
+import { ChessKnight, Database, Puzzle, ScanSearch } from "lucide-react";
 import cx from "clsx";
 import type { Tab } from "@/utils/tabs";
 import classes from "./BoardTab.module.css";
@@ -40,19 +40,19 @@ export function BoardTab({
 
 function TabIcon({ tab, tabType }: { tab: Tab; tabType: string }) {
   if (tabType === "puzzles") {
-    return <IconPuzzle size="0.875rem" />;
+    return <Puzzle size="0.875rem" />;
   }
   if (tabType === "play") {
-    return <IconChess size="0.875rem" />;
+    return <ChessKnight size="0.875rem" />;
   }
   if (tab.gameOrigin.kind === "database") {
-    return <IconDatabase size="0.875rem" />;
+    return <Database size="0.875rem" />;
   }
   if (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file") {
     return <FileIcon type={tab.gameOrigin.file.metadata.type} size="0.875rem" />;
   }
   if (tabType === "analysis") {
-    return <IconZoomCheck size="0.875rem" />;
+    return <ScanSearch size="0.875rem" />;
   }
   return null;
 }

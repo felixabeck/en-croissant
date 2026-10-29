@@ -17,16 +17,7 @@ import {
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import AppModal from "../../common/AppModal";
-import {
-  IconArrowBack,
-  IconArrowRight,
-  IconBook,
-  IconCheck,
-  IconFlame,
-  IconInfoCircle,
-  IconTarget,
-  IconX,
-} from "@tabler/icons-react";
+import { Undo2, ArrowRight, BookOpen, Check, Flame, Info, Target, X } from "lucide-react";
 import dayjs from "dayjs";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -724,11 +715,11 @@ function PracticePanel() {
         <Tabs.Panel value="train" style={{ overflow: compactTabs ? "auto" : "hidden" }}>
           <Stack p="sm" gap="md">
             {deck.status === "loading" && (
-              <Alert icon={<IconInfoCircle />}>{t("Board.Practice.Loading")}</Alert>
+              <Alert icon={<Info />}>{t("Board.Practice.Loading")}</Alert>
             )}
             {deck.status === "read-failed" && (
               <Alert
-                icon={<IconInfoCircle />}
+                icon={<Info />}
                 color="danger"
                 title={t("Board.Practice.ReadFailed", { cause: deck.error?.message })}
               >
@@ -758,7 +749,7 @@ function PracticePanel() {
             )}
             {deck.status === "write-blocked" && (
               <Alert
-                icon={<IconInfoCircle />}
+                icon={<Info />}
                 color="danger"
                 title={t("Board.Practice.WriteBlocked", { cause: deck.error?.message })}
               />
@@ -766,7 +757,7 @@ function PracticePanel() {
             {showPracticeContent && (
               <>
                 {stats.total === 0 && (
-                  <Alert icon={<IconInfoCircle />}>
+                  <Alert icon={<Info />}>
                     <Stack gap="xs">
                       <Text fz="sm">{t("Board.Practice.NoPositionForTrain1")}</Text>
                       <Button variant="light" size="xs" onClick={() => setTab("build")}>
@@ -893,7 +884,7 @@ function PracticePanel() {
                         <Paper p="xs" withBorder radius="sm">
                           <Group gap={4} wrap="nowrap">
                             <ThemeIcon size="xs" color="success" variant="transparent">
-                              <IconCheck size={12} />
+                              <Check size={12} />
                             </ThemeIcon>
                             <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                               {t("Board.Practice.SessionCorrect")}
@@ -906,7 +897,7 @@ function PracticePanel() {
                         <Paper p="xs" withBorder radius="sm">
                           <Group gap={4} wrap="nowrap">
                             <ThemeIcon size="xs" color="danger" variant="transparent">
-                              <IconX size={12} />
+                              <X size={12} />
                             </ThemeIcon>
                             <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
                               {t("Board.Practice.SessionIncorrect")}
@@ -920,11 +911,11 @@ function PracticePanel() {
                           <Group gap={4} wrap="nowrap">
                             {displayedSessionStats.correct + displayedSessionStats.incorrect > 0 ? (
                               <ThemeIcon size="xs" color="success" variant="transparent">
-                                <IconTarget size={12} />
+                                <Target size={12} />
                               </ThemeIcon>
                             ) : (
                               <ThemeIcon size="xs" color="warning" variant="transparent">
-                                <IconFlame size={12} />
+                                <Flame size={12} />
                               </ThemeIcon>
                             )}
                             <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
@@ -961,7 +952,7 @@ function PracticePanel() {
                           <Paper p="sm" withBorder>
                             <Stack gap="xs" align="center">
                               <ThemeIcon size="xl" radius="xl" color="success" variant="light">
-                                <IconCheck size={24} />
+                                <Check size={24} />
                               </ThemeIcon>
                               <Text ta="center" fw={500}>
                                 {t("Board.Practice.PracticedAll1")}
@@ -979,7 +970,7 @@ function PracticePanel() {
                             fullWidth
                             onClick={startPractice}
                             disabled={!deckCanWrite}
-                            leftSection={<IconTarget size={20} />}
+                            leftSection={<Target size={20} />}
                             justify="space-between"
                             rightSection={
                               <Badge size="sm" variant="white" color="gold">
@@ -997,7 +988,7 @@ function PracticePanel() {
                           fullWidth
                           onClick={startFullPractice}
                           disabled={!deckCanWrite}
-                          leftSection={<IconBook size={20} />}
+                          leftSection={<BookOpen size={20} />}
                           justify="space-between"
                           rightSection={
                             <Badge size="sm" variant="white" color="gray">
@@ -1020,7 +1011,7 @@ function PracticePanel() {
                             <Button
                               variant="light"
                               size="xs"
-                              leftSection={<IconArrowBack size={14} />}
+                              leftSection={<Undo2 size={14} />}
                               onClick={() => {
                                 const card = deckRef.current.positions.find(
                                   (position) => position.fen === practiceState.currentFen,
@@ -1080,7 +1071,7 @@ function PracticePanel() {
                         <Stack gap="xs" align="center">
                           <Group gap="xs">
                             <ThemeIcon size="md" color="danger" variant="light" radius="xl">
-                              <IconX size={16} />
+                              <X size={16} />
                             </ThemeIcon>
                             <Text fw={500} c="danger">
                               {t("Common.Incorrect")}
@@ -1183,7 +1174,7 @@ function QualityRatingPanel({
       <Stack gap="sm" align="center">
         <Group gap="xs">
           <ThemeIcon size="md" color="success" variant="light" radius="xl">
-            <IconCheck size={16} />
+            <Check size={16} />
           </ThemeIcon>
           <Text fw={500} c="success">
             {t("Board.Practice.Correct")}
@@ -1343,7 +1334,7 @@ function PositionsModal({
                     setOpen(false);
                   }}
                 >
-                  <IconArrowRight />
+                  <ArrowRight />
                 </IconAction>
               </Group>
             </Card>
@@ -1478,7 +1469,7 @@ function LogsModal({
                       setOpen(false);
                     }}
                   >
-                    <IconArrowRight />
+                    <ArrowRight />
                   </IconAction>
                 )}
               </Group>

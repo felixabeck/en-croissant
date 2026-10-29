@@ -1,6 +1,6 @@
 import { tauri, withDownloadTicket } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
-import { IconX } from "@tabler/icons-react";
+import { X } from "lucide-react";
 import { error } from "@/platform/native";
 import { Chess } from "chessops";
 import { ChildNode, defaultGame, makePgn, type PgnNodeData } from "chessops/pgn";
@@ -43,7 +43,7 @@ export async function getChessComAccount(player: string): Promise<ChessComStats 
       title: t("ChessCom.FetchAccountFailed"),
       message: t("ChessCom.InvalidResponse", { value: player }),
       color: "danger",
-      icon: <IconX />,
+      icon: <X />,
     });
     return null;
   }
@@ -90,7 +90,7 @@ export async function getChesscomGame(gameURL: string) {
         title: t("ChessCom.EventUrlUnsupported"),
         message: t("ChessCom.EventUrlUnsupportedMessage"),
         color: "danger",
-        icon: <IconX />,
+        icon: <X />,
       });
       return null;
     }
@@ -99,7 +99,7 @@ export async function getChesscomGame(gameURL: string) {
       title: t("ChessCom.UnsupportedUrlFormat"),
       message: t("ChessCom.UnsupportedUrlFormatMessage"),
       color: "danger",
-      icon: <IconX />,
+      icon: <X />,
     });
     return null;
   }
@@ -121,7 +121,7 @@ export async function getChesscomGame(gameURL: string) {
       title: t("ChessCom.FetchGameFailed"),
       message: t("ChessCom.InvalidResponse", { value: gameURL }),
       color: "danger",
-      icon: <IconX />,
+      icon: <X />,
     });
     return null;
   }

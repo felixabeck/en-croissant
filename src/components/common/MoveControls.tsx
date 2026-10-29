@@ -1,10 +1,5 @@
 import { Group } from "@mantine/core";
-import {
-  IconChevronLeft,
-  IconChevronRight,
-  IconChevronsLeft,
-  IconChevronsRight,
-} from "@tabler/icons-react";
+import { ChevronLeft, ChevronRight, ChevronFirst, ChevronLast } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { memo, useContext } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -95,7 +90,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
         size="lg"
         onClick={navigate(start)}
       >
-        <IconChevronsLeft />
+        <ChevronFirst />
       </IconAction>
       <IconAction
         label={t("Common.MoveControls.Previous", { defaultValue: "Previous move" })}
@@ -103,7 +98,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
         size="lg"
         onClick={previous}
       >
-        <IconChevronLeft />
+        <ChevronLeft />
       </IconAction>
       <IconAction
         label={t("Common.MoveControls.Next", { defaultValue: "Next move" })}
@@ -111,7 +106,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
         size="lg"
         onClick={next}
       >
-        <IconChevronRight />
+        <ChevronRight />
       </IconAction>
       <IconAction
         label={t("Common.MoveControls.GoToEnd", { defaultValue: "Go to end" })}
@@ -119,7 +114,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
         size="lg"
         onClick={navigate(end)}
       >
-        <IconChevronsRight />
+        <ChevronLast />
       </IconAction>
     </Group>
   );

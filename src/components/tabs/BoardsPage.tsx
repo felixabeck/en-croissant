@@ -3,7 +3,7 @@ import { tauri } from "@/platform/tauri";
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import { Button, Group, Menu, ScrollArea, Tabs, TextInput } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
-import { IconCopy, IconDots, IconEdit, IconPlus, IconX } from "@tabler/icons-react";
+import { Copy, Ellipsis, Pencil, Plus, X } from "lucide-react";
 import { getDefaultStore, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -346,22 +346,22 @@ export default function BoardsPage() {
               disabled={!activeTab}
               classNames={{ root: classes.newTab }}
             >
-              <IconDots />
+              <Ellipsis />
             </IconAction>
           </Menu.Target>
           <Menu.Dropdown>
             <Menu.Item
-              leftSection={<IconCopy size="0.875rem" />}
+              leftSection={<Copy size="0.875rem" />}
               onClick={() => activeTab && duplicateTab(activeTab)}
             >
               {t("Tab.Duplicate", { defaultValue: "Duplicate tab" })}
             </Menu.Item>
-            <Menu.Item leftSection={<IconEdit size="0.875rem" />} onClick={openRename}>
+            <Menu.Item leftSection={<Pencil size="0.875rem" />} onClick={openRename}>
               {t("Tab.Rename", { defaultValue: "Rename tab" })}
             </Menu.Item>
             <Menu.Item
               color="red"
-              leftSection={<IconX size="0.875rem" />}
+              leftSection={<X size="0.875rem" />}
               onClick={() => void closeTab(activeTab)}
             >
               {t("Tab.Close", { defaultValue: "Close tab" })}
@@ -380,7 +380,7 @@ export default function BoardsPage() {
           }
           classNames={{ root: classes.newTab }}
         >
-          <IconPlus />
+          <Plus />
         </IconAction>
         <IconAction
           label={t("Tab.Close", { defaultValue: "Close tab" })}
@@ -390,7 +390,7 @@ export default function BoardsPage() {
           onClick={() => void closeTab(activeTab)}
           classNames={{ root: classes.newTab }}
         >
-          <IconX />
+          <X />
         </IconAction>
       </div>
       <AppModal

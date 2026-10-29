@@ -245,12 +245,12 @@ vi.mock("@mantine/core", () => {
     TextInput: passthrough,
   };
 });
-vi.mock("@tabler/icons-react", () => ({
-  IconCopy: () => null,
-  IconDots: () => null,
-  IconEdit: () => null,
-  IconPlus: () => null,
-  IconX: () => null,
+vi.mock("lucide-react", () => ({
+  Copy: () => null,
+  Ellipsis: () => null,
+  Pencil: () => null,
+  Plus: () => null,
+  X: () => null,
 }));
 vi.mock("../boards/BoardAnalysis", () => ({
   default: () => <div data-testid="board-analysis-child" />,

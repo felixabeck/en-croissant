@@ -12,17 +12,17 @@ import {
   useComputedColorScheme,
 } from "@mantine/core";
 import {
-  IconArrowRight,
-  IconArrowsSplit,
-  IconArticle,
-  IconArticleOff,
-  IconEye,
-  IconEyeOff,
-  IconLayoutList,
-  IconList,
-  IconMinus,
-  IconPlus,
-} from "@tabler/icons-react";
+  ArrowRight,
+  Split,
+  MessageSquare,
+  MessageSquareOff,
+  Eye,
+  EyeOff,
+  TableProperties,
+  List,
+  Minus,
+  Plus,
+} from "lucide-react";
 import { elementScroll, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -311,28 +311,28 @@ function NotationHeader() {
             onClick={() => setInvisible((value) => !value)}
             pressed={!invisible}
           >
-            {invisible ? <IconEyeOff size="1rem" /> : <IconEye size="1rem" />}
+            {invisible ? <EyeOff size="1rem" /> : <Eye size="1rem" />}
           </IconAction>
           <IconAction
             label={tableView ? t("Notation.NormalView") : t("Notation.TableView")}
             onClick={() => setTableView((value) => !value)}
             pressed={tableView}
           >
-            {tableView ? <IconList size="1rem" /> : <IconLayoutList size="1rem" />}
+            {tableView ? <List size="1rem" /> : <TableProperties size="1rem" />}
           </IconAction>
           <IconAction
             label={showComments ? t("Notation.HideComments") : t("Notation.ShowComments")}
             onClick={() => setShowComments((value) => !value)}
             pressed={showComments}
           >
-            {showComments ? <IconArticle size="1rem" /> : <IconArticleOff size="1rem" />}
+            {showComments ? <MessageSquare size="1rem" /> : <MessageSquareOff size="1rem" />}
           </IconAction>
           <IconAction
             label={showVariations ? t("Notation.HideVariations") : t("Notation.ShowVariations")}
             onClick={() => setShowVariations((value) => !value)}
             pressed={showVariations}
           >
-            {showVariations ? <IconArrowsSplit size="1rem" /> : <IconArrowRight size="1rem" />}
+            {showVariations ? <Split size="1rem" /> : <ArrowRight size="1rem" />}
           </IconAction>
         </Group>
       </Group>
@@ -500,7 +500,7 @@ function VariationRow({
         onClick={onToggle}
         pressed={!row.collapsed}
       >
-        {row.collapsed ? <IconPlus size="0.5rem" /> : <IconMinus size="0.5rem" />}
+        {row.collapsed ? <Plus size="0.5rem" /> : <Minus size="0.5rem" />}
       </IconAction>
     </Box>
   );

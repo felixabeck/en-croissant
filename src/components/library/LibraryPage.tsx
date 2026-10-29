@@ -14,7 +14,7 @@ import {
   Title,
   useMatches,
 } from "@mantine/core";
-import { IconSearch } from "@tabler/icons-react";
+import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { tauri } from "@/platform/tauri";
@@ -246,7 +246,7 @@ export default function LibraryPage() {
             <Input
               size="sm"
               miw={0}
-              leftSection={<IconSearch size="1rem" />}
+              leftSection={<Search size="1rem" />}
               placeholder={t("Common.Search")}
               aria-label={t("Common.Search")}
               value={search}

@@ -1,7 +1,7 @@
 import { useOwnerTab } from "@/state/tabScope";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
-import { IconReload } from "@tabler/icons-react";
+import { RotateCcw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { IconAction } from "@/components/common/IconAction";
@@ -95,7 +95,7 @@ function FileInfo({
             size="sm"
             onClick={() => void reload()}
           >
-            <IconReload size="1rem" />
+            <RotateCcw size="1rem" />
           </IconAction>
         </Group>
       </Group>

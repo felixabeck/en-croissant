@@ -31,7 +31,7 @@ vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationsShow },
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@tabler/icons-react", () => ({ IconPlus: () => null }));
+vi.mock("lucide-react", () => ({ Plus: () => null }));
 vi.mock("../common/AccountCards", () => ({
   default: ({ onAddAccount }: { onAddAccount: () => void }) => (
     <button type="button" onClick={onAddAccount}>

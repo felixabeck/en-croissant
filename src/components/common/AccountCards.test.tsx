@@ -51,10 +51,10 @@ vi.mock("./IconAction", () => ({
     <button type="button" aria-label={label} onClick={onClick} />
   ),
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconCheck: () => null,
-  IconEdit: () => null,
-  IconX: () => null,
+vi.mock("lucide-react", () => ({
+  Check: () => null,
+  Pencil: () => null,
+  Trash2: () => null,
 }));
 vi.mock("@mantine/core", () => ({
   Divider: () => null,

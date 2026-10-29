@@ -1,6 +1,6 @@
 import { Box, Button, getDefaultZIndex, Group, Image, Menu, Text } from "@mantine/core";
 import { getCurrentWebviewWindow } from "@/platform/native";
-import { IconMenu2 } from "@tabler/icons-react";
+import { Menu as MenuIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
@@ -202,7 +202,7 @@ function TopBar({
           >
             <Menu.Target>
               <IconAction label={t("Menu.Application.Menu")} className={classes.compactTarget}>
-                <IconMenu2 size="1.25rem" />
+                <MenuIcon size="1.25rem" />
               </IconAction>
             </Menu.Target>
             <Menu.Dropdown {...focusHandlers}>

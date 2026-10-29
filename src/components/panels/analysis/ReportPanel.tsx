@@ -1,7 +1,7 @@
 import { useTabAtom, useOwnerTabId } from "@/state/tabScope";
 import { tauri } from "@/platform/tauri";
 import { Grid, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
-import { IconZoomCheck } from "@tabler/icons-react";
+import { ScanSearch } from "lucide-react";
 import cx from "clsx";
 import equal from "fast-deep-equal";
 import { useAtom } from "jotai";
@@ -131,7 +131,7 @@ function ReportPanel() {
           id={progressId}
           redoable
           disabled={root.children.length === 0}
-          leftIcon={<IconZoomCheck size="0.875rem" />}
+          leftIcon={<ScanSearch size="0.875rem" />}
           onClick={openReportingMode}
           onCancel={handleCancel}
           initInstalled={false}

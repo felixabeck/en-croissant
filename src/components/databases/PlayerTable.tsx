@@ -1,5 +1,5 @@
 import { Center, Collapse, Flex, Group, NumberInput, Text, TextInput } from "@mantine/core";
-import { IconDotsVertical, IconSearch } from "@tabler/icons-react";
+import { EllipsisVertical, Search } from "lucide-react";
 import { DataTable } from "mantine-datatable";
 import { useContext, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -59,7 +59,7 @@ function PlayerTable() {
             <TextInput
               style={{ flexGrow: 1 }}
               placeholder={t("Common.Search")}
-              leftSection={<IconSearch size="1rem" />}
+              leftSection={<Search size="1rem" />}
               value={query.name ?? undefined}
               onChange={(e) =>
                 setQuery({
@@ -78,7 +78,7 @@ function PlayerTable() {
               style={{ flexGrow: 0 }}
               onClick={() => setOpen((prev) => !prev)}
             >
-              <IconDotsVertical size="1rem" />
+              <EllipsisVertical size="1rem" />
             </IconAction>
           </Flex>
 

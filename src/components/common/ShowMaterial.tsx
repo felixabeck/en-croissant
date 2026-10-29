@@ -1,11 +1,5 @@
 import { Group, Text } from "@mantine/core";
-import {
-  IconChessBishopFilled,
-  IconChessFilled,
-  IconChessKnightFilled,
-  IconChessQueenFilled,
-  IconChessRookFilled,
-} from "@tabler/icons-react";
+import { ChessBishop, ChessPawn, ChessKnight, ChessQueen, ChessRook } from "lucide-react";
 import type { Color } from "chessops";
 import { match } from "ts-pattern";
 import { getMaterialDiff } from "@/utils/chess";
@@ -45,19 +39,19 @@ export default function ShowMaterial({
     .exhaustive();
 
   const pawns = [...Array(Math.abs(pieces.p)).keys()].map((i) => (
-    <IconChessFilled size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
+    <ChessPawn size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
   ));
   const knights = [...Array(Math.abs(pieces.n)).keys()].map((i) => (
-    <IconChessKnightFilled size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
+    <ChessKnight size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
   ));
   const bishops = [...Array(Math.abs(pieces.b)).keys()].map((i) => (
-    <IconChessBishopFilled size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
+    <ChessBishop size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
   ));
   const rooks = [...Array(Math.abs(pieces.r)).keys()].map((i) => (
-    <IconChessRookFilled size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
+    <ChessRook size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
   ));
   const queens = [...Array(Math.abs(pieces.q)).keys()].map((i) => (
-    <IconChessQueenFilled size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
+    <ChessQueen size="1.1rem" key={i} style={{ marginRight: "-7px" }} />
   ));
 
   return (

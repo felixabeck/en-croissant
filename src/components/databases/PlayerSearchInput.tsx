@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Autocomplete } from "@mantine/core";
-import { IconSearch } from "@tabler/icons-react";
+import { Search } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type DatabaseHandle, type Player } from "@/bindings";
@@ -100,7 +100,7 @@ export function PlayerSearchInput({
       data={data.map((player) => player.name!)}
       onChange={handleChange}
       rightSection={rightSection}
-      leftSection={<IconSearch size="1rem" />}
+      leftSection={<Search size="1rem" />}
       placeholder={label}
     />
   );

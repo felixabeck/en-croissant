@@ -59,7 +59,7 @@ vi.mock("./PersonalCard", () => ({
     );
   },
 }));
-vi.mock("@tabler/icons-react", () => ({ IconDatabaseOff: () => null }));
+vi.mock("lucide-react", () => ({ DatabaseX: () => null }));
 vi.mock("@mantine/core", () => ({
   Alert: ({ children, title }: { children: React.ReactNode; title?: React.ReactNode }) => (
     <div role="alert">

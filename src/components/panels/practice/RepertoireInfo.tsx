@@ -15,14 +15,7 @@ import {
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import {
-  IconCheck,
-  IconChevronDown,
-  IconChevronRight,
-  IconFlag,
-  IconInfoCircle,
-  IconPlayerPlay,
-} from "@tabler/icons-react";
+import { Check, ChevronDown, ChevronRight, Flag, Info, Play } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -387,7 +380,7 @@ function RepertoireInfo() {
     return (
       <Stack h="100%" p="sm" className={`${paneClasses.root} ${paneClasses.content}`}>
         <TreeStatsBar stats={stats} t={t} />
-        <Alert icon={<IconInfoCircle />} color={selectedReference ? "warning" : undefined}>
+        <Alert icon={<Info />} color={selectedReference ? "warning" : undefined}>
           {selectedReference
             ? t("Collections.Unavailable", {
                 defaultValue:
@@ -408,7 +401,7 @@ function RepertoireInfo() {
               {t("Board.Practice.Build.BeforeStart")}
             </Text>
             <Button
-              leftSection={<IconPlayerPlay size={16} />}
+              leftSection={<Play size={16} />}
               variant="light"
               size="xs"
               onClick={() => goToMove(startPath)}
@@ -426,7 +419,7 @@ function RepertoireInfo() {
               {t("Board.Practice.MarkStart")}
             </Text>
             <Button
-              leftSection={<IconFlag size={16} />}
+              leftSection={<Flag size={16} />}
               variant="light"
               size="xs"
               onClick={() => setStart(position)}
@@ -788,9 +781,9 @@ function MovesView({
                 <Divider style={{ flex: 1 }} />
                 <Group gap={4} wrap="nowrap">
                   {showRare ? (
-                    <IconChevronDown size={12} color="var(--mantine-color-dimmed)" />
+                    <ChevronDown size={12} color="var(--mantine-color-dimmed)" />
                   ) : (
-                    <IconChevronRight size={12} color="var(--mantine-color-dimmed)" />
+                    <ChevronRight size={12} color="var(--mantine-color-dimmed)" />
                   )}
                   <Text fz="xs" c="dimmed">
                     {t("Board.Practice.Build.RareMoves")}
@@ -909,7 +902,7 @@ function CoverageFeedback({
       <Paper p="sm" withBorder>
         <Group gap="xs" justify="center">
           <ThemeIcon size="sm" color="success" variant="light" radius="xl">
-            <IconCheck size={14} />
+            <Check size={14} />
           </ThemeIcon>
           <Text fz="sm" c="success" fw={500}>
             {t("Board.Practice.Build.NoGapsFound")}
@@ -969,7 +962,7 @@ function MoveRow({
           </Text>
           {move.inRepertoire && (
             <ThemeIcon size="xs" color="success" variant="transparent">
-              <IconCheck size={12} />
+              <Check size={12} />
             </ThemeIcon>
           )}
         </Group>
@@ -1059,7 +1052,7 @@ function GapButton({
               {detail}
             </Text>
           )}
-          <IconChevronRight size={16} color="var(--mantine-color-dimmed)" />
+          <ChevronRight size={16} color="var(--mantine-color-dimmed)" />
         </Group>
       </Group>
     </UnstyledButton>

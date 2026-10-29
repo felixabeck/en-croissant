@@ -1,5 +1,5 @@
 import { Box, Group } from "@mantine/core";
-import { IconArrowLeft, IconArrowRight } from "@tabler/icons-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useContext, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -62,7 +62,7 @@ function GridLayout({
               commit(clampDatabasePercentage(effective + DATABASE_SPLIT_STEP_PERCENT, minimum))
             }
           >
-            <IconArrowRight size="1rem" />
+            <ArrowRight size="1rem" />
           </IconAction>
           <IconAction
             label={t("Databases.Layout.EnlargePreview", { defaultValue: "Enlarge preview" })}
@@ -72,7 +72,7 @@ function GridLayout({
               commit(clampDatabasePercentage(effective - DATABASE_SPLIT_STEP_PERCENT, minimum))
             }
           >
-            <IconArrowLeft size="1rem" />
+            <ArrowLeft size="1rem" />
           </IconAction>
         </Group>
       )}

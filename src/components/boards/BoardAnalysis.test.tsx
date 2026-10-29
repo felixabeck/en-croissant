@@ -101,12 +101,12 @@ vi.mock("@mantine/core", async (importOriginal) => {
   };
 });
 
-vi.mock("@tabler/icons-react", () => ({
-  IconDatabase: () => null,
-  IconInfoCircle: () => null,
-  IconNotes: () => null,
-  IconTargetArrow: () => null,
-  IconZoomCheck: () => null,
+vi.mock("lucide-react", () => ({
+  Database: () => null,
+  Info: () => null,
+  NotebookPen: () => null,
+  Crosshair: () => null,
+  ScanSearch: () => null,
 }));
 
 vi.mock("@/components/files/notifyError", async (importOriginal) => ({

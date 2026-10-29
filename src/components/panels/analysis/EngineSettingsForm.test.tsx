@@ -63,9 +63,9 @@ vi.mock("@mantine/core", () => ({
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("@tabler/icons-react", () => ({
-  IconPlayerStopFilled: () => null,
-  IconSettings: () => null,
+vi.mock("lucide-react", () => ({
+  Square: () => null,
+  Settings: () => null,
 }));
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({ label, onClick, children }: any) => (

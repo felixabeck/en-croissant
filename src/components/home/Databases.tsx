@@ -11,7 +11,7 @@ import {
   ThemeIcon,
   Title,
 } from "@mantine/core";
-import { IconDatabaseOff } from "@tabler/icons-react";
+import { DatabaseX } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -353,7 +353,7 @@ function Databases() {
             <Center h="100%">
               <Stack align="center" gap="md">
                 <ThemeIcon size={80} radius="100%" variant="light" color="gold">
-                  <IconDatabaseOff size={40} />
+                  <DatabaseX size={40} />
                 </ThemeIcon>
                 <Title order={3}>
                   {personalInfo.failed.length > 0

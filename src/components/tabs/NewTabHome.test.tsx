@@ -85,13 +85,13 @@ vi.mock("./ImportModal", () => ({
 }));
 vi.mock("../icons/Chessboard", () => ({ default: () => null }));
 vi.mock("@/components/files/FileIcon", () => ({ FileIcon: () => null }));
-vi.mock("@tabler/icons-react", () => ({
-  IconChess: () => null,
-  IconClock: () => null,
-  IconFileImport: () => null,
-  IconPuzzle: () => null,
-  IconTarget: () => null,
-  IconTargetArrow: () => null,
+vi.mock("lucide-react", () => ({
+  ChessKnight: () => null,
+  Clock: () => null,
+  FileInput: () => null,
+  Puzzle: () => null,
+  Target: () => null,
+  Crosshair: () => null,
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@mantine/core", () => {

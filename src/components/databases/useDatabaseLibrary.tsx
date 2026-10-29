@@ -17,7 +17,7 @@ import {
   Tooltip,
 } from "@mantine/core";
 import { useDebouncedValue, useToggle } from "@mantine/hooks";
-import { IconArrowRight, IconDatabase, IconPlus } from "@tabler/icons-react";
+import { ArrowRight, Database, Plus } from "lucide-react";
 import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import {
@@ -235,7 +235,7 @@ export function useDatabaseLibrary(
             // wrap onto separate rows instead of squeezing the title.
             <Group justify="space-between">
               <Group miw={0}>
-                <IconDatabase size="1.5rem" />
+                <Database size="1.5rem" />
                 <Box miw={0}>
                   <Text fw={500} fz="sm" className="wrap-anywhere">
                     {item.type === "success" ? item.title : item.error}
@@ -460,7 +460,7 @@ export function useDatabaseLibrary(
                   fullWidth
                   variant="default"
                   size="lg"
-                  rightSection={<IconArrowRight size="1rem" />}
+                  rightSection={<ArrowRight size="1rem" />}
                 >
                   {t("Databases.Settings.Explore")}
                 </Button>
@@ -482,7 +482,7 @@ export function useDatabaseLibrary(
               <Button
                 {...libraryButtonProps}
                 variant="default"
-                rightSection={<IconPlus size="1rem" />}
+                rightSection={<Plus size="1rem" />}
                 onClick={() => {
                   const dest = selectedDatabase.file;
                   void runAddGamesToDatabase({
@@ -521,7 +521,7 @@ export function useDatabaseLibrary(
               </Button>
               <Button
                 {...libraryButtonProps}
-                rightSection={<IconArrowRight size="1rem" />}
+                rightSection={<ArrowRight size="1rem" />}
                 variant="default"
                 loading={exportLoading}
                 onClick={() => {
@@ -679,7 +679,7 @@ function PlayerMerger({ selectedDatabase }: { selectedDatabase: DatabaseInfo }) 
           {...libraryButtonProps}
           loading={loading}
           onClick={mergePlayers}
-          rightSection={<IconArrowRight size="1rem" />}
+          rightSection={<ArrowRight size="1rem" />}
         >
           {t("Databases.Settings.Merge")}
         </Button>

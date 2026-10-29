@@ -166,7 +166,7 @@ vi.mock("@mantine/core", () => ({
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("@tabler/icons-react", () => ({ IconZoomCheck: () => null }));
+vi.mock("lucide-react", () => ({ ScanSearch: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 

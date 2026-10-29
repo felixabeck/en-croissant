@@ -14,18 +14,18 @@ import {
 } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 import {
-  IconBook,
-  IconBrush,
-  IconChess,
-  IconFlag,
-  IconFolder,
-  IconKeyboard,
-  IconMouse,
-  IconReload,
-  IconSearch,
-  IconShield,
-  IconVolume,
-} from "@tabler/icons-react";
+  BookOpen,
+  Palette,
+  ChessKnight,
+  Flag,
+  Folder,
+  Keyboard,
+  Mouse,
+  RotateCcw,
+  Search,
+  Shield,
+  Volume2,
+} from "lucide-react";
 import { useLoaderData } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { RESET } from "jotai/utils";
@@ -633,47 +633,47 @@ export default function Page() {
       board: {
         title: t("Settings.Board"),
         description: t("Settings.Board.Desc"),
-        icon: <IconChess size="1rem" />,
+        icon: <ChessKnight size="1rem" />,
       },
       inputs: {
         title: t("Settings.Inputs"),
         description: t("Settings.Inputs.Desc"),
-        icon: <IconMouse size="1rem" />,
+        icon: <Mouse size="1rem" />,
       },
       anarchy: {
         title: t("Settings.Anarchy"),
         description: t("Settings.Anarchy.Desc"),
-        icon: <IconFlag size="1rem" />,
+        icon: <Flag size="1rem" />,
       },
       appearance: {
         title: t("Settings.Appearance"),
         description: t("Settings.Appearance.Desc"),
-        icon: <IconBrush size="1rem" />,
+        icon: <Palette size="1rem" />,
       },
       sound: {
         title: t("Settings.Sound"),
         description: t("Settings.Sound.Desc"),
-        icon: <IconVolume size="1rem" />,
+        icon: <Volume2 size="1rem" />,
       },
       keybinds: {
         title: t("Settings.Keybinds"),
         description: t("Settings.Keybinds.Desc"),
-        icon: <IconKeyboard size="1rem" />,
+        icon: <Keyboard size="1rem" />,
       },
       directories: {
         title: t("Settings.Directories"),
         description: t("Settings.Directories.Desc"),
-        icon: <IconFolder size="1rem" />,
+        icon: <Folder size="1rem" />,
       },
       repertoire: {
         title: t("Settings.Repertoire"),
         description: t("Settings.Repertoire.Desc"),
-        icon: <IconBook size="1rem" />,
+        icon: <BookOpen size="1rem" />,
       },
       privacy: {
         title: t("Settings.Privacy"),
         description: t("Settings.Privacy.Desc"),
-        icon: <IconShield size="1rem" />,
+        icon: <Shield size="1rem" />,
       },
     }),
     [t],
@@ -756,7 +756,7 @@ export default function Page() {
         <TextInput
           ref={searchInputRef}
           placeholder={t("Common.Search")}
-          leftSection={<IconSearch size="1rem" />}
+          leftSection={<Search size="1rem" />}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -791,31 +791,31 @@ export default function Page() {
           }}
         >
           <Tabs.List h={compactTabs ? undefined : "100%"}>
-            <Tabs.Tab value="board" leftSection={<IconChess size="1rem" />}>
+            <Tabs.Tab value="board" leftSection={<ChessKnight size="1rem" />}>
               {t("Settings.Board")}
             </Tabs.Tab>
-            <Tabs.Tab value="inputs" leftSection={<IconMouse size="1rem" />}>
+            <Tabs.Tab value="inputs" leftSection={<Mouse size="1rem" />}>
               {t("Settings.Inputs")}
             </Tabs.Tab>
-            <Tabs.Tab value="anarchy" leftSection={<IconFlag size="1rem" />}>
+            <Tabs.Tab value="anarchy" leftSection={<Flag size="1rem" />}>
               {t("Settings.Anarchy")}
             </Tabs.Tab>
-            <Tabs.Tab value="appearance" leftSection={<IconBrush size="1rem" />}>
+            <Tabs.Tab value="appearance" leftSection={<Palette size="1rem" />}>
               {t("Settings.Appearance")}
             </Tabs.Tab>
-            <Tabs.Tab value="sound" leftSection={<IconVolume size="1rem" />}>
+            <Tabs.Tab value="sound" leftSection={<Volume2 size="1rem" />}>
               {t("Settings.Sound")}
             </Tabs.Tab>
-            <Tabs.Tab value="keybinds" leftSection={<IconKeyboard size="1rem" />}>
+            <Tabs.Tab value="keybinds" leftSection={<Keyboard size="1rem" />}>
               {t("Settings.Keybinds")}
             </Tabs.Tab>
-            <Tabs.Tab value="directories" leftSection={<IconFolder size="1rem" />}>
+            <Tabs.Tab value="directories" leftSection={<Folder size="1rem" />}>
               {t("Settings.Directories")}
             </Tabs.Tab>
-            <Tabs.Tab value="repertoire" leftSection={<IconBook size="1rem" />}>
+            <Tabs.Tab value="repertoire" leftSection={<BookOpen size="1rem" />}>
               {t("Settings.Repertoire")}
             </Tabs.Tab>
-            <Tabs.Tab value="privacy" leftSection={<IconShield size="1rem" />}>
+            <Tabs.Tab value="privacy" leftSection={<Shield size="1rem" />}>
               {t("Settings.Privacy")}
             </Tabs.Tab>
           </Tabs.List>
@@ -878,7 +878,7 @@ export default function Page() {
                       {t("Settings.Keybinds")}
                     </Text>
                     <IconAction label={t("Common.Reset")} onClick={() => setKeyMap(RESET)}>
-                      <IconReload size="1rem" />
+                      <RotateCcw size="1rem" />
                     </IconAction>
                   </Group>
                   <Text size="xs" c="dimmed" mt={3} mb="lg">

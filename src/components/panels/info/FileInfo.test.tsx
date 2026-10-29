@@ -65,7 +65,7 @@ vi.mock("@mantine/core", () => {
     Tooltip: element,
   };
 });
-vi.mock("@tabler/icons-react", () => ({ IconReload: () => null }));
+vi.mock("lucide-react", () => ({ RotateCcw: () => null }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({

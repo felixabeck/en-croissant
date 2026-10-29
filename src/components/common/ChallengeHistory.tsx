@@ -1,5 +1,5 @@
 import { Group, Stack, Text } from "@mantine/core";
-import { IconCheck, IconDots, IconX } from "@tabler/icons-react";
+import { CircleCheckBig, CircleEllipsis, CircleX } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { match } from "ts-pattern";
 import { useTranslation } from "react-i18next";
@@ -43,7 +43,7 @@ function ChallengeHistory({
                 color="success"
                 style={{ border: isCurrent ? "2px solid var(--cf-chart-2)" : "none" }}
               >
-                <IconCheck color="var(--cf-chart-2)" />
+                <CircleCheckBig color="var(--cf-chart-2)" />
               </IconAction>
               <Text ta="center" fz="xs" c="success">
                 {p.label}
@@ -63,7 +63,7 @@ function ChallengeHistory({
                 color="danger"
                 style={{ border: isCurrent ? "2px solid var(--cf-destructive)" : "none" }}
               >
-                <IconX color="var(--cf-destructive)" />
+                <CircleX color="var(--cf-destructive)" />
               </IconAction>
               <Text ta="center" fz="xs" c="danger">
                 {p.label}
@@ -83,7 +83,7 @@ function ChallengeHistory({
                 color="warning"
                 style={{ border: isCurrent ? "2px solid var(--cf-warning)" : "none" }}
               >
-                <IconDots color="var(--cf-warning)" />
+                <CircleEllipsis color="var(--cf-warning)" />
               </IconAction>
               <Text ta="center" fz="xs" c="warning">
                 {hideRating ? "?" : p.label}

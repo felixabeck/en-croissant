@@ -44,19 +44,19 @@ vi.mock("jotai", () => ({
 }));
 vi.mock("react-hotkeys-hook", () => ({ useHotkeys: vi.fn() }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@tabler/icons-react", () => {
+vi.mock("lucide-react", () => {
   const Icon = () => null;
   return {
-    IconArrowRight: Icon,
-    IconArrowsSplit: Icon,
-    IconArticle: Icon,
-    IconArticleOff: Icon,
-    IconEye: Icon,
-    IconEyeOff: Icon,
-    IconLayoutList: Icon,
-    IconList: Icon,
-    IconMinus: Icon,
-    IconPlus: Icon,
+    ArrowRight: Icon,
+    Split: Icon,
+    MessageSquare: Icon,
+    MessageSquareOff: Icon,
+    Eye: Icon,
+    EyeOff: Icon,
+    TableProperties: Icon,
+    List: Icon,
+    Minus: Icon,
+    Plus: Icon,
   };
 });
 vi.mock("@/components/common/Comment", () => ({ default: () => null }));

@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { Center, Flex, Text, TextInput } from "@mantine/core";
-import { IconSearch } from "@tabler/icons-react";
+import { Search } from "lucide-react";
 import { DataTable } from "mantine-datatable";
 import { useContext } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -54,7 +54,7 @@ function TournamentTable() {
           <TextInput
             style={{ flexGrow: 1 }}
             placeholder={t("Common.Search")}
-            leftSection={<IconSearch size="1rem" />}
+            leftSection={<Search size="1rem" />}
             value={query.name ?? ""}
             onChange={(v) =>
               setQuery({

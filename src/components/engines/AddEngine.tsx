@@ -12,7 +12,7 @@ import {
   Text,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { IconAlertCircle } from "@tabler/icons-react";
+import { AlertCircle } from "lucide-react";
 import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -98,11 +98,7 @@ function AddEngine({
                 );
               })}
               {error && (
-                <Alert
-                  icon={<IconAlertCircle size="1rem" />}
-                  title={t("Common.Error")}
-                  color="danger"
-                >
+                <Alert icon={<AlertCircle size="1rem" />} title={t("Common.Error")} color="danger">
                   {t(
                     error instanceof EngineCatalogVerificationError
                       ? "Engines.Add.ErrorCatalog"

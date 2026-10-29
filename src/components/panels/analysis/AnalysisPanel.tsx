@@ -13,12 +13,7 @@ import {
   Tabs,
   Text,
 } from "@mantine/core";
-import {
-  IconChevronsRight,
-  IconPlayerPause,
-  IconSelector,
-  IconSettings,
-} from "@tabler/icons-react";
+import { Play, Pause, ChevronsUpDown, Settings } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, startTransition, useContext, useMemo, useOptimistic } from "react";
@@ -142,11 +137,7 @@ function AnalysisPanel() {
                     variant="default"
                     onClick={() => enable(!allEnabled)}
                   >
-                    {allEnabled ? (
-                      <IconPlayerPause size="1.25rem" />
-                    ) : (
-                      <IconChevronsRight size="1.25rem" />
-                    )}
+                    {allEnabled ? <Pause size="1.25rem" /> : <Play size="1.25rem" />}
                   </IconAction>
                   <Group grow flex={1} gap="xs">
                     {loadedEngines.map((engine, i) => (
@@ -234,7 +225,7 @@ function AnalysisPanel() {
                   onClick={() => {
                     navigate({ to: "/engines" });
                   }}
-                  leftSection={<IconSettings size="0.875rem" />}
+                  leftSection={<Settings size="0.875rem" />}
                 >
                   {t("Board.Analysis.ManageEngines")}
                 </Button>
@@ -245,7 +236,7 @@ function AnalysisPanel() {
                       variant="default"
                       size="lg"
                     >
-                      <IconSelector />
+                      <ChevronsUpDown />
                     </IconAction>
                   </Popover.Target>
 
