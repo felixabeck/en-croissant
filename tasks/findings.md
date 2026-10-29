@@ -19113,3 +19113,25 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 ```text
 Former unpublished identifier: f-20261029-02
 ```
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Ordinary prose after a short game citation hides a valid local occurrence
+
+* **ID:** f-20261029-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/utils/gameReferences.ts metadataVerification, the unknown event/site prefix rejection.
+* **Defect:** Root loaded the actual production module through Vite's module runner in an isolated JSDOM environment and called recognizeGameReferences and matchesReferenceGame. For the comment 0-1 Beerdsen,T-Bluebaum,M White was better., the visible action correctly ends at the player pair but its retained context is White was better. The exact matching Beerdsen/Bluebaum 0-1 game with known Elllobregat event/site returns offered:false. Lookup therefore drops it and can report no matching game solely because ordinary prose was interpreted as a contradictory event.
+* **Failure scenario:** A preparation comment cites a game by result and abbreviated opponents, followed by ordinary notes without a closing round. Clicking the recognized action hides a real local match instead of offering it for explicit selection.
+* **Fix:** Retain an unverifiable occurrence when unterminated trailing text cannot be established as citation metadata. Never auto-open it. Preserve exact event/site-prefix verification, anchored date and round constraints, all hard player/rating/outcome constraints and rejection of contradictory complete citations. No source text or external links change.
+* **Proof:** Add observable lookup and actual admission tests. The prose case must return one unverified occurrence, admit no tab automatically and open the exact target only after explicit selection. Names-only without a tail and exact actual event/site context retain established behavior. Complete contradictory metadata still rejects. Retain tests during root-controlled removal of the correction and exact restoration.
+* **Evidence:** Root source probe on 2026-10-29 printed context White was better. and offered:false at exit0. The actual module was imported, no matcher reconstruction was used. The pre-fix source is retained as gameReferences-before-open-tail.ts under /tmp/build-build-opening-game-references-20261029-064642-82fa88e8.
+* **Found by:** Codex root while the pre-review gate was queued. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+* **Publication recovery:** This is the same task finding originally allocated the unpublished branch-local identifier below. That private snapshot and its receipts remain unchanged in the archived source at62159f00cf0e232f74c6362e2af805aaf6575022 and the task handoff. A concurrently published, different finding already uses that identifier. This fresh canonical filing supplies a unique publication identity without altering the published record or claiming another defect, discovery or review adoption. Historical source reports are interpreted through the explicit publication mapping.
+
+```text
+Former unpublished identifier: f-20261029-03
+```
