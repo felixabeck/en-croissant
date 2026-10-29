@@ -19163,3 +19163,25 @@ Former unpublished identifier: f-20261029-03
 ```text
 Former unpublished identifier: f-20261029-04
 ```
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Parenthesized event text ends a citation before its supplied date and round
+
+* **ID:** f-20261029-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/utils/gameReferences.ts:47, recognizeGameReferences.
+* **Defect:** The first round-shaped parenthesis closes the context even when it belongs to the event. For 0-1 Beerdsen,T-Bluebaum,M Tata Steel (A) Wijk aan Zee 2022 (3), context stops at Tata Steel (A). An otherwise matching candidate with event Tata Steel (A), date2021 and round9 is marked verified, allowing an incorrect automatic opening.
+* **Failure scenario:** Click a preparation citation whose event includes a section in parentheses before the site, year and round. A contradictory local game can open automatically because supplied constraints were dropped.
+* **Related:** f-20261029-11 concerns unknown open-tail prose, a distinct boundary mechanism. This issue existed before that correction, so it is not attributed to its repair.
+* **Fix:** Preserve later supplied metadata across parenthesized event/site text. Ambiguous boundaries require explicit choice rather than automatic opening. Preserve ordinary prose, rich text and next-citation boundaries.
+* **Proof:** Add retained-candidate and contradictory-metadata lookup regressions, observe them fail with only the production correction removed, restore exactly and pass.
+* **Found by:** Correctness cumulative review r1, confidence99, opening-game-references build. Plan authorship and arbitration shared one context. Detection used the same OpenAI model family as code.
+* **Publication recovery:** This is the same r1 finding, not another discovery or review adoption. Its original private identifier below and all subsequent annotations/receipts remain unchanged in the archived snapshot62159f00cf0e232f74c6362e2af805aaf6575022 and the task handoff. This canonical publication record keeps current references in the same publication namespace as the three refiled dependency findings. The original reported failure describes the initial r1 code, not a new failure of current source615df424. Current root proof passed fifteen controlled reversals, related1261 tests and complete pre-review0 before upstream integration. Code closure and integrated desktop/release proof remain pending.
+
+```text
+Former private finding identifier: f-20261029-05
+```
