@@ -406,6 +406,26 @@ for (const colorScheme of ["light", "dark"] as const) {
             await expect(engine.getByText("0.00", { exact: true })).toBeInViewport({ ratio: 1 });
         }
         await expect(rightColumn.getByText("+0.34", { exact: true }).last()).toBeVisible();
+        const scoreChips = engines.first().locator("tbody tr > td:first-child > [data-size='md']");
+        await expect(scoreChips).toHaveText(["+0.34", "-0.21", "0.00"]);
+        const chipBackgrounds = await scoreChips.evaluateAll((chips) =>
+            chips.map((chip) => getComputedStyle(chip).backgroundColor),
+        );
+        expect(
+            new Set(chipBackgrounds).size,
+            `${colorScheme} score chips have distinct fills`,
+        ).toBe(3);
+        const negativeSurfaces = await scoreChips.nth(1).evaluate((chip) => ({
+            line: getComputedStyle(chip.closest("tr")!).backgroundColor,
+            page: getComputedStyle(document.body).backgroundColor,
+        }));
+        expect(chipBackgrounds[1]).not.toBe(negativeSurfaces.line);
+        if (colorScheme === "dark") {
+            expect(
+                chipBackgrounds[1],
+                "Dark Black-better chip uses the page background to separate from its line",
+            ).toBe(negativeSurfaces.page);
+        }
         await assertAccessible();
         await capture(`analysis-two-engines-${colorScheme}`);
         await expect.soft(rightColumn).toHaveScreenshot(`analysis-two-engines-${colorScheme}.png`, {
