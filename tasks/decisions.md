@@ -10642,3 +10642,42 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The existing journey passes despite clipped selected values, and the generic clipping helper exempts populated text inputs. This adopts O3 of the reviewed plan. Reversal path: an equally discriminating browser assertion without broad verifier changes.
 * **Decided by:** Codex, autonomously under full auto adoption on 2026-10-28. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e6a894a5a59bd27315bc6ec5f224120df1dfd8eb3a4bffe9bb546018938d2fa7","input_sha256":"47066a03037e3bd6084665241473cb5b0ba91ae6ce9b1e01232300aaf089cee9","kind":"mutation-receipt","operation":"654dc5a6ebc5426bc214cf07674e884a75759c3ee47909e90eaec486a1869ea3","options":{"section":null},"request_id_sha256":null,"results":["d-20261028-12"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-29 — recorded through the decisions lock
+
+### d-20261029-01 — Admit cold Rust compilation against one shared gate budget
+
+* **Question:** How should f-20261023-04 prevent cold Rust compiler overlap within the real gate budget?
+* **Governs:** f-20261023-04
+* **Chosen:** Adopt the reviewed O1–O4 plan at tasks/plans/2026-10-28-cold-rust-gate-budget.md. Admit one complete Rust lane at a time, size Cargo build jobs from the usable memory budget and available CPUs, and delay heavyweight frontend work until Rust admission ends. Apply allocation to P1 bindings and pre-review Windows compilation too. Numeric constants require cold calibration before source edits and cold Rust-only and all-block proof before closure.
+* **Rejected:** Ordering alone without sizing individual Cargo fan-out, independent lanes each spending the same full budget, raised machine caps, another lock, a new persistent profiler, and test serialization.
+* **Reason:** The preserved kernel-proven incident in f-20261023-04 demonstrates aggregate cold compiler OOM. d-20261023-14 explicitly covers operational recovery only. Benefit is removal of that collision with all proof retained. Failure cost is a slower cold path or an explicit insufficient-budget refusal. Removal and reversal path is replacement of the single-Rust admission only after comparable cold measurements support a smaller partition, with its operative prose removed alongside the mechanism. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as code.
+* **Decided by:** Codex, autonomously under the pinned full-auto drain request. **Superseded-by:** -
+
+### d-20261029-02 — Derive Rust compiler costs from cold measurements
+
+* **Question:** What evidence can establish the Cargo job sizing costs for f-20261023-04?
+* **Governs:** f-20261023-04
+* **Chosen:** Measure native bindings export, native all-target clippy and test compilation, Windows GNU clippy, and pinned nightly branch coverage under the installed unmodified agent-gate launcher, with owned empty targets and isolated empty sccache state. Preserve compiler wrapper behavior. Choose conservative measured constants through the existing workerCount primitive, with one-job detection fallback and refusal below the known one-job minimum. If a single-lane OOM invalidates the envelope, return to plan review.
+* **Rejected:** Invented byte costs, cache hits presented as cold compilation, increasing limits, disabling the compiler wrapper, and new recurring measurement machinery.
+* **Reason:** The reviewed plan identifies no existing cold compiler envelope. One-off observations are necessary to select a bounded allocation. The scratch measurements end with this task and introduce no operative program. Reversal path is recalibration against changed compiler workloads before modifying the constants or admission contract. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as code.
+* **Decided by:** Codex, autonomously under the pinned full-auto drain request. **Superseded-by:** -
+
+### d-20261029-03 — Retain useful non-Rust concurrency around exclusive Rust admission
+
+* **Question:** Which existing gate concurrency remains valid when Rust owns the unpartitioned compile budget?
+* **Governs:** f-20261023-04
+* **Chosen:** Keep contract and bundle checks concurrent with the one admitted Rust lane. Preserve Cargo compilation concurrency within its measured job allowance. After Rust terminates, retain the existing frontend coverage, e2e reservation and mutation sizing rules for the lanes actually active. Ordinary lane failure releases admission for later selected Rust work, while interruption or unconfirmed child cleanup prevents queued compilation starts.
+* **Rejected:** A serial whole-gate chain, multi-slot Rust allocation without aggregate evidence, stopping all proof at an ordinary lane failure, and releasing resources while a child may still survive.
+* **Reason:** The evidenced resource is overlapping compiler contexts, rather than every gate command. The approach preserves useful independent work and existing failure precedence without claiming an unmeasured smaller partition. Reversal path is O4's comparable cold proof supporting partitioned admission. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as code.
+* **Decided by:** Codex, autonomously under the pinned full-auto drain request. **Superseded-by:** -
+
+### d-20261029-04 — Narrowly supersede unconditional concurrent Rust gate scheduling
+
+* **Question:** Which recorded gate contract changes under the kernel-proven cold compiler OOM?
+* **Governs:** f-20261023-04
+* **Chosen:** Retain build tier and implement the reviewed resource design. Supersede only d-20260930-04's unconditional concurrent Rust lanes and Rust-related frontend memory sharing after successful calibration and cold proof. Preserve its gate membership, dist ordering, receipt contracts and table-order failure semantics. d-20261002-01 placement, d-20261002-03 reserve and evidence limitations, and d-20261023-14's historical operational recovery remain intact.
+* **Rejected:** Treating the warm operational recovery as a scheduler repair, reopening settled placement or reserve questions without new evidence, and lowering tier to avoid review.
+* **Reason:** The later cgroup OOM is new evidence not available to the original concurrency decision. The one shared compile budget needs a resource design and discriminating proof. Reversal path is the measured admission replacement described in the adopted plan O4. Plan authorship and arbitration shared one context. Detection runs on the same OpenAI model family as code.
+* **Decided by:** Codex, autonomously under the pinned full-auto drain request. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"7a089c4df59035faa24340467d27c1a384f379b3bdf6ce936e81ffef125c3317","input_sha256":"e706bc0922eae4a30f65746f1deb31a774f1628aad7ab294a881aa85658d8b76","kind":"mutation-receipt","operation":"a17e92c9432c30aadbd203c1b4c23082b65e2c9767c61e8f7ad3f06adf3bdbb7","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-01","d-20261029-02","d-20261029-03","d-20261029-04"],"target":"decisions-ledger","v":1} -->
