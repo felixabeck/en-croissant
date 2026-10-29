@@ -18789,3 +18789,19 @@ Duplicate of handled f-20261026-05. This stub names the same red Test run 402944
 * **Discrimination:** Git withdrew only the six production paths with tests retained. The filed desktop case failed with exit 1 on Lichess selected-text fit, measured 94.9375px against 17px usable. Exact source restoration was hash-checked, and the same pinned browser command passed all 8 cases with exit 0.
 * **Decisions:** d-20261028-10, d-20261028-11 and d-20261028-12 adopt the reviewed allocation, local scrolling and browser proof choices. The prior d-20261027-21 remains unchanged. The durable full review history and proof are in tasks/handoffs/2026-10-28-f-20261027-02-review.md. Cumulative review, full release gates, push, required CI and installation remain pending at this source-completion checkpoint. The final build-ledger completion supersedes that pending status. No separate product decision or new ledger finding was needed.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"33b43c1675aaf4b2e7dfc52af44760178332789e920d67a7a579b97ee94d382c","header_sha256":"0e589f15f477f89e28da149d35e0c5fc378dff64811cce4287257deac970215f","header_status":"handled","input_sha256":"419860adfd5c2448b7643cf7fc3f4d867fb41a67d8df15fbb02a0087a938ae0b","kind":"mutation-receipt","operation":"17b617ca49dc5b2d8507777720d9a613987e898664a503d001cd600e651b6375","options":{"section":null},"request_id_sha256":null,"results":["f-20261027-02"],"target":"f-20261027-02","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Frontend coverage fails portrait recovery witnesses during cold all-block acceptance
+
+* **ID:** f-20261029-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 589da8f8-594b-42fd-bcfb-0e42a2d9ec3f · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-589da8f8-594b-42fd-bcfb-0e42a2d9ec3f-1.jsonl
+* **Impact class:** tooling
+* **Where:** src/components/engines/EnginePortrait.failure.test.tsx, canonical frontend-coverage lane.
+* **Observed failure:** During the clean all-block schedule at 46b7ad1ad7cd3f34eb6a61b9c10d36f2b209cfb5, Vitest reported two failed cases in the ten-test portrait failure suite. The cases are failed-image recovery after changing engine id with the same name and binary, and after changing portrait source. The latter also emitted React updates outside act warnings. The full lane is still running at filing, so no final failure cause or exit status is asserted yet.
+* **Evidence:** artifacts/gates/20261029T032116946Z-1937128/frontend-coverage.log and receipt-frontend-coverage.log, immutable headless attempt gate-cold-all.bPcP5w under this drain's gate directory. All Rust lanes passed before frontend admission. The exact scope has zero OOM and OOM-kill events so far. Logs are retained under /tmp/build-cold-rust-31d88c0a.
+* **Open question:** Determine whether these are fixture synchronization failures or a product portrait recovery defect, preserve the actual assertion evidence, and repair the cause before accepting the all-block proof. Do not change deadlines, worker limits, coverage floors or baselines to clear this failure.
+* **Related findings:** Encountered while implementing f-20261023-04. No shared root cause is established. Ledger search found no existing EnginePortrait.failure timing finding. f-20261011-03 concerns Rust wall-clock witnesses and does not establish a frontend relation.
+* **Proof:** A discriminating failure/repair proof for the actual cause, then successful required all-block acceptance and final gates. A retry alone is not a repair.
