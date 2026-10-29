@@ -246,3 +246,17 @@ feature. Phase 1 candidate vs base HEAD `131c43c5`:
 Final whole-design measurement (after all phases and review repairs): see `d-20261029-22` and
 `docs/bundle-budgets.md` (550,873 B entry, 495,923 B largest lazy, 1,656,725 B total, before D-5;
 final gates re-measure).
+
+## Closure rounds d3 and d4
+
+Round d3 (38b72986..1b42657e): correctness D-5 CLOSED; records R-1 CLOSED (handoff and per-asset
+table present, claims verified); tests D-4 CLOSED and a new blocker D-6: D-5's colour change sat
+inside the screenshot threshold, so reverting it would pass. Fix `685f461c`: computed-style
+assertions (three distinct chip fills in both schemes, negative chip differs from its line, dark
+negative chip equals the page background). Discrimination measured: reverting D-5 fails with
+expected `rgb(16, 14, 13)`, received `rgb(62, 59, 56)`; restored, engine-gap 15/15.
+
+Round d4 (1b42657e..685f461c): tests D-6 CLOSED, APPROVED.
+
+diff_adopted_per_round: d1=7, d2=0, d3=1, d4=0. All diff findings closed; Defers f-20261029-07,
+f-20261029-08. REVIEWED_THROUGH before final gates: 685f461c (plus this record commit).
