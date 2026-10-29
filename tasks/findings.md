@@ -18978,3 +18978,20 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Source confirmation:** openFile awaits read and parse, createTab synchronously seeds the completed tree before publishing the tab, and FileCard navigates only after openFile returns. Tab-tree storage reads are synchronous. Freshness is marked verified before navigation, FileFreshnessGate hides children until verified, and an unchanged stamp does not replace the tree. A separate read-only Codex leaf independently traced the same path and found no evidenced second reset.
 * **Disposition:** Close as an overlapping report of the already handled synchronization defect, governed by d-20261029-07. Preserve the existing workspace wait and every current-move, pointer, subtree and screenshot assertion. Reject adding a sleep, raising a timeout, retrying the click or changing production tree behavior without evidence. No new technical decision, product change or source edit. Plan authorship and arbitration shared one root context. Detection ran on the same model family as the code, in a separate leaf context.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"8f8f7d309bcd7e3eb511132718b0c6532cd6cdbf35aef85c61e137537ba3d484","header_sha256":"e044258bc09c3b7acaf0ddc9860602aa4abb66bb6ad38375d346965d6c70152c","header_status":"handled","input_sha256":"93adbdfa7a3b0e13dbea49a14a6f75c69fc710a45b89709c01dfa2814476e412","kind":"mutation-receipt","operation":"d5d5c5b58c7c2fdf5bc9fb35d663f656fab89fee2dd6ef9a6fec70e481ada370","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-09"],"target":"f-20261029-09","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Tablebase panel ranks moves from the opponent's perspective, so drawing moves sort above winning moves
+
+* **ID:** f-20261029-07 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** behaviour
+* **Where:** src/components/panels/analysis/TablebaseInfo.tsx:22 sorts `data.moves` with `compareTablebaseMoves` (lines 98-103) using `tablebaseRank` (lines 86-95), which ranks `win` first and `loss` last.
+* **Defect:** Each tablebase move's `category` describes the position after the move, from the opponent's side; the same file acknowledges this by passing the inverted `turn` to `OutcomeBadge` (line 72). Ranking `win` first therefore lists moves that let the opponent win first and the mover's winning moves (child `loss`) last.
+* **Spotted outside diff:** review-correctness during the ChessRiddle design build (range 9b76350b..a30f983d). That range changed only the badge colours in `OutcomeBadge`, not the ranking or the sort.
+* **Failure scenario:** Open a position in tablebase range where the side to move has both a winning move (child category `loss`) and a drawing move (child category `draw`). The panel lists the drawing move above the winning move, the reverse of the best-first order a player expects.
+* **Evidence:** Source reading only: `tablebaseRank` at TablebaseInfo.tsx:86-95 and the inverted `turn` at :72. Not reproduced in a running app; the Lichess tablebase response semantics (move categories from the opponent's view) should be confirmed against a recorded response before fixing.
+* **Open question:** none beyond confirming the response semantics; the fix is to rank child categories from the mover's perspective (child `loss` first, then `blessed-loss`, `draw`, `cursed-win`, `win`), keeping the SAN tie-break.
+* **Proof:** A unit test of `compareTablebaseMoves` (or of the rendered order) with child categories `loss`, `draw` and `win` asserting the `loss` move first, red before the fix.
+* **Found by:** Codex review-correctness lens, ChessRiddle design build, 2026-10-29.
