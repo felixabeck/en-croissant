@@ -23,7 +23,7 @@ export function SettingRow({
       data-highlighted={highlight || undefined}
     >
       <div className={classes.settingCopy}>
-        <Text>{title}</Text>
+        <Text className={classes.settingTitle}>{title}</Text>
         <Text size="xs" c="dimmed">
           {description}
         </Text>

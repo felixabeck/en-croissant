@@ -1,6 +1,16 @@
 .mosaic.mosaic-blueprint-theme {
-  background-color: transparent;
+  background-color: var(--cf-background);
   overflow: hidden;
+}
+
+.mosaic-tile {
+  margin: 4px;
+}
+
+.mosaic-tile > div {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 
 .mosaic-root {

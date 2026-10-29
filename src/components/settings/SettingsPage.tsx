@@ -119,6 +119,9 @@ function TelemetrySwitch() {
       styles={{
         track: { cursor: "pointer" },
         thumb: { pointerEvents: "none" },
+        trackLabel: {
+          color: enabled ? "var(--cf-primary-foreground)" : "var(--cf-foreground)",
+        },
       }}
     />
   );
@@ -784,6 +787,7 @@ export default function Page() {
           orientation={compactTabs ? "horizontal" : "vertical"}
           flex={1}
           className={classes.settingsTabs}
+          classNames={{ list: classes.categoryList, tab: classes.categoryTab }}
           styles={{
             tabLabel: {
               textAlign: "left",

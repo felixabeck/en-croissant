@@ -292,7 +292,10 @@ function RootLayout() {
         main: {
           height: "100vh",
           userSelect: "none",
+          background: "var(--cf-background)",
         },
+        navbar: { background: "var(--cf-card)", borderColor: "var(--cf-border)" },
+        header: { background: "var(--cf-card)", borderColor: "var(--cf-border)" },
       }}
     >
       <AboutModal opened={opened} setOpened={setOpened} />

@@ -60,9 +60,15 @@ test("settings-responsive: uses the fixed accent and retains scheme selection", 
     await expect(page.getByRole("radiogroup", { name: "Accent Color" })).toHaveCount(0);
     await expect(page.getByRole("radio", { name: /accent color/i })).toHaveCount(0);
     await expect(page.getByText("Accent Color", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("radio", { name: /light/i })).toBeVisible();
-    await expect(page.getByRole("radio", { name: /dark/i })).toBeVisible();
-    await expect(page.getByRole("radio", { name: /auto/i })).toBeVisible();
+    for (const name of ["Light", "Dark", "Auto"]) {
+        const radio = page.getByRole("radio", { name, exact: true });
+        // SegmentedControl paints the associated label, while its native input owns focus/state.
+        await expect(page.locator(`label[for="${await radio.getAttribute("id")}"]`)).toBeVisible();
+        await radio.focus();
+        await expect(radio).toBeFocused();
+        await page.keyboard.press("Space");
+        await expect(radio).toBeChecked();
+    }
 });
 
 // The page-wide clipping check proves the 320px layout, so each of its rules is pinned here on a

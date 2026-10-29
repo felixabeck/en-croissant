@@ -205,12 +205,14 @@ function BoardAnalysis() {
       />
       <EvalListener />
       <Portal target="#left" style={{ height: "100%" }}>
-        <Board
-          practiceMove={practicing ? (practiceMoveController ?? undefined) : undefined}
-          editingMode={editingMode}
-          boardRef={boardRef}
-          selectedPiece={selectedPiece}
-        />
+        <Paper withBorder h="100%" style={{ overflow: "hidden" }}>
+          <Board
+            practiceMove={practicing ? (practiceMoveController ?? undefined) : undefined}
+            editingMode={editingMode}
+            boardRef={boardRef}
+            selectedPiece={selectedPiece}
+          />
+        </Paper>
       </Portal>
       <Portal target="#topRight" className={paneClasses.root} style={{ height: "100%" }}>
         <Paper
@@ -218,6 +220,7 @@ function BoardAnalysis() {
           className={paneClasses.root}
           style={{
             height: "100%",
+            overflow: "hidden",
           }}
           pos="relative"
         >

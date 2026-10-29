@@ -16,6 +16,7 @@ import type { NotationNodeIndex } from "./notationRows";
 import { pathForNotationNode } from "./notationRows";
 import MoveCell from "./MoveCell";
 import { TreeStateContext } from "./TreeStateContext";
+import classes from "./GameNotation.module.css";
 
 const transpositionCache = new WeakMap<TreeNode, Map<string, TreeNode[]>>();
 
@@ -147,7 +148,7 @@ function CompleteMoveCell({
           width: tableLayout ? "100%" : undefined,
         }}
       >
-        {hasNumber && formatMoveNumber(halfMoves)}
+        {hasNumber && <span className={classes.moveNumber}>{formatMoveNumber(halfMoves)}</span>}
         {open && move ? (
           <OpenMoveMenu
             store={store}
@@ -268,7 +269,7 @@ function OpenMoveMenu({
           {t("Menu.CopyVariationPGN")}
         </Menu.Item>
         <Menu.Item
-          color="red"
+          color="danger"
           leftSection={<Trash2 size="0.875rem" />}
           onClick={() => {
             actions.deleteMove(path);

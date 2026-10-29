@@ -305,39 +305,126 @@ function bestMovesPayload(
     };
 }
 
-async function setupAnalysisEngine(page: Page) {
-    await page.addInitScript(() => {
+async function setupAnalysisEngine(page: Page, engineCount = 1) {
+    await page.addInitScript((engineCount) => {
         localStorage.setItem("erase-drawables-on-click", "false");
         localStorage.setItem(
             "engines",
-            JSON.stringify([
-                {
+            JSON.stringify(
+                Array.from({ length: engineCount }, (_, index) => ({
                     type: "local",
-                    id: "e2e-engine",
-                    name: "E2E Stockfish",
+                    id: index === 0 ? "e2e-engine" : "e2e-engine-2",
+                    name: index === 0 ? "E2E Stockfish" : "E2E ChessDB",
                     version: "19",
                     filename: "stockfish",
                     handle: { id: { id: "e2e-engine-handle" }, kind: "engine" },
                     loaded: true,
-                    settings: [],
+                    settings:
+                        engineCount === 1 ? [] : [{ type: "string", name: "MultiPV", value: "3" }],
                     go: { t: "Infinite" },
-                },
-            ]),
+                })),
+            ),
         );
-    });
+    }, engineCount);
     await page.goto("/");
     await page.getByRole("button", { name: /^open$/i }).click();
     await page.getByRole("tab", { name: "Analysis", exact: true }).click();
-    await page.getByRole("button", { name: "Enable engine", exact: true }).click();
+    await page
+        .getByRole("button", {
+            name: engineCount === 1 ? "Enable engine" : "Enable all engines",
+            exact: true,
+        })
+        .click();
     const searches = () =>
         page.evaluate(() =>
             window.__E2E_TAURI__
                 .invocations()
                 .filter(({ command }) => command === "get_best_moves"),
         );
-    await expect.poll(async () => (await searches()).length).toBe(1);
+    await expect.poll(async () => (await searches()).length).toBe(engineCount);
     const panel = page.locator(".mantine-Accordion-item").filter({ hasText: "E2E Stockfish" });
     return { searches, panel };
+}
+
+for (const colorScheme of ["light", "dark"] as const) {
+    test(`engine-gap: two engine cards and signed evaluations in ${colorScheme}`, async ({
+        page,
+        emitTauriEvent,
+        assertAccessible,
+        capture,
+    }) => {
+        await page.emulateMedia({ colorScheme });
+        await page.setViewportSize({ width: 1440, height: 1100 });
+        await page.addInitScript(
+            (scheme) => localStorage.setItem("mantine-color-scheme", scheme),
+            colorScheme,
+        );
+        const { searches } = await setupAnalysisEngine(page, 2);
+        for (const { args } of await searches()) {
+            const request = args as AnalysisRequest;
+            const payload = bestMovesPayload(
+                request,
+                ["e4", "e5", "Nf3"],
+                ["e2e4", "e7e5", "g1f3"],
+                request.id === "e2e-engine" ? 34 : -21,
+            );
+            payload.bestLines.push(
+                {
+                    ...payload.bestLines[0],
+                    multipv: 2,
+                    score: { value: { type: "cp", value: -21 }, wdl: null },
+                    sanMoves: ["d4", "d5"],
+                    uciMoves: ["d2d4", "d7d5"],
+                },
+                {
+                    ...payload.bestLines[0],
+                    multipv: 3,
+                    score: { value: { type: "cp", value: 0 }, wdl: null },
+                    sanMoves: ["Nf3", "d5"],
+                    uciMoves: ["g1f3", "d7d5"],
+                },
+            );
+            await emitTauriEvent({ event: "best-moves-payload", payload });
+        }
+        const rightColumn = page.locator("#topRight");
+        // Give both cards room using the same pane resize affordance as the product.
+        const splitter = (await page.locator(".mosaic-split.-column").boundingBox())!;
+        await page.mouse.move(splitter.x + splitter.width / 2, splitter.y + splitter.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(splitter.x + splitter.width / 2, 930, { steps: 5 });
+        await page.mouse.up();
+        await page.mouse.move(0, 0);
+        const engines = rightColumn.locator(".mantine-Accordion-item");
+        await expect(engines).toHaveCount(2);
+        for (const engine of await engines.all()) {
+            await expect(
+                engine.getByRole("button", { name: "Disable engine", exact: true }),
+            ).toBeInViewport({ ratio: 1 });
+            await expect(engine.getByRole("button", { name: "e4", exact: true })).toBeVisible();
+            await expect(engine.getByText("-0.21", { exact: true }).last()).toBeVisible();
+            await expect(engine.getByText("0.00", { exact: true })).toBeVisible();
+            await expect(engine.getByText("0.00", { exact: true })).toBeInViewport({ ratio: 1 });
+        }
+        await expect(rightColumn.getByText("+0.34", { exact: true }).last()).toBeVisible();
+        await assertAccessible();
+        await capture(`analysis-two-engines-${colorScheme}`);
+        await expect.soft(rightColumn).toHaveScreenshot(`analysis-two-engines-${colorScheme}.png`, {
+            animations: "disabled",
+        });
+        await rightColumn.getByRole("button", { name: "Pause all engines", exact: true }).click();
+        await expect(
+            rightColumn.getByRole("button", { name: "Enable engine", exact: true }),
+        ).toHaveCount(2);
+        if (colorScheme === "dark") {
+            await page.getByRole("link", { name: "Settings", exact: true }).click();
+            await page.getByRole("tab", { name: "Appearance", exact: true }).click();
+            await assertAccessible();
+            await capture("settings-appearance-dark");
+            await expect
+                .soft(page)
+                .toHaveScreenshot("settings-appearance-dark.png", { fullPage: true });
+        }
+    });
 }
 
 test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B lines arrive", async ({

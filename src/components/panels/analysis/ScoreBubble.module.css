@@ -1,3 +1,54 @@
+.bubble {
+  border-radius: var(--cf-radius-sm);
+  border: 1px solid var(--cf-border);
+  width: 3.5rem;
+  height: 1.6rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+.bubble[data-size="md"] {
+  width: 4rem;
+  height: 1.85rem;
+  padding: 0.15rem;
+}
+
+.bubble:not(.wdl) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.white {
+  background: var(--cf-card);
+  color: var(--cf-foreground);
+}
+
+.bubble.wdl {
+  padding: 0;
+}
+
+.black {
+  background: var(--cf-eval-bar-dark);
+  color: var(--cf-card);
+}
+
+[data-mantine-color-scheme="dark"] .white {
+  background: var(--cf-foreground);
+  color: var(--cf-card);
+}
+
+[data-mantine-color-scheme="dark"] .black {
+  color: var(--cf-foreground);
+}
+
+.equal {
+  background: var(--cf-interactive);
+  color: var(--cf-foreground);
+}
+
 .label {
   text-overflow: clip;
+  color: inherit;
 }

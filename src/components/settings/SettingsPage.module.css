@@ -1,35 +1,23 @@
-[data-mantine-color-scheme="light"] .card {
-  background-color: var(--mantine-color-white);
-}
-
 .card {
   padding: var(--mantine-spacing-lg);
+  min-width: 0;
+  background: var(--cf-card);
+  border-color: var(--cf-border);
 }
 
 .card input {
   text-overflow: ellipsis;
 }
 
-[data-mantine-color-scheme="dark"] .card {
-  background-color: var(--mantine-color-dark-7);
-}
-
-[data-mantine-color-scheme="light"] .item {
-  border-top: 1px solid var(--mantine-color-gray-2);
-}
-
-[data-mantine-color-scheme="dark"] .item {
-  border-top: 1px solid var(--mantine-color-dark-4);
-}
-
 .item {
+  border-top: 1px solid var(--cf-border);
   padding-top: var(--mantine-spacing-sm);
   margin-top: var(--mantine-spacing-sm);
   align-items: center;
 }
 
 .item[data-highlighted] {
-  background-color: var(--mantine-color-yellow-light);
+  background: color-mix(in srgb, var(--cf-primary) 10%, transparent);
 }
 
 .settingCopy {
@@ -40,6 +28,22 @@
 .settingControl {
   flex: 0 1 auto;
   min-width: min(100%, 12rem);
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 4px;
+}
+
+.settingControl:has(:global(.mantine-Slider-markLabel)) {
+  overflow-x: visible;
+  padding-inline: 1rem;
+  /* Slider marks paint below its fixed height. Keep their line and gap in the Card's flow. */
+  padding-bottom: calc(
+    var(--mantine-font-size-sm) * var(--mantine-line-height) + var(--mantine-spacing-xs) / 2
+  );
+}
+
+.settingTitle {
+  font-weight: 500;
 }
 
 .title {
@@ -51,17 +55,29 @@
 }
 
 .settingsTabs {
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
+.categoryList {
+  margin-inline: var(--mantine-spacing-xs);
+  align-self: flex-start;
+}
+
+.categoryTab {
+  justify-content: flex-start;
+}
+
 .settingsContent {
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding-inline: var(--mantine-spacing-md);
 }
 
 .settingsScroll {
+  min-width: 0;
   min-height: 0;
   height: 100%;
 }
@@ -83,6 +99,8 @@
   .settingsTabs [role="tablist"] {
     display: flex;
     flex-direction: row;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
     height: auto;
     max-width: 100%;
     overflow-x: auto;
@@ -107,10 +125,8 @@
     min-width: 0;
   }
 
-  .settingControl:has(:global(.mantine-Slider-markLabel)) {
-    /* Slider marks paint below its fixed height. Keep their line and gap in the Card's flow. */
-    padding-bottom: calc(
-      var(--mantine-font-size-sm) * var(--mantine-line-height) + var(--mantine-spacing-xs) / 2
-    );
+  .card [role="tabpanel"] {
+    min-width: 0;
+    overflow-x: auto;
   }
 }

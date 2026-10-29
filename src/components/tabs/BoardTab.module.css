@@ -9,24 +9,12 @@
   max-width: 14rem;
   padding-right: 0.25rem;
   height: 2.2rem;
+  color: var(--mantine-color-dimmed);
+  background: transparent;
 }
 
-[data-mantine-color-scheme="light"] .tab {
-  background-color: transparent;
-  color: var(--mantine-color-gray-7);
-}
-
-[data-mantine-color-scheme="dark"] .tab {
-  background-color: transparent;
-  color: var(--mantine-color-gray-4);
-}
-
-[data-mantine-color-scheme="light"] .tab:hover {
-  background-color: var(--mantine-color-gray-2);
-}
-
-[data-mantine-color-scheme="dark"] .tab:hover {
-  background-color: var(--mantine-color-dark-6);
+.tab:hover {
+  background: var(--cf-interactive-hover);
 }
 
 .tab:active {
@@ -34,24 +22,14 @@
 }
 
 .selected {
-  border-top: 2px solid var(--mantine-primary-color-filled);
+  border-top: 2px solid var(--cf-primary);
   border-bottom: 2px solid transparent;
+  background: color-mix(in srgb, var(--cf-primary) 10%, var(--cf-card));
+  color: var(--cf-foreground);
 }
 
-[data-mantine-color-scheme="light"] .selected {
-  background-color: var(--mantine-color-white);
-}
-
-[data-mantine-color-scheme="dark"] .selected {
-  background-color: var(--mantine-color-dark-7);
-}
-
-[data-mantine-color-scheme="light"] .selected:hover {
-  background-color: var(--mantine-color-white);
-}
-
-[data-mantine-color-scheme="dark"] .selected:hover {
-  background-color: var(--mantine-color-dark-7);
+.selected:hover {
+  background: color-mix(in srgb, var(--cf-primary) 15%, var(--cf-card));
 }
 
 .tabLabel {
@@ -72,16 +50,11 @@
 .closeTabBtn {
   box-sizing: content-box;
   padding: 0.3rem;
-  border-radius: 0;
+  border-radius: var(--cf-radius-sm);
   transition: background-color 100ms ease;
 }
 
-[data-mantine-color-scheme="light"] .tabAction:hover,
-[data-mantine-color-scheme="light"] .closeTabBtn:hover {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-[data-mantine-color-scheme="dark"] .tabAction:hover,
-[data-mantine-color-scheme="dark"] .closeTabBtn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+.tabAction:hover,
+.closeTabBtn:hover {
+  background: var(--cf-interactive-hover);
 }

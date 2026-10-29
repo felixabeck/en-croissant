@@ -1,16 +1,5 @@
 import { useTabAtom } from "@/state/tabScope";
-import {
-  Box,
-  Divider,
-  Group,
-  Overlay,
-  Paper,
-  ScrollArea,
-  Stack,
-  Table,
-  Text,
-  useComputedColorScheme,
-} from "@mantine/core";
+import { Box, Divider, Group, Overlay, Paper, ScrollArea, Stack, Table, Text } from "@mantine/core";
 import {
   ArrowRight,
   Split,
@@ -116,7 +105,6 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
   const viewport = useRef<HTMLDivElement>(null);
   const [invisibleValue, setInvisible] = useAtom(useTabAtom(invisibleFamily));
   const invisible = topBar && invisibleValue;
-  const colorScheme = useComputedColorScheme("dark");
   const keyMap = useAtomValue(keyMapAtom);
 
   const model = useMemo<NotationRows>(
@@ -194,7 +182,12 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
               ? cellBounds.bottom - viewportBottom
               : 0;
         if (delta) {
-          scrollNotationToOffset(rowVirtualizer, scrollViewport.scrollTop + delta);
+          // Fractional text bounds need the browser's scroll offset rounded toward visibility.
+          const offset = scrollViewport.scrollTop + delta;
+          scrollNotationToOffset(
+            rowVirtualizer,
+            delta > 0 ? Math.ceil(offset) : Math.floor(offset),
+          );
         }
       };
       // Give the mounted row and ResizeObserver a frame to settle before reading geometry.
@@ -214,12 +207,11 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
     <Paper withBorder flex={1} style={{ position: "relative", overflow: "hidden" }}>
       <Group h="100%" wrap="nowrap" align="stretch" gap={0}>
         {controls && (
-          <>
-            <ScrollArea type="never" py="md" mx="xs" style={{ flexShrink: 0 }}>
+          <Box className={styles.toolbar} style={{ flexShrink: 0 }}>
+            <ScrollArea type="never" h="100%" py="md" px="xs">
               {controls}
             </ScrollArea>
-            <Divider orientation="vertical" />
-          </>
+          </Box>
         )}
         <Stack h="100%" gap={0} style={{ flex: 1, minWidth: 0 }}>
           {topBar && <NotationHeader />}
@@ -227,12 +219,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
             <Stack gap="xs">
               <Box>
                 {invisible && (
-                  <Overlay
-                    backgroundOpacity={0.6}
-                    color={colorScheme === "dark" ? "#1a1b1e" : undefined}
-                    blur={8}
-                    zIndex={2}
-                  />
+                  <Overlay backgroundOpacity={0.6} color="var(--cf-inset)" blur={8} zIndex={2} />
                 )}
                 <Box
                   style={{

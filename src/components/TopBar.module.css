@@ -81,7 +81,7 @@
 }
 
 .icon:hover {
-  background-color: var(--mantine-color-dark-5);
+  background-color: var(--cf-interactive-hover);
 }
 
 .close {
@@ -94,6 +94,6 @@
 }
 
 .close:hover {
-  background-color: var(--mantine-color-red-7);
-  color: var(--mantine-color-white);
+  background-color: var(--cf-destructive);
+  color: var(--cf-destructive-foreground);
 }

@@ -6,32 +6,24 @@
   border-left: 3px solid transparent;
   border-right: 3px solid transparent;
   justify-content: center;
+  color: var(--mantine-color-dimmed);
+  border-radius: var(--cf-radius-sm);
 }
 
-[data-mantine-color-scheme="light"] .link {
-  color: var(--mantine-color-gray-7);
-}
-
-[data-mantine-color-scheme="dark"] .link {
-  color: var(--mantine-color-dark-0);
-}
-
-[data-mantine-color-scheme="light"] .link:hover {
-  color: var(--mantine-color-dark-5);
-}
-
-[data-mantine-color-scheme="dark"] .link:hover {
-  color: var(--mantine-color-gray-0);
+.link:focus-visible {
+  outline: 2px solid var(--cf-ring);
+  outline-offset: -3px;
 }
 
 .active {
-  border-left-color: var(--mantine-primary-color-filled);
+  border-left-color: var(--cf-primary);
+  background: color-mix(in srgb, var(--cf-primary) 10%, transparent);
+  color: var(--cf-primary);
 }
 
-[data-mantine-color-scheme="light"] .active {
-  color: var(--mantine-color-dark-5);
-}
-
-[data-mantine-color-scheme="dark"] .active {
-  color: var(--mantine-color-white);
+@media (hover: hover) {
+  .link:hover {
+    background: var(--cf-interactive-hover);
+    color: var(--cf-foreground);
+  }
 }

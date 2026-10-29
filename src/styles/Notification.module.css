@@ -1,9 +1,49 @@
 .root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   background: var(--cf-card);
   color: var(--cf-foreground);
   border: 1px solid var(--cf-border);
   border-radius: var(--cf-radius-lg);
   box-shadow: var(--cf-shadow-elevated);
+}
+
+.body {
+  display: contents;
+}
+
+.title {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.description {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.closeButton {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+}
+
+.root[data-with-icon] {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.icon,
+.loader {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.root[data-with-icon] .title {
+  grid-column: 2;
+}
+
+.root[data-with-icon] .closeButton {
+  grid-column: 3;
 }
 
 .title,

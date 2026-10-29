@@ -411,9 +411,9 @@ export function createAppTheme({
             >[0],
             // Style the dates package without pulling its calendar into the startup bundle.
             DateInput: { classNames: inputClassNames },
-            Select: { classNames: { input: inputClasses.trigger } } satisfies Parameters<
-                typeof Select.extend
-            >[0],
+            Select: {
+                classNames: { ...comboboxClasses, input: inputClasses.trigger },
+            } satisfies Parameters<typeof Select.extend>[0],
             Combobox: { classNames: comboboxClasses } satisfies Parameters<
                 typeof Combobox.extend
             >[0],

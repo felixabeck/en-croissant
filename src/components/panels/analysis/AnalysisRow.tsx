@@ -19,6 +19,7 @@ import { positionFromFen } from "@/utils/chessops";
 import type { ChessDBLine } from "@/utils/chessdb/api";
 import { formatScore } from "@/utils/score";
 import ScoreBubble from "./ScoreBubble";
+import classes from "./BestMoves.module.css";
 
 function AnalysisRow({
   engineId,
@@ -91,7 +92,12 @@ function AnalysisRow({
 
   return (
     <>
-      <Table.Tr inert={inert} opacity={inert ? 0.5 : 1} style={{ verticalAlign: "top" }}>
+      <Table.Tr
+        className={classes.line}
+        inert={inert}
+        opacity={inert ? 0.5 : 1}
+        style={{ verticalAlign: "top" }}
+      >
         <Table.Td width={chessdb ? undefined : 70}>
           {chessdb ? (
             <Tooltip label={chessdb.note}>
@@ -155,7 +161,7 @@ function AnalysisRow({
                 {({ copied, copy }) => (
                   <IconAction
                     label={copied ? t("Common.Copied") : t("Menu.Edit.Copy")}
-                    color={copied ? "teal" : undefined}
+                    color={copied ? "success" : undefined}
                     variant="subtle"
                     disabled={inert}
                     onClick={copy}
@@ -220,7 +226,11 @@ function BoardPopover({
         }}
         onMouseLeave={() => setHovering(false)}
       >
-        {(index === 0 || is_white) && `${move_number.toString()}${is_white ? "." : "..."}`}
+        {(index === 0 || is_white) && (
+          <span
+            className={classes.moveNumber}
+          >{`${move_number.toString()}${is_white ? "." : "..."}`}</span>
+        )}
         <MoveCell
           move={san}
           isCurrentVariation={false}

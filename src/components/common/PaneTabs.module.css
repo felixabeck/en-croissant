@@ -5,6 +5,8 @@
 
 .list {
   flex-shrink: 0;
+  margin: 4px;
+  border-radius: var(--cf-radius-lg);
 }
 
 .panel {
@@ -57,6 +59,8 @@
 .root[data-compact] .content {
   overflow: auto;
   scroll-padding: var(--mantine-spacing-xs);
+  /* Keep the compact inset usable when Mantine's inline spacing scales to 200%. */
+  padding: 8px !important;
 }
 
 .root[data-compact] .scroll {

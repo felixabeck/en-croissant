@@ -41,6 +41,7 @@ import ReportPanel from "./ReportPanel";
 import ScoreBubble from "./ScoreBubble";
 import TablebaseInfo from "./TablebaseInfo";
 import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
+import classes from "./AnalysisPanel.module.css";
 
 function AnalysisPanel() {
   const { t } = useTranslation();
@@ -82,7 +83,7 @@ function AnalysisPanel() {
   const navigate = useNavigate();
 
   return (
-    <Stack h="100%" pl="sm">
+    <Stack h="100%" pl="xs" style={{ minWidth: 0, minHeight: 0 }}>
       <Tabs
         h="100%"
         orientation="vertical"
@@ -93,6 +94,7 @@ function AnalysisPanel() {
           display: "flex",
         }}
         keepMounted={false}
+        classNames={{ root: classes.tabs, list: classes.sideTabs, panel: classes.panel }}
       >
         <Tabs.List>
           <Tabs.Tab value="engines">{t("Board.Analysis.Engines")}</Tabs.Tab>
@@ -125,7 +127,7 @@ function AnalysisPanel() {
                 </>
               )}
             {loadedEngines.length > 1 && (
-              <Paper withBorder p="xs" flex={1}>
+              <Paper withBorder p="xs" flex={1} className={classes.summary}>
                 <Group w="100%" gap="xs" wrap="nowrap">
                   <IconAction
                     label={t(
@@ -195,7 +197,7 @@ function AnalysisPanel() {
                             <Draggable key={engine.id} draggableId={engine.id} index={i}>
                               {(provided) => (
                                 <div ref={provided.innerRef} {...provided.draggableProps}>
-                                  <Accordion.Item value={engine.id}>
+                                  <Accordion.Item value={engine.id} className={classes.engine}>
                                     <BestMoves
                                       id={i}
                                       engine={engine}
@@ -308,7 +310,13 @@ export function EngineSummary({
   const score = curEval && curEval.length > 0 ? curEval[0].score : null;
 
   return (
-    <Card withBorder c={arrowColors[i]?.strong} py={4} px="xs">
+    <Card
+      withBorder
+      py={4}
+      px="xs"
+      className={classes.summaryChip}
+      style={{ "--cf-engine-color": `var(--mantine-color-${arrowColors[i]?.strong ?? "gold"}-6)` }}
+    >
       <Group gap="xs" wrap="nowrap" justify="center">
         <Text
           fw="bold"
@@ -323,7 +331,7 @@ export function EngineSummary({
             : engine.name}
         </Text>
         {failure && (
-          <Text fz="xs" c="red" role="status">
+          <Text fz="xs" c="danger" role="status">
             {t("Board.Analysis.EngineFailed")}
           </Text>
         )}

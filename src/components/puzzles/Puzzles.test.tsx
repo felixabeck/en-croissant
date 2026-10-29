@@ -3052,6 +3052,8 @@ test("an oversized incoming puzzle reports the German quota message and leaves t
     }).join(""),
   );
   mocks.getPuzzle.mockResolvedValue({ ...puzzleB(), themes, moves: "g1f3 d7d5" });
+  // Snapshot the completed setup write, not a value awaiting the storage debounce.
+  tabStorage.flush();
   const bytes = sessionStorage.getItem("puzzles-test");
   await newPuzzle();
   expect(treeStore.getState()).toBe(before);

@@ -342,7 +342,6 @@ export default function BoardsPage() {
             <IconAction
               label={t("Tab.Actions", { defaultValue: "Tab actions" })}
               variant="default"
-              radius={0}
               disabled={!activeTab}
               classNames={{ root: classes.newTab }}
             >
@@ -360,7 +359,7 @@ export default function BoardsPage() {
               {t("Tab.Rename", { defaultValue: "Rename tab" })}
             </Menu.Item>
             <Menu.Item
-              color="red"
+              color="danger"
               leftSection={<X size="0.875rem" />}
               onClick={() => void closeTab(activeTab)}
             >
@@ -371,7 +370,6 @@ export default function BoardsPage() {
         <IconAction
           label={t("Tab.NewTab", { defaultValue: "New tab" })}
           variant="default"
-          radius={0}
           onClick={() =>
             void runTabCreation({
               create: () => createTab({ tab: { name: t("Tab.NewTab"), type: "new" }, setTabs }),
@@ -385,7 +383,6 @@ export default function BoardsPage() {
         <IconAction
           label={t("Tab.Close", { defaultValue: "Close tab" })}
           variant="default"
-          radius={0}
           disabled={!activeTab}
           onClick={() => void closeTab(activeTab)}
           classNames={{ root: classes.newTab }}

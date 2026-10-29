@@ -154,8 +154,16 @@ function BestMovesComponent({
   const progress = available ? engineProgress : 0;
 
   return (
-    <>
-      <Box style={{ display: "flex" }}>
+    <Box
+      className={classes.engine}
+      style={{
+        "--cf-engine-status":
+          settings.enabled && !isGameOver && !failure
+            ? `var(--mantine-color-${id < 4 ? arrowColors[id].strong : theme.primaryColor}-6)`
+            : "var(--cf-border-strong)",
+      }}
+    >
+      <Box className={classes.header}>
         <Stack gap={0} py="1rem">
           <IconAction
             label={
@@ -166,7 +174,7 @@ function BestMovesComponent({
             pressed={settings.enabled}
             size="md"
             variant={settings.enabled ? "filled" : "transparent"}
-            color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
+            color={theme.primaryColor}
             onClick={() => {
               setSettings((prev) => ({ ...prev, enabled: !prev.enabled }));
             }}
@@ -199,7 +207,7 @@ function BestMovesComponent({
             variant="transparent"
             style={{ marginTop: "auto", marginBottom: "auto" }}
           >
-            <Crosshair color={threat ? "red" : undefined} size="1rem" />
+            <Crosshair color={threat ? "var(--cf-destructive)" : undefined} size="1rem" />
           </IconAction>
           <IconAction
             label={isDetached ? t("Board.Analysis.Unpin") : t("Board.Analysis.Pin")}
@@ -239,17 +247,17 @@ function BestMovesComponent({
           engine={engine}
           settings={settings}
           setSettings={setSettings}
-          color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
           remote={engine.type !== "local"}
         />
       </Collapse>
 
       <Progress
+        aria-label={engine.name}
+        className={classes.progress}
         value={isGameOver || failure ? 0 : progress}
         animated={available && progress < 100 && settings.enabled && !isGameOver && !failure}
         size="xs"
         striped={available && progress < 100 && !settings.enabled && !failure}
-        color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
       />
       <Accordion.Panel pos="relative">
         <Table>
@@ -258,7 +266,7 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td colSpan={3}>
                   <Stack gap="xs" role="status">
-                    <Text c="red" fw={700}>
+                    <Text c="danger" fw={700}>
                       {t("Board.Analysis.EngineFailed")}
                     </Text>
                     <Text size="sm">
@@ -336,7 +344,7 @@ function BestMovesComponent({
               ) : (
                 <Table.Tr>
                   <Table.Td>
-                    <Text ta="center" my="lg">
+                    <Text c="dimmed" size="sm" my={4}>
                       {t("Board.Analysis.InactiveEngine")}
                     </Text>
                   </Table.Td>
@@ -370,7 +378,7 @@ function BestMovesComponent({
           </Table.Tbody>
         </Table>
       </Accordion.Panel>
-    </>
+    </Box>
   );
 }
 
@@ -404,9 +412,9 @@ function EngineTop({
   const nps = isComputed ? formatNodes(engineVariations[0].nps, 1) : 0;
 
   return (
-    <Group justify="space-between" wrap="nowrap" opacity={dimmed ? 0.5 : 1}>
+    <Group justify="space-between" wrap="wrap" gap="xs" opacity={dimmed ? 0.5 : 1}>
       <Group align="center" wrap="nowrap">
-        <Text fw="bold" fz="lg" lineClamp={1}>
+        <Text fw={600} fz="sm" lineClamp={1}>
           {name}
         </Text>
         {loading && enabled && !isGameOver && !error && <Code fz="xs">{t("Common.Loading")}</Code>}
@@ -422,7 +430,7 @@ function EngineTop({
             </Tooltip>
           )}
       </Group>
-      <Group gap="lg" wrap="nowrap">
+      <Group gap="sm" wrap="nowrap" className={classes.stats}>
         {!isGameOver && engineVariations && engineVariations.length > 0 && (
           <>
             <Stack align="center" gap={0}>

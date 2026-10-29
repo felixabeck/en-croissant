@@ -1,7 +1,45 @@
-[data-mantine-color-scheme="light"] .subtitle {
-  color: var(--mantine-color-black);
+.engine {
+  border-left: 3px solid var(--cf-engine-status);
 }
 
-[data-mantine-color-scheme="dark"] .subtitle {
-  color: var(--mantine-color-gray-5);
+.header {
+  display: flex;
+  align-items: center;
+}
+
+.header :global(.mantine-Accordion-control) {
+  min-width: 0;
+  background: transparent;
+  color: var(--cf-foreground);
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  .header :global(.mantine-Accordion-control):hover {
+    background: var(--cf-interactive-hover);
+  }
+}
+
+.subtitle {
+  color: var(--mantine-color-dimmed);
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+}
+
+.stats {
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  width: 4rem;
+  margin: 0 8px 4px auto;
+}
+
+.line {
+  background: var(--cf-surface-inset);
+}
+
+.moveNumber {
+  color: var(--mantine-color-dimmed);
+  font-variant-numeric: tabular-nums;
 }

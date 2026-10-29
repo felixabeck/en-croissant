@@ -1,6 +1,7 @@
 import { Typography } from "@mantine/core";
 import { Fragment, memo, type ReactNode } from "react";
 import { readCommentNotation, type CommentNotationNode } from "@/utils/commentNotation";
+import classes from "./GameNotation.module.css";
 
 function renderNotation(nodes: CommentNotationNode[], multipleLine: boolean): ReactNode {
   return nodes.map((node, index) => {
@@ -53,6 +54,7 @@ function Comment({ comment }: { comment: string }) {
 
   return (
     <Typography
+      className={classes.comment}
       pl={0}
       mx={4}
       style={{

@@ -1,6 +1,16 @@
 @value dropdown, arrow from "./Popover.module.css";
 
+.options :global(.mantine-ScrollArea-viewport) {
+  scroll-padding-block: 1px;
+}
+
+.options :global(.mantine-ScrollArea-content) {
+  /* Keep fractional option edges reachable at the first and last scroll positions. */
+  padding-block: 1px;
+}
+
 .option {
+  scroll-margin-block: 1px;
   border-radius: var(--cf-radius-lg);
   padding: 12px;
   font-size: var(--mantine-font-size-sm);
