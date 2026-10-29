@@ -17,14 +17,10 @@ export type GameReference = {
     outcome: Outcome;
     white: ReferencePlayer;
     black: ReferencePlayer;
-    /** Visible tail, interpreted only against a candidate's event/site headers. */
+    /** Full line-bounded tail through the next player pair, independent of the label end. */
     context: string;
-    /** The recognizer found an explicit closing round, rather than an ambiguous tail. */
+    /** The visible label has a lexically identifiable closing round. */
     closed: boolean;
-    /** Lexical label hints, never query filters or verified game metadata. */
-    event?: string;
-    year?: string;
-    round?: string;
 };
 
 const surname = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*(?: +[\p{L}\p{M}][\p{L}\p{M}'’\-]*)*`;
@@ -34,6 +30,22 @@ const pair = new RegExp(
     "gu",
 );
 
+// One field grammar for lexical label boundaries and candidate-relative metadata.
+const fieldGrammar = String.raw`(?:((?:18|19|20|21)\d{2})(?: +\((\d+(?:\.\d+)*|[A-Za-z])\))?|\((\d+(?:\.\d+)*|[A-Za-z])\))(?=$|[\s.,!?:])`;
+const fieldsAtStart = new RegExp(`^${fieldGrammar}`, "u");
+const fieldsInText = new RegExp(String.raw`(?<![\p{L}\p{N}])${fieldGrammar}`, "gu");
+const fieldRound = (fields: RegExpMatchArray) => fields[2] ?? fields[3];
+
+function closingFields(text: string): RegExpExecArray | undefined {
+    const fields = [...text.matchAll(fieldsInText)];
+    const datedRounds = fields.filter((match) => match[1] && fieldRound(match));
+    if (datedRounds.length === 1) return datedRounds[0];
+    if (datedRounds.length > 1) return undefined;
+    const rounds = fields.filter(fieldRound);
+    const round = rounds.length === 1 ? rounds[0] : undefined;
+    return round && !text.slice(round.index + round[0].length).trim() ? round : undefined;
+}
+
 /** Offsets refer to visible text from the safe comment reader, never stored Markdown. */
 export function recognizeGameReferences(text: string): GameReference[] {
     const references: GameReference[] = [];
@@ -42,28 +54,11 @@ export function recognizeGameReferences(text: string): GameReference[] {
         const start = match.index;
         const pairEnd = start + match[0].length;
         const tail = text.slice(pairEnd, pairs[index + 1]?.index).split("\n")[0];
-        // A round closes the visible citation. Preserve an unterminated tail rather than
-        // treating an event's first numeral as the date or discarding its remaining site.
-        const terminator = / +\((\d+(?:\.\d+)*|[A-Za-z])\)/.exec(tail);
-        const visibleTail = (
-            terminator ? tail.slice(0, terminator.index + terminator[0].length) : tail
-        ).trimEnd();
-        const context = visibleTail.trim();
-        const end = terminator ? pairEnd + visibleTail.length : pairEnd;
-        const metadata =
-            /^(?:(.*?) +)?((?:18|19|20|21)\d{2})(?: +\((\d+(?:\.\d+)*|[A-Za-z])\))?$/.exec(context);
-        const withoutYear = metadata ? null : /^(.*?) *\((\d+(?:\.\d+)*|[A-Za-z])\)$/.exec(context);
-        let event: string | undefined;
-        let year: string | undefined;
-        let round: string | undefined;
-        if (metadata && !/(?:1-0|0-1|1\/2-1\/2|½-½)/.test(metadata[1] ?? "")) {
-            event = metadata[1]?.trim() || undefined;
-            year = metadata[2];
-            round = metadata[3];
-        } else if (withoutYear && !/(?:1-0|0-1|1\/2-1\/2|½-½)/.test(withoutYear[1])) {
-            event = withoutYear[1].trim();
-            round = withoutYear[2];
-        }
+        // Candidate headers resolve matching boundaries later. A lexical label must never
+        // discard a later supplied field or turn following prose into matching metadata.
+        const terminator = closingFields(tail);
+        const context = tail.trim();
+        const end = terminator ? pairEnd + terminator.index + terminator[0].length : pairEnd;
         references.push({
             start,
             end,
@@ -81,9 +76,6 @@ export function recognizeGameReferences(text: string): GameReference[] {
             },
             context,
             closed: Boolean(terminator),
-            event,
-            year,
-            round,
         });
     }
     return references.filter(
@@ -95,32 +87,39 @@ const normalized = (text: string) =>
     text.normalize("NFC").toLocaleLowerCase("en").replace(/’/g, "'").replace(/\s+/g, " ").trim();
 const initialsOf = (text: string) => normalized(text).replace(/[.\s-]/g, "");
 
-export function matchesReferencePlayer(reference: ReferencePlayer, name: string | null): boolean {
-    if (!name) return false;
+type ReferenceVerification = "verified" | "unverified" | "rejected";
+
+function referencePlayerVerification(
+    reference: ReferencePlayer,
+    name: string | null,
+): ReferenceVerification {
+    if (!name) return "rejected";
     const comma = name.indexOf(",");
     let given: string;
     if (comma >= 0) {
-        if (normalized(name.slice(0, comma)) !== normalized(reference.surname)) return false;
+        if (normalized(name.slice(0, comma)) !== normalized(reference.surname)) return "rejected";
         given = name.slice(comma + 1).trim();
     } else {
         const suffix = ` ${normalized(reference.surname)}`;
-        if (!normalized(name).endsWith(suffix)) return false;
+        if (!normalized(name).endsWith(suffix)) return "rejected";
         given = normalized(name).slice(0, -suffix.length);
     }
-    if (!given) return false;
+    if (!given) return "rejected";
     const wanted = initialsOf(reference.initials);
-    const words = given.split(/[\s-]+/).filter(Boolean);
-    const abbreviated =
-        words.every((word) => [...word.replace(/\./g, "")].length === 1) ||
-        /^[\p{L}](?:\.[\p{L}])+\.?$/u.test(given) ||
-        /^[\p{Lu}]{2,4}$/u.test(given);
-    const actual = abbreviated
-        ? initialsOf(given)
-        : words.map((word) => [...normalized(word)][0]).join("");
-    return actual.startsWith(wanted);
+    const words = normalized(given)
+        .split(/[.\s-]+/)
+        .filter(Boolean);
+    const abbreviated = words.every((word) => [...word].length === 1);
+    // A compact token could be a short name or ordered initials, in every casing.
+    if (!abbreviated && normalized(given) === wanted) return "unverified";
+    const actual = abbreviated ? initialsOf(given) : words.map((word) => [...word][0]).join("");
+    return actual.startsWith(wanted) ? "verified" : "rejected";
 }
 
-type ReferenceVerification = "verified" | "unverified" | "rejected";
+/** Whether a player may be offered, including ambiguous compact initials. */
+export function matchesReferencePlayer(reference: ReferencePlayer, name: string | null): boolean {
+    return referencePlayerVerification(reference, name) !== "rejected";
+}
 
 function metadataVerification(
     reference: GameReference,
@@ -139,44 +138,37 @@ function metadataVerification(
         .filter((prefix) => prefix.text)
         .sort((a, b) => b.text.length - a.text.length);
     const prefix = prefixes.find(({ text }) => context === text || context.startsWith(`${text} `));
-    const startsFields = /^(?:(?:18|19|20|21)\d{2}(?:\s|$)|\()/;
-    if (!prefix && !startsFields.test(context) && reference.closed && event) return "rejected";
     const remaining = prefix ? context.slice(prefix.text.length).trim() : context;
-    // An unclosed non-field tail is prose. Its incidental years are not citation dates.
-    if (!reference.closed && remaining && !startsFields.test(remaining)) return "unverified";
-    // A closed citation or field-led tail still supplies metadata constraints.
-    if (
-        reference.closed &&
-        prefix &&
-        !prefix.includesSite &&
-        site &&
-        remaining &&
-        !startsFields.test(remaining)
-    )
+    const anchored = fieldsAtStart.exec(remaining);
+    if (!prefix && !anchored && reference.closed && event) return "rejected";
+    if (reference.closed && prefix && !prefix.includesSite && site && remaining && !anchored)
         return "rejected";
-
-    const years = /(?<![\p{L}\p{N}])((?:18|19|20|21)\d{2})(?![\p{L}\p{N}])/gu;
-    const rounds = /\((\d+(?:\.\d+)*|[A-Za-z])\)/g;
-    let verified = true;
-    for (const [, year] of remaining.matchAll(years)) {
+    if (!remaining)
+        return reference.closed || ![...context.matchAll(fieldsInText)].some(fieldRound)
+            ? "verified"
+            : "unverified";
+    // Unknown text before a lexical close stays unverified, but its identifiable supplied
+    // fields still constrain the game. An open prose tail supplies no incidental fields.
+    const fields = anchored ?? (reference.closed ? closingFields(remaining) : undefined);
+    if (!fields) return "unverified";
+    const year = fields[1];
+    const round = fieldRound(fields);
+    let verified = Boolean(anchored);
+    if (year) {
         const actual = /^\d{4}/.exec(game.date ?? "")?.[0];
         if (actual && actual !== year) return "rejected";
         if (!actual) verified = false;
     }
-    for (const [, round] of remaining.matchAll(rounds)) {
+    if (round) {
         const actual = known(game.round ?? "");
         if (actual && actual !== normalized(round)) return "rejected";
         if (!actual) verified = false;
+        // Only fields before this established close belong to the citation. Later prose,
+        // including years and parenthesized variation markers, is outside game metadata.
+        return verified ? "verified" : "unverified";
     }
-    const residual = remaining.replace(years, "").replace(rounds, "").trim();
-    if (
-        prefix &&
-        !prefix.includesSite &&
-        site &&
-        residual &&
-        (reference.closed || startsFields.test(remaining))
-    )
-        return "rejected";
+    const residual = remaining.slice(fields[0].length).trim();
+    if (prefix && !prefix.includesSite && site && residual) return "rejected";
     return verified && !residual ? "verified" : "unverified";
 }
 
@@ -184,17 +176,21 @@ function referenceGameVerification(
     reference: GameReference,
     game: NormalizedGame,
 ): ReferenceVerification {
+    const white = referencePlayerVerification(reference.white, game.white);
+    const black = referencePlayerVerification(reference.black, game.black);
     if (
         !(
-            matchesReferencePlayer(reference.white, game.white) &&
-            matchesReferencePlayer(reference.black, game.black) &&
+            white !== "rejected" &&
+            black !== "rejected" &&
             game.result === reference.outcome &&
             (reference.white.rating === undefined || game.white_elo === reference.white.rating) &&
             (reference.black.rating === undefined || game.black_elo === reference.black.rating)
         )
     )
         return "rejected";
-    return metadataVerification(reference, game);
+    const metadata = metadataVerification(reference, game);
+    if (metadata === "rejected") return "rejected";
+    return [white, black, metadata].includes("unverified") ? "unverified" : "verified";
 }
 
 /** Whether an occurrence may be offered. Lookup retains its separate metadata certainty. */
@@ -322,7 +318,7 @@ export async function lookupGameReference(
         }
         try {
             const players = async (person: ReferencePlayer) => {
-                const ids: Player[] = [];
+                const matchedPlayers: Player[] = [];
                 // SQLite NOCASE is ASCII-only. NFC keeps the ASCII fragment invariant across
                 // composed/decomposed spellings. Scan all players only without such a fragment.
                 await pages<Player>(
@@ -348,13 +344,14 @@ export async function lookupGameReference(
                         ),
                     (player) => {
                         if (matchesReferencePlayer(person, player.name)) {
-                            if (ids.length >= REFERENCE_SEARCH_LIMITS.players) return false;
-                            ids.push(player);
+                            if (matchedPlayers.length >= REFERENCE_SEARCH_LIMITS.players)
+                                return false;
+                            matchedPlayers.push(player);
                         }
                         return true;
                     },
                 );
-                return ids;
+                return matchedPlayers;
             };
             const whites = await players(reference.white);
             if (!whites.length) continue;

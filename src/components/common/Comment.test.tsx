@@ -118,8 +118,8 @@ test("decorates across rich formatting, retains every character and activates th
   expect(activate).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({
       label: second,
-      year: "2023",
-      round: "6",
+      context: "Titled Tuesday intern op 19th Dec Late Chess.com INT blitz 2023 (6) after.",
+      closed: true,
       black: expect.objectContaining({ surname: "Deac" }),
     }),
   );
