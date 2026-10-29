@@ -8,7 +8,7 @@ Plan authorship and arbitration shared one context. Earlier implementation and d
 
 ## Plan review disposition
 
-Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. Original DR1 remains pending code closure. Current publication aliases and the immutable private records are documented below.
+Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. R4 explicitly closed original DR1. Its new correction-created confidence follow-up DR12 remains pending repair and closure. Current publication aliases and the immutable private records are documented below.
 
 - PR-1, error-handling r1 finding 1, should-fix confidence90. Fix. Source discovery already retains safe localized failure distinctions. O2 was corrected to carry safe typed source-qualified reasons through failed and zero-result searches. Plan and error-handling r2 explicitly closed it.
 - PR-2, tests r3 finding 1, blocker confidence92. Fix. O4 requires candidate-retention through a query-sensitive source that excludes out-of-range dates. Plan and tests r4 explicitly closed the plan correction. Root later proved the implemented regression fails with only the production correction removed.
@@ -2727,6 +2727,129 @@ No source or test reversal remains. Production files match the restored final ha
 No full pre-review, browser snapshots, or native journey in this leaf. Pagination/ownership TournamentCard tests still pass. Shared original-game admission coverage was not duplicated. Confidence: 92.
 
 ````
+
+
+## Code closure R4 and new confidence repair
+
+R4 reviewed9aa9bd2f..70199ec1 with fulle14a8547..70199ec1 context. Seven canonical Grok read-only leaves completed, each profile LEAF commands7 and every complete raw report read. Six APPROVED, correctness REVISE. DR1,DR10 andDR11 are explicitly CLOSED. That closes all11 earlier adopted code/record issues. This does not approve the candidate, because R4 adopted3 new issues.
+
+DR12 Fix, correctness blocker confidence93 at src/utils/gameReferences.ts208. The R3 combined-prefix exception promotes an ambiguous shorter header prefix to verified after intervening prose. Exact supplied2020(A) and round-only(A) counterexamples and their original full reports are below. This is a correction-created false-certainty regression in28e4b71a, parentDR1/f-20261029-13, canonically filed asf-20261030-02 inb53517cd. It differs from the now-closed missing-constraint bypass. Technical resolution under the existing uncertainty contract: retain applicable original constraints and otherwise compatible candidates, but require explicit choice when multiple complete readings leave the boundary unresolved. A candidate's own matching combined prefix alone is insufficient certainty. Single unambiguous readings still verify. No new product policy or parser framework is authorized.
+
+DR13 Fix, minimalism nit confidence82 at TournamentCard.test.tsx89. Reuse the real runTabCreation instead of copying its operation into a synchronous mock, keeping the admission spy and shared seed real. This removes duplicated protocol and preserves asynchronous behavior.
+DR14 Fix, code-quality nit confidence84 at gameReferences.ts208. Name the matched-header predicate accurately rather than invert an anonymous conjunction. A matching prefix and a certain citation boundary are distinct.
+
+Code adoptions r1=9 r2=0 r3=2 r4=3. Four completed rounds,14 unique adopted issues,11 CLOSED and3 pending repair/closure. No Skip or Defer. DR1 supplied rework remains separate from the new independent DR12 adoption. Plan10 rounds and its3 unique closed issues are unchanged. This is implementation correction within the existing ambiguity obligation, no changed mandate or plan premise.
+
+R4 measured wall from packet generation through this arbitration checkpoint is717.3s, including report extraction, root source inspection and immediate canonical filing. Active review wall is unknown, parallel durations are not summed. No quota wait or writer rollover. Installed kite759a67b includes49bd7587 fixing the earlier Grok read-only launch failure. R4 used the real selected Executor Grok, not native fallback. Detection and the R3 repairs share xAI family. Original feature/root are OpenAI. Plan authorship and arbitration shared one root context. No whole-range family separation is claimed.
+
+Root independently confirmed the record lens's ignored JSON counts6 and13 from the retained raw mutation reports and the installed kit identities from the immutable release. Live hosted state and final installed app proof remain pending. f-20261011-03 and f-20261022-05 remain open. This R4 record and its raw reports are known before final gates. The new canonical filingb53517cd occurred after the frozen R4 candidate and belongs to R5 records closure, never claimed reviewed by R4.
+
+### R4 complete raw reports
+
+## correctness
+
+DR1 CLOSED for the R3 supplied complete-prefix inputs. `metadataVerification` no longer returns early `unverified` when `prefix.text === "${event} ${site}"` and a later dated round sits in ordinary prose. For `Tata Steel (A) Wijk aan Zee 2022 (3) Better was Bd3 in 2024 (A).` and the same form without `in`, remaining starts at `2022 (3)`, `continuation` is absent, the new guard is skipped, and `referenceFieldsVerification` runs on that anchored tuple. Date `2021.01.01` round `9` is `rejected`. The matching 2022/3 original is `verified`. Adjacent `2022 (3) 2024 (A)` still uses the competing-reading arm at `gameReferences.ts:194`. Known-site `siteFollows` still wins before the new guard.
+
+The same guard is the complete-prefix test, including a candidate whose full event+site is only a shorter prefix of the citation. That is a wrong result the repair introduces.
+
+[blocker] src/utils/gameReferences.ts:208 — For citation `0-1 Beerdsen,T-Bluebaum,M Tata Steel Wijk aan Zee 2020 (A) Better was Bd3 2022 (3).` and candidate event `Tata Steel`, site `Wijk aan Zee`, date `2020.01.01`, round `A`, the selected prefix is the candidate’s full combined headers, so the new `prefix.text === \`${event} ${site}\`` exception skips the later-tuple unverified return. `anchored` is `2020 (A)`, `afterRound` is `Better was Bd3 2022 (3).` (no immediate `continuation`), and the function verifies on `2020 (A)` only. The later `2022 (3)` is treated as incidental prose. The same short combined year-round row without that prose is retained `unverified` (`gameReferences.test.ts:651`, `retained[0] === true`) because adjacency still competes. The contract forbids a shorter matching header prefix from establishing a closing round, and parenthesized or year-round header extensions must not hide later supplied constraints. This candidate is therefore auto-opened as `verified` when it must remain an unverified choice. The same promotion happens for `Tata Steel Wijk aan Zee (A) Better was Bd3 2022 (3).` with date `2021.01.01` round `A`. (confidence: 93)
+
+TournamentCard now spreads `databaseGameSeed(game, file)` into `createTab`. That seed still passes `linked: game.linked ?? undefined`, and `createTab` still forwards `gameOrigin.linked ?? null` to `resolveLinkedGame`. No caller/callee mismatch on that path.
+
+Detection shares the xAI family that wrote the R3 repairs. Plan authorship and arbitration remain the root context. Pending final gates are not treated as passed.
+
+VERDICT: REVISE
+
+## root-cause
+
+DR1 CLOSED. The R3 failure was `metadataVerification` at `src/utils/gameReferences.ts:206-215`. After a complete event+site prefix, an anchored `2022 (3)` was followed by ordinary prose containing a later dated round. `continuation` was absent, so the old `afterRound` dated-round check returned `unverified` before `referenceFieldsVerification` ran. A candidate dated `2021.01.01` with round `9` was therefore retained for choice even though the original fields were identifiable. `28e4b71a` keeps that early return only when the matched prefix is not the complete combined event+site header. With that header the anchored fields fall through to the shared date/round comparison at `src/utils/gameReferences.ts:221`. The later prose tuple stays incidental.
+
+The new cases at `src/utils/gameReferences.test.ts:994` cover both supplied prose forms. They reject `2021.01.01`/`9`, later-only `2024 (A)`, and partial original conflicts. They verify the matching original and keep unknown actual date/round as explicit choice. Adjacent competing tuples at `src/utils/gameReferences.test.ts:918`, known-site later fields at `src/utils/gameReferences.test.ts:874`, and bare-year prose at `src/utils/gameReferences.test.ts:810` still use their earlier branches. `git blame` shows `8347afa2` introduced the too-broad early return with the competing-reading repair. This delta narrows that return. It leaves the adjacent-tuple comparison, the bare-year `verified = false` path, and shorter-prefix unresolved-header returns in place. There is one matcher. Root reverse/restore evidence in the assignment matches this producer: old code kept incompatible `2021`/`9` as unverified, restored bytes went green.
+
+DR10 CLOSED. Linked tournament rows already carry locators from `query_games` through `getTournamentGames`. `createTab` at `src/utils/tabs.ts:571-575` forwards `gameOrigin.linked` into `resolveLinkedGame`. Native `resolve_game` at `src-tauri/src/db/linked_collections.rs:3318-3328` returns `StaleGame` when that locator is missing. TournamentCard built a database origin with only `kind`, `database`, and `gameId`, so the locator never reached admission. It now spreads `databaseGameSeed(game, file)` at `src/components/databases/TournamentCard.tsx:167`, the same helper as `GameTable`, `GamesTable`, and `GameReference`. That helper copies `game.linked`. Component tests at `src/components/databases/TournamentCard.test.tsx:332` observe `createTab` receiving the locator on a linked row and omitting it on a standalone row.
+
+DR11 is a records annotation of `f-20261011-03`. This lens has no code-cause judgment for it.
+
+No new cause-level defect in the repair or in the other three seed callers. This leaf did not rerun tests. Closure rests on the source path, the added assertions, blame/history, and the supplied producer reverse/restore.
+
+VERDICT: APPROVED
+
+## minimalism
+
+DR10 CLOSED. `TournamentCard` is the fourth database-game opener and now calls the shared `databaseGameSeed` helper. Clicking Open spreads that seed into `createTab`, then `runTabCreation` still navigates on success and reports errors. `createTab` still resolves `gameOrigin.kind === "database"` through `tauri.resolveLinkedGame(..., gameOrigin.linked ?? null)`.
+
+Callers of `databaseGameSeed`:
+- `src/components/common/GameReference.tsx:52`
+- `src/components/databases/GameTable.tsx:74`
+- `src/components/panels/database/GamesTable.tsx:47`
+- `src/components/databases/TournamentCard.tsx:167`
+
+`kind: "database"` is built only in `src/utils/databaseGame.ts:15`. The inline tab name, PGN, headers, and origin object are gone from `TournamentCard.tsx:164`. Linked rows pass `game.linked`. Standalone rows omit it (`linked: game.linked ?? undefined`).
+
+The component tests click the real Open control and assert `createTab` arguments from that helper, including the standalone origin.
+
+The DR1 source change is the complete event-plus-site prefix falling through to `referenceFieldsVerification`. No new helper, parser, or module.
+
+[nit] `src/components/databases/TournamentCard.test.tsx:89` — the `runTabCreation` mock repeats the existing try/create/success/error shape in `src/utils/tabs.ts:531`. Spying `createTab` and keeping the real `runTabCreation` would observe the same seed. (confidence: 82)
+
+The smallest production repair for DR10 is the spread that shipped. The new reference tests and the two tournament opening cases are the named DR1 and DR10 coverage.
+
+VERDICT: APPROVED
+
+## tests
+
+DR1 CLOSED. `src/utils/gameReferences.test.ts:994` (`intervening prose keeps the anchored year and round`) drives both supplied forms (`Better was Bd3 in 2024 (A).` and `Better was Bd3 2024 (A).`) through real `lookupGameReference` and rendered `lookupUI`. `querySensitiveSource` only pages games. Metadata still runs in `referenceGameVerification`. Restoring the old `afterRound` year-round early return at `src/utils/gameReferences.ts:206` makes `verification: "verified"` at line 1042 fail, auto-open `admission.create` at line 1049 fail, and the empty-candidate checks at line 1024 fail for `2021.01.01`/`9` and for later-only `2024`/`A`. Missing `????.??.??` / `?` still asserts an explicit `GameReferences.Choose` open. Adjacent tuples, known-site later fields, shorter prefixes, and bare years stay on their earlier tests. Vitest includes `src/**/*.{test,spec}.{ts,tsx}`.
+
+DR10 CLOSED. `src/components/databases/TournamentCard.test.tsx:332` clicks the real `TournamentCard` actions column. `databaseGameSeed` is unmocked. `createTab` is the admission spy. Dropping `linked` from that caller makes `gameOrigin.linked: locator` at line 340 fail. The standalone case at line 351 asserts `gameOrigin.linked ?? null` is null. Shared `createTab` → `resolveLinkedGame` remains in `GameTable.test.tsx` and `GamesTable.test.tsx`.
+
+DR11 is a records annotation. This tests lens does not close it.
+
+No blocker in this class. Central revert anchors exist for both source repairs. Fresh `pnpm verify:app` / final scheduler were not rerun here.
+
+VERDICT: APPROVED
+
+## code-quality
+
+DR1 CLOSED for this class. In `metadataVerification` (`src/utils/gameReferences.ts:206-219`) the rewritten early-return comment matches the remaining unresolved-header and `siteFollows` path, and the fallthrough comment states that a complete event/site prefix keeps the anchored year/round while a later prose tuple is incidental. The new tests are titled `intervening prose keeps the anchored year and round`. Docs `docs/game-references.md:11` use the same examples as the tests.
+
+DR10 CLOSED for this class. `TournamentCard.tsx:167` spreads `databaseGameSeed(game, file)` in the same shape as `GameTable.tsx:74` and `GamesTable.tsx:47`. The new tests name the shared seed and the standalone origin.
+
+DR11 is the records class. This lens does not close it.
+
+No new unlabeled literals, dead paths, stale comments, or undocumented suppressions in the repair. `"a".repeat(64)` and the `locator` fixture match `GamesTable.test.tsx:46-51`. Import order of `databaseGameSeed` matches `GamesTable.tsx`.
+
+[nit] src/utils/gameReferences.ts:208 — the complete event/site prefix is an inverted anonymous conjunction (`!(prefix && event && site && prefix.text === \`${event} ${site}\`)`) beside the named `siteFollows` in the same branch. A next reader inverts that conjunction to see the fallthrough that keeps the anchored year/round. Adjacent comments restate both sides (confidence: 84)
+
+R4 detection shares the xAI family with the R3 repairs. No tests were run.
+
+VERDICT: APPROVED
+
+## records
+
+DR11 CLOSED. Canonical annotation `39f9c671` at `tasks/findings.md:16814` withdraws the earlier “citation task changes no engine or Rust source” sentence at `:16811` for the final range, names `cfg(test)` warm-transition observation and fixture helpers in `src-tauri/src/chess.rs` at `7237a6c2`, keeps production engine behavior and readiness/quit/reap deadlines unchanged, keeps all ten matrix cases, and leaves broader `f-20261011-03` open (`Status: open` at `:16758`). `7237a6c2` touches only `src-tauri/src/chess.rs` inside `#[cfg(test)] mod tests` (`:1698`). The ten cases are `2×{exact,all,release}` plus `2×{exact,all}` silent (`:4163–4176`). Historical hosted observation and the original sentence remain standing. Mutation receipts are present. This is the records correction only.
+
+DR1 and DR10 stay outside this class. Findings `f-20261029-13` and `f-20261030-01` remain `Status: open`. The dated R3 annotation at `tasks/findings.md:19171` is a preserved R3 snapshot. Later handoff text at `tasks/handoffs/2026-10-29-opening-game-references-review.md:2669` supersedes it with implemented pending R4 reviewer closure. Current source matches that later claim: complete event+site prefixes fall through to `referenceFieldsVerification` (`src/utils/gameReferences.ts:206–221`), intervening-prose tests exist at `src/utils/gameReferences.test.ts:994`, `TournamentCard` calls `databaseGameSeed` (`src/components/databases/TournamentCard.tsx:167`), four seed callers share that helper, `tabs.ts:572` passes `gameOrigin.linked ?? null`, and `linked_collections.rs:3291` / `:3318` refuse a missing locator with `StaleGame`. `search.rs:930` still qualifies query rows.
+
+Lineage checked and matching: plan r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0, three unique plan issues. Code adoptions r1=9 r2=0 r3=2, eleven unique. DR2–9 closed in earlier reviewed history. Matcher SHA256 `71e915f5…`, TournamentCard SHA256 `8ec6e4f5…`. Gate `gate-code-r3-root-proof.oWbbXT` exit 0 at `c04e20cd` with six dirty paths. Related 26 files / 1300 tests. Focused counts 109 and 10. Frontend-build `7185.5 ms`. Mutation tables 77 killed, 1317 killed + 2 timeout, 193 killed + 7 timeout, 0 survived, 0 errors. Memory.max `19327352832`, peak `7781748736`, oom counters 0. `d-20261029-34`/`35` current native, `33` superseded by `35`, `31` tablebase, `d-20261030-01` planned and unexecuted. `docs/game-references.md:11` matches the repaired incidental later-tuple rule. Final container, `pnpm build`, `pnpm verify:app`, clean Rust/frontend scheduler, hosted jobs and install remain pending. `f-20261011-03` and `f-20261022-05` remain open.
+
+Unverifiable here: persistent owner `3169465`, kit SHAs `49bd7587`/`e759a67b`, live hosted job state, exact ignored-mutant JSON counts 6 and 13.
+
+No records findings.
+
+VERDICT: APPROVED
+
+## chess-semantics
+
+DR1 CLOSED. For `0-1 Beerdsen,T-Bluebaum,M Tata Steel (A) Wijk aan Zee 2022 (3) Better was Bd3 in 2024 (A).` and the same citation with `Better was Bd3 2024 (A).`, `metadataVerification` at `src/utils/gameReferences.ts:206` keeps the complete event/site prefix `Tata Steel (A) Wijk aan Zee` and does not return early. Control falls through to `referenceFieldsVerification` of the anchored `2022 (3)` at `src/utils/gameReferences.ts:221`. A candidate dated `2021.01.01` round `9` is rejected. A candidate dated `2024.01.01` round `A` is rejected. The matching `2022.12.01` round `3` game is `verified` and auto-opens through existing `createTab` admission. Missing date/round stay `unverified` choice. Adjacent `2022 (3) 2024 (A): Better was Bd3.` still takes `src/utils/gameReferences.ts:194` and remains an unverified choice. Tests at `src/utils/gameReferences.test.ts:994` cover both prose forms, including lookup and UI admission.
+
+DR10 CLOSED for this class. `TournamentCard.tsx:167` now spreads `databaseGameSeed(game, file)`, which sets `gameOrigin.linked` from `game.linked`. `createTab` at `src/utils/tabs.ts:572` passes that locator into `resolveLinkedGame`. Native `resolve_game` at `src-tauri/src/db/linked_collections.rs:3318` refuses `None` with `StaleGame`. A matching locator reads original PGN bytes and `parsePGN(linked.game.pgn)` at `src/utils/tabs.ts:578` builds the tree from that text, so FEN, headers, NAGs, comments, and variations such as `1. e4 $1 (1. d4 d5) e5` stay on the existing linked admission path. Standalone rows keep ordinary database origin.
+
+DR11 is outside this class. The unpublished `src-tauri/src/chess.rs` change is a `cfg(test)` warm-transition helper. It does not alter in-memory tree, FEN identity, paths, or ply.
+
+No FEN truncation, stale path, ply-parity, `children[0]` continuation, or header/tree drift remains in the repair or the admission it now shares.
+
+VERDICT: APPROVED
+
 
 ### Preserved opening provenance before the explicit executor change
 
