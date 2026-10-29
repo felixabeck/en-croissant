@@ -5,13 +5,13 @@ Build run 2026-10-29, orchestrator Claude Code, executor Codex (leaves via `leaf
 history are reproduced below so this file recovers the history on its own). Implementation and
 review both ran on the OpenAI model family (same-family review disclosed); arbitration by Claude.
 
-Commits: `3274183b` foundation (tokens, fonts, fixed gold, component styles, board default),
-`2c5fcb8c` Lucide icons, `a30f983d` panel structure, `38b72986` review repairs (D-1, D-2, D-3),
-`a5d2750f` dark Black-better chip (D-5), `2ef77ff6` re-recorded snapshots, plus the decision and
+Commits: `aeb0f134` foundation (tokens, fonts, fixed gold, component styles, board default),
+`12559f13` Lucide icons, `ffd114b8` panel structure, `97578593` review repairs (D-1, D-2, D-3),
+`95ec327e` dark Black-better chip (D-5), `f79d0b09` re-recorded snapshots, plus the decision and
 finding record commits.
 
 Findings filed: `f-20261029-07` (tablebase move ranking, pre-existing), `f-20261029-08` (WDL bar
-unnamed progressbars, pre-existing). Decisions: `d-20261029-07`..`-11`, `-16`, `-21`, `-22`.
+unnamed progressbars, pre-existing). Decisions: `d-20261029-21`..`-29`.
 
 ## MANDATE (verbatim from the plan)
 
@@ -114,7 +114,7 @@ P-1..P-9 all closed (P-4 Skip, P-6 arbiter nit).
 
 - Phase 1 (sensitive): one fix round (typecheck: a colour substitution hit a chess-side value in
   `TablebaseInfo.tsx`, Mantine typed `vars`). Bundle total exceeded 1,650,000 B by 2,875 B →
-  measured raise `d-20261029-16`. A `pathOwners.test.ts` timeout under machine load passed alone
+  measured raise `d-20261029-26`. A `pathOwners.test.ts` timeout under machine load passed alone
   (26/26, file untouched).
 - Phase 2 (sensitive): green first time; surfaced three e2e assertion failures caused by Phase 1
   (dark active-tab contrast 4.11:1, Settings clipping at 320px/200%, hidden radio assertion),
@@ -126,18 +126,18 @@ P-1..P-9 all closed (P-4 Skip, P-6 arbiter nit).
 
 ## Diff review
 
-Round d1 (range 9b76350b..a30f983d, 9 code lenses + records lens, Codex):
+Round d1 (range 9b76350b..ffd114b8, 9 code lenses + records lens, Codex):
 correctness REVISE (1 blocker: tablebase ranking reversed — pre-existing, outside diff → Defer
 `f-20261029-07`); tests REVISE (D-4 blocker: missing baselines for the new two-engine scenario and
 dark Appearance → closed by browser verification; D-3 should-fix: WDL coverage → Fix, unit test);
 minimalism APPROVED (D-1 nit: redundant GenericCard rule → Fix); records REVISE (R-1 per-asset
-claim → Fix via `d-20261029-22` and this file; R-2 missing supersede trailer on `d-20261027-14` →
-Fix; R-3 dark-palette exception → Fix via `d-20261029-21`); root-cause, code-quality,
+claim → Fix via `d-20261029-28` and this file; R-2 missing supersede trailer on `d-20261027-14` →
+Fix; R-3 dark-palette exception → Fix via `d-20261029-27`); root-cause, code-quality,
 error-handling, persisted-state, engine-protocol, chess-semantics APPROVED. Orchestrator visual
 acceptance added D-2 (engine progress bar read as a stray dash → Fix) and later D-5 (dark
 Black-better chip indistinguishable from the inset surface → Fix).
 
-Round d2 closure (a30f983d..38b72986): D-1, D-2, D-3, R-2, R-3 CLOSED (minimalism, engine-protocol,
+Round d2 closure (ffd114b8..97578593): D-1, D-2, D-3, R-2, R-3 CLOSED (minimalism, engine-protocol,
 correctness, tests, records); R-1 open until this file exists; D-4 open until baselines recorded.
 While adding a WDL e2e view the fix leaf observed the pre-existing axe `aria-progressbar-name`
 failure → Defer `f-20261029-08`.
@@ -151,10 +151,10 @@ diff_adopted_per_round: d1=7 (D-1, D-3, D-4, R-1, R-2, R-3, plus arbiter D-2), d
 sheets of expected vs actual). `pnpm test:e2e:update` then rewrote all 114 committed snapshots and
 added 3: the 21 beyond the 93 first-failing ones belong to tests that stopped at an earlier
 failing screenshot; each was inspected old-vs-new and shows only the restyle. Moved snapshots are
-listed in the snapshot commit message (`2ef77ff6`).
+listed in the snapshot commit message (`f79d0b09`).
 
 D-5 was found on the new dark baseline: the Black-better chip used the eval-bar dark tone, nearly
-identical to the inset surface. Repaired in `a5d2750f` (page background tier, 15.15:1 text
+identical to the inset surface. Repaired in `95ec327e` (page background tier, 15.15:1 text
 contrast). Its pixel change stayed within Playwright's threshold, so the dark baseline was
 re-recorded with `--update-snapshots=all` over the whole `engine-gap` project (15/15 passed).
 Running only the dark scenario in isolation failed an axe colour-contrast check on a navigation
@@ -243,23 +243,23 @@ feature. Phase 1 candidate vs base HEAD `131c43c5`:
 | `src/translation/zh-CN.json` | 16,633 | 16,799 | 16,596 | 16,596 | -37 | -203 |
 | `src/translation/zh-TW.json` | 17,131 | 17,290 | 17,089 | 17,089 | -42 | -201 |
 
-Final whole-design measurement (after all phases and review repairs): see `d-20261029-22` and
+Final whole-design measurement (after all phases and review repairs): see `d-20261029-28` and
 `docs/bundle-budgets.md` (550,873 B entry, 495,923 B largest lazy, 1,656,725 B total, before D-5;
 final gates re-measure).
 
 ## Closure rounds d3 and d4
 
-Round d3 (38b72986..1b42657e): correctness D-5 CLOSED; records R-1 CLOSED (handoff and per-asset
+Round d3 (97578593..d233bedc): correctness D-5 CLOSED; records R-1 CLOSED (handoff and per-asset
 table present, claims verified); tests D-4 CLOSED and a new blocker D-6: D-5's colour change sat
-inside the screenshot threshold, so reverting it would pass. Fix `685f461c`: computed-style
+inside the screenshot threshold, so reverting it would pass. Fix `265f94ce`: computed-style
 assertions (three distinct chip fills in both schemes, negative chip differs from its line, dark
 negative chip equals the page background). Discrimination measured: reverting D-5 fails with
 expected `rgb(16, 14, 13)`, received `rgb(62, 59, 56)`; restored, engine-gap 15/15.
 
-Round d4 (1b42657e..685f461c): tests D-6 CLOSED, APPROVED.
+Round d4 (d233bedc..265f94ce): tests D-6 CLOSED, APPROVED.
 
 diff_adopted_per_round: d1=7, d2=0, d3=1, d4=0. All diff findings closed; Defers f-20261029-07,
-f-20261029-08. REVIEWED_THROUGH before final gates: 685f461c (plus this record commit).
+f-20261029-08. REVIEWED_THROUGH before final gates: 265f94ce (plus this record commit).
 
 ## Rebase onto 291d7fb2 and closure round d5
 
@@ -269,16 +269,25 @@ measurement (upstream's kept for intermediate commits, combined figure recorded 
 `docs/bundle-budgets.md` (both entries kept), `AnalysisRow.tsx` (upstream's ChessDB mark and
 win-rate tooltip structure kept, restyle `className` added), and this branch's
 `d-20261027-14` trailer commit dropped in favour of `findings.py set-trailer` naming both
-successors (`d-20261029-15`, `d-20261029-16`).
+successors (`d-20261029-15`, `d-20261029-26`).
 
 Post-rebase evidence: upstream's two ChessDB snapshots (old style) re-recorded; a new flake was
-found and fixed as D-7 (`3381c6f2`): restyled notification text sat at fractional grid positions
+found and fixed as D-7 (`a7038273`): restyled notification text sat at fractional grid positions
 and rasterized differently between runs (root permission guidance 7/40 repeats failed on the
 branch, 40/40 passed on `291d7fb2`); `will-change: transform` on title and description, five
 notification baselines re-recorded (glyph edges), full container suite `--repeat-each=2`
-502/502. Combined bundle 1,658,119 B total (`d-20261029-23`, supersedes `-22`).
+502/502. Combined bundle 1,658,119 B total (`d-20261029-29`, supersedes `d-20261029-28`).
 
-Round d5 (range-diff `!` commits plus `6d386f30..5be5cb76`): correctness, root-cause,
+Round d5 (range-diff `!` commits plus `ee34463b..12d5124b`): correctness, root-cause,
 engine-protocol, persisted-state, tests, records — all APPROVED, no findings.
 diff_adopted_per_round: d1=7, d2=0, d3=1, d4=0, d5=0 (D-7 was found by the orchestrator's
 post-rebase verification, not a lens).
+
+## Renumbering before publication
+
+A parallel worktree published decision ids `d-20261029-07`..`-09` and `-16` while this build
+held the same numbers unpublished. Before pushing, this branch was rebuilt on `origin/master`:
+its decisions were re-recorded through `findings.py record-decision` as `d-20261029-21`..`-29`
+(former 07→21, 08→22, 09→23, 10→24, 11→25, 16→26, 21→27, 22→28, 23→29), the code commits were
+cherry-picked with their messages remapped, and the ids and commit hashes in this file and in
+`docs/bundle-budgets.md` were updated. Hashes cited above are the published ones.
