@@ -54,6 +54,80 @@ async function expectEditorRoot(page: Page, expectedFen: string) {
         });
 }
 
+test("board-keyboard: tablebase ranks winning promotions before draws and losses and plays the winner", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const fen = "4k3/6KP/8/8/8/8/7p/8 w - - 0 1";
+    // Fields consumed by the panel from the recorded Lichess /standard response for this FEN.
+    // The parent wins, while winning moves have a child category of loss.
+    await mockScenario({
+        commands: {
+            get_public_lichess_json: {
+                result: JSON.stringify({
+                    category: "win",
+                    dtz: 1,
+                    dtm: 17,
+                    moves: [
+                        { uci: "h7h8q", san: "h8=Q+", category: "loss", dtz: -2, dtm: -16 },
+                        { uci: "h7h8r", san: "h8=R+", category: "loss", dtz: -2, dtm: -26 },
+                        { uci: "g7g8", san: "Kg8", category: "draw", dtz: 0, dtm: 0 },
+                        { uci: "g7f6", san: "Kf6", category: "win", dtz: 1, dtm: 19 },
+                        { uci: "g7g6", san: "Kg6", category: "win", dtz: 1, dtm: 19 },
+                        { uci: "g7h6", san: "Kh6", category: "win", dtz: 1, dtm: 19 },
+                        { uci: "g7h8", san: "Kh8", category: "win", dtz: 1, dtm: 19 },
+                        { uci: "h7h8n", san: "h8=N", category: "win", dtz: 1, dtm: 19 },
+                        { uci: "h7h8b", san: "h8=B", category: "win", dtz: 1, dtm: 15 },
+                    ],
+                }),
+            },
+        },
+    });
+    const grid = await importAnalysisFen(page, fen);
+    await page.getByRole("tab", { name: "Analysis", exact: true }).click();
+    const tablebase = page.locator(".mantine-Accordion-item").filter({
+        has: page.getByRole("button", { name: /^Tablebase/ }),
+    });
+    await tablebase.getByRole("button", { name: /^Tablebase/ }).click();
+    const moveLabels = tablebase.locator(
+        ".mantine-SimpleGrid-root > .mantine-Paper-root > .mantine-Group-root > .mantine-Text-root",
+    );
+    await expect(moveLabels).toHaveText([
+        "h8=Q+",
+        "h8=R+",
+        "Kg8",
+        "h8=B",
+        "h8=N",
+        "Kf6",
+        "Kg6",
+        "Kh6",
+        "Kh8",
+    ]);
+    // Mantine removes overflow clipping when the accordion expansion finishes.
+    const panel = tablebase.getByRole("region");
+    await expect(panel).toHaveCSS("overflow", "visible");
+    await expect(panel).toHaveCSS("opacity", "1");
+    for (const card of await tablebase
+        .locator(".mantine-SimpleGrid-root > .mantine-Paper-root")
+        .all()) {
+        await expect(card).toBeVisible();
+        await expect(card).toBeInViewport({ ratio: 1 });
+    }
+    await capture("board-tablebase-winning-moves");
+    await tablebase.getByText("h8=Q+", { exact: true }).click();
+    for (const name of [
+        "h8, White Queen",
+        "h7, empty",
+        "g7, White King",
+        "e8, Black King",
+        "h2, Black Pawn",
+    ]) {
+        await expect(grid.getByRole("gridcell", { name, exact: true })).toHaveCount(1);
+    }
+});
+
 test("board-keyboard: imported EP root reaches threefold through real moves and survives reload", async ({
     page,
     capture,

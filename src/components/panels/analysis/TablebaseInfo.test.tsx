@@ -1,19 +1,23 @@
 import { MantineProvider } from "@mantine/core";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
-import TablebaseInfo from "./TablebaseInfo";
+import type { TablebaseCategory } from "@/utils/lichess/api";
+import TablebaseInfo, { compareTablebaseMoves } from "./TablebaseInfo";
 
-const mocks = vi.hoisted(() => ({ makeMove: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  makeMove: vi.fn(),
+  data: {
+    category: "win",
+    moves: [{ category: "win", uci: "e2e4", san: "e4", dtz: 1, dtm: null }],
+  },
+}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("swr/immutable", () => ({
   default: () => ({
-    data: {
-      category: "win",
-      moves: [{ category: "win", uci: "e2e4", san: "e4", dtz: 1, dtm: null }],
-    },
+    data: mocks.data,
     error: undefined,
     isLoading: false,
   }),
@@ -34,6 +38,12 @@ installResizeObserverStub();
 
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
+beforeEach(() => {
+  mocks.data = {
+    category: "win",
+    moves: [{ category: "win", uci: "e2e4", san: "e4", dtz: 1, dtm: null }],
+  };
+});
 afterEach(async () => {
   await act(async () => root?.unmount());
   host?.remove();
@@ -46,6 +56,64 @@ async function render(children: ReactNode) {
   root = createRoot(host);
   await act(async () => root.render(<MantineProvider>{children}</MantineProvider>));
 }
+
+test.each<[TablebaseCategory, TablebaseCategory]>([
+  ["loss", "draw"],
+  ["draw", "win"],
+  ["loss", "blessed-loss"],
+  ["blessed-loss", "draw"],
+  ["draw", "cursed-win"],
+  ["cursed-win", "win"],
+  ["win", "maybe-win"],
+  ["maybe-win", "maybe-loss"],
+  ["maybe-loss", "unknown"],
+])("ranks child %s before %s regardless of SAN", (better, worse) => {
+  const a = { category: better, san: "Kh8" };
+  const b = { category: worse, san: "Ka1" };
+  expect(compareTablebaseMoves(a, b)).toBeLessThan(0);
+  expect(compareTablebaseMoves(b, a)).toBeGreaterThan(0);
+});
+
+test.each<TablebaseCategory>(["loss", "blessed-loss", "draw", "cursed-win", "win", "unknown"])(
+  "breaks equal child %s ties by SAN",
+  (category) => {
+    const a = { category, san: "h8=Q+" };
+    const b = { category, san: "h8=R+" };
+    expect(compareTablebaseMoves(a, b)).toBeLessThan(0);
+    expect(compareTablebaseMoves(b, a)).toBeGreaterThan(0);
+    expect(compareTablebaseMoves(a, { ...a })).toBe(0);
+  },
+);
+
+test("renders child losses first, fifty-move outcomes around draws and SAN ties without changing SWR data", async () => {
+  mocks.data.moves = [
+    { category: "win", san: "Kf6" },
+    { category: "unknown", san: "Ka1" },
+    { category: "cursed-win", san: "Kb2" },
+    { category: "loss", san: "h8=R+" },
+    { category: "maybe-loss", san: "Kc3" },
+    { category: "draw", san: "Kg8" },
+    { category: "maybe-win", san: "Kd4" },
+    { category: "blessed-loss", san: "Ke5" },
+    { category: "loss", san: "h8=Q+" },
+  ].map((move) => ({ ...move, uci: "e2e4", dtz: 1, dtm: null }));
+  const cachedMoves = mocks.data.moves;
+  const originalData = structuredClone(mocks.data);
+  Object.freeze(cachedMoves);
+  for (const move of cachedMoves) Object.freeze(move);
+
+  await render(<TablebaseInfo fen="4k3/6KP/8/8/8/8/7p/8 w - - 0 1" turn="white" />);
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>(".mantine-Accordion-control")!.click(),
+  );
+
+  const moves = [...host.querySelectorAll(".mantine-SimpleGrid-root > .mantine-Paper-root")].map(
+    (card) => card.querySelector(".mantine-Text-root")!.textContent,
+  );
+  expect(moves).toEqual(["h8=Q+", "h8=R+", "Ke5", "Kg8", "Kb2", "Kf6", "Kd4", "Kc3", "Ka1"]);
+  expect(mocks.data).toEqual(originalData);
+  expect(mocks.data.moves).toBe(cachedMoves);
+});
 
 test.each([
   ["white", "WhiteWins", "var(--cf-eval-bar-light)", "var(--cf-eval-bar-dark)"],

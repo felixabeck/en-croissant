@@ -84,12 +84,13 @@ function TablebaseInfo({ fen, turn }: { fen: string; turn: "white" | "black" }) 
   );
 }
 
+// Child categories describe the opponent's position, so their losses are our best moves.
 const tablebaseRank: Record<TablebaseCategory, number> = {
-  win: 0,
-  "cursed-win": 1,
+  loss: 0,
+  "blessed-loss": 1,
   draw: 2,
-  "blessed-loss": 3,
-  loss: 4,
+  "cursed-win": 3,
+  win: 4,
   "maybe-win": 5,
   "maybe-loss": 6,
   unknown: 7,
