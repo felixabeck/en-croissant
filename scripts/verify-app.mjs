@@ -744,6 +744,16 @@ async function listFixtureEntries(invoke) {
   return listing.entries;
 }
 
+function createWorkspacePgnFixture(invoke, workspace, name, pgn, type = "other") {
+  return invoke("create_workspace_file", {
+    workspace,
+    parent: workspace,
+    name,
+    metadata: { type, tags: [] },
+    content: { kind: "text", pgn },
+  });
+}
+
 // WD0-WD7 exercise real release IPC against disposable Files inputs. No live engine is registered
 // by this scenario. Native actor tests cover injected registry, sync and retirement failure paths.
 // Root measured staging on 2026-10-22. Evidence directory:
@@ -2015,19 +2025,15 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
   const prefix = `verify-linked-${randomUUID()}`;
   const game = (id, moves, note) =>
     `[Event "Collection fixture"]\n[Site "https://www.chess.com"]\n[Date "2026.10.01"]\n[UTCTime "12:00:00"]\n[White "Player"]\n[Black "Opponent"]\n[Result "1-0"]\n[Link "https://www.chess.com/game/live/${id}"]\n[Custom "keep this tag"]\n\n1. ${moves} {${note}} 1-0\n\n`;
-  const create = (name, pgn, type = "other") =>
-    invoke("create_workspace_file", {
-      workspace,
-      parent: workspace,
-      name,
-      metadata: { type, tags: [] },
-      content: { kind: "text", pgn },
-    });
-  const source = await create(
+  const source = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
     `${prefix}-source`,
     game("123", "e4 (1. d4 d5) $1 e5", "original note"),
   );
-  const original = await create(
+  const original = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
     `${prefix}-database-original`,
     game("789", "c4 c5", "database version"),
   );
@@ -2050,7 +2056,9 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
     account: { provider: "chesscom", account: prefix },
     destinationName: prefix,
   });
-  const batch = await create(
+  const batch = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
     `${prefix}-incoming`,
     game("123", "e4 e5", "provider overlap") + game("456", "d4 d5", "new game"),
   );
@@ -2105,14 +2113,19 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
       ),
     { timeoutMs: FILES_PROBE_TIMEOUT_MS },
   );
-  const exported = await create(`${prefix}-exported`, "");
+  const exported = await createWorkspacePgnFixture(invoke, workspace, `${prefix}-exported`, "");
   await invoke("export_to_pgn", { file: collection.database, destination: exported.handle });
   const restored = await invoke("create_workspace_database", {
     root,
     filename: `${prefix}-restored.db3`,
   });
   await invoke("restore_collection_archive", { collection: collection.id, destination: restored });
-  const archiveExport = await create(`${prefix}-restored-export`, "");
+  const archiveExport = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
+    `${prefix}-restored-export`,
+    "",
+  );
   await invoke("export_to_pgn", { file: restored, destination: archiveExport.handle });
   const artifacts = {
     source: join(filesWorkspace, `${prefix}-source.pgn`),
@@ -2139,7 +2152,9 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
   await writeFile(artifacts.search, JSON.stringify(search));
   // Exercise Database choice with an already automatically indexed prior source. All files,
   // IPC replies and evidence below belong to this disposable actual-app fixture.
-  const priorOriginal = await create(
+  const priorOriginal = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
     `${prefix}-prior-original`,
     game("321", "e4 e5", "independent PGN version"),
     "game",
@@ -2161,7 +2176,9 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
   artifacts.migrationOriginal = join(filesWorkspace, `${prefix}-prior-original.pgn`);
   artifacts.migrationOriginalBefore = join(filesWorkspace, `${prefix}-prior-before.pgn`);
   await writeFile(artifacts.migrationOriginalBefore, await readFile(artifacts.migrationOriginal));
-  const databaseInput = await create(
+  const databaseInput = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
     `${prefix}-database-choice-input`,
     game("789", "c4 c5", "database version") + game("790", "Nf3 Nf6", "second database game"),
   );
@@ -2177,7 +2194,12 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
     title: `${prefix}-database-choice`,
     description: "Database-choice original retirement fixture",
   });
-  const expectedDatabase = await create(`${prefix}-database-choice-expected`, "");
+  const expectedDatabase = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
+    `${prefix}-database-choice-expected`,
+    "",
+  );
   await invoke("export_to_pgn", { file: chosenDatabase, destination: expectedDatabase.handle });
   const databaseChoice = await invoke("migrate_linked_collection", {
     requestId: randomUUID(),
@@ -2204,7 +2226,12 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
     collection: databaseChoice.id,
     destination: restoredDatabaseChoice,
   });
-  const databaseArchiveExport = await create(`${prefix}-database-choice-archive`, "");
+  const databaseArchiveExport = await createWorkspacePgnFixture(
+    invoke,
+    workspace,
+    `${prefix}-database-choice-archive`,
+    "",
+  );
   await invoke("export_to_pgn", {
     file: restoredDatabaseChoice,
     destination: databaseArchiveExport.handle,
@@ -3010,23 +3037,19 @@ async function verifyGameOpening(session, ownedRoot, filesWorkspace) {
   ];
   const citationWorkspace = { id: { id: filesWorkspaceId }, kind: "fileWorkspace" };
   const citationPrefix = `verify-citations-${randomUUID()}`;
-  const createCitationFile = (name, pgn, type = "other") =>
-    invoke("create_workspace_file", {
-      workspace: citationWorkspace,
-      parent: citationWorkspace,
-      name,
-      metadata: { type, tags: [] },
-      content: { kind: "text", pgn },
-    });
   let citationPreparation;
   let citationDatabase;
   let linkedCitationSource;
   const setupCitations = async () => {
-    citationPreparation = await createCitationFile(
+    citationPreparation = await createWorkspacePgnFixture(
+      invoke,
+      citationWorkspace,
       `${citationPrefix}-preparation`,
       `[Event "Citation preparation"]\n[White "Preparation"]\n[Black "Citations"]\n[Result "*"]\n\n{Before **${citationLabels[0]}** ordinary prose. ${citationLabels[1]} Missing: ${citationLabels[2]}} 1. e4 *\n`,
     );
-    const citationDatabaseInput = await createCitationFile(
+    const citationDatabaseInput = await createWorkspacePgnFixture(
+      invoke,
+      citationWorkspace,
       `${citationPrefix}-database-input`,
       '[Event "Elllobregat op 3rd"]\n[Site "Sant Boi de Llobregat"]\n[Date "2022.12.01"]\n[Round "3"]\n[White "Beerdsen, Thomas"]\n[Black "Bluebaum, Matthias"]\n[WhiteElo "2520"]\n[BlackElo "2651"]\n[Result "0-1"]\n[FEN "8/8/8/8/8/8/6k1/K7 b - - 12 23"]\n[SetUp "1"]\n\n23... Kf3 0-1\n',
     );
@@ -3043,7 +3066,9 @@ async function verifyGameOpening(session, ownedRoot, filesWorkspace) {
       title: citationPrefix,
       description: "Native citation acceptance",
     });
-    linkedCitationSource = await createCitationFile(
+    linkedCitationSource = await createWorkspacePgnFixture(
+      invoke,
+      citationWorkspace,
       `${citationPrefix}-linked`,
       '[Event "Titled Tuesday intern op 19th Dec Late"]\n[Site "Chess.com INT blitz"]\n[Date "2023.12.19"]\n[Round "6"]\n[White "Srinath, Rao"]\n[Black "Deac, Bogdan"]\n[WhiteElo "2255"]\n[BlackElo "2690"]\n[Result "0-1"]\n[Custom "citation original"]\n\n1. d4 $1 {citation source annotation} (1. e4 e5) d5 0-1\n',
       "game",
