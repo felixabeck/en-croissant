@@ -42,6 +42,11 @@ export default defineConfig({
             use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },
         },
         {
+            name: "chessdb-engine",
+            testMatch: /chessdb-engine\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },
+        },
+        {
             name: "workspace-tabs",
             testMatch: /workspace-tabs\.spec\.ts/,
             use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },
