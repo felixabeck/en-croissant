@@ -140,7 +140,7 @@ export function GameReferenceProvider({ children }: { children: ReactNode }) {
           {result && (
             <>
               {!result.complete && (
-                <Alert color="yellow" title={t("GameReferences.Incomplete")}>
+                <Alert color="warning" title={t("GameReferences.Incomplete")}>
                   <Stack gap="xs">
                     {result.failures.map((failure, index) => (
                       <Text size="sm" key={index}>
