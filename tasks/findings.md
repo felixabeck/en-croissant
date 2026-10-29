@@ -18889,3 +18889,18 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Disposition:** Close the observed test synchronization defect. All original current-move, pointer lifetime, subtree, sibling, board and screenshot assertions remain intact. No product change, timeout increase or retry was introduced. Plan authorship and arbitration shared one root context. Detection ran on the same model family as the code, in separate leaf contexts.
 * **Commit and pre-review:** Source correction 9736068a. Root `pnpm checks:pre-review` exited 0, selecting format-lint for the three changed paths. All other pre-review lanes were correctly unselected for the test and records scope.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"2a1631a0514dcc15efb4bd85fdc1e90635ce325105617e2ab86958cc8e347378","header_sha256":"6cced623daf5750f6f3234e454230a461137ed9d0b0441ab8af1adb6c034aa37","header_status":"handled","input_sha256":"3dfe1f7ec59381936ed3d6f6f70fa89511f04c59bc25278f60e812d92bf1dda2","kind":"mutation-receipt","operation":"64c3a3ed3297bde9498509760e2ba08bf30dba631961ca272e173c89920da32e","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-02"],"target":"f-20261029-02","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### InfoPanel candidate-refusal witness compares durable bytes across an unrelated pending flush
+
+* **ID:** f-20261029-03 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 4ddaefcf-0026-46de-b526-ddaac572ef8a · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-4ddaefcf-0026-46de-b526-ddaac572ef8a-1.jsonl
+* **Impact class:** tooling
+* **Where:** src/components/panels/info/InfoPanel.test.tsx:684-703.
+* **Defect:** The final frontend coverage gate at cb4ff32d failed the retained candidate-tree refusal scenario at line 702 because the original physical key's compressed bytes changed during the attempted refusal. Live tree, pending read and original origin assertions before it passed. The setup edits the tree before capturing oldBytes and leaves the ordinary debounced writer active. A legitimate queued write is the evidenced candidate cause, to be confirmed before correction. This observed failure blocks the f-20261010-08 push workflow's follow-up CI repair. It does not establish production data loss.
+* **Proof:** Final gate-push-gate.QtQq64 frontend-coverage transcript under artifacts/gates/20261029T124504600Z-1383646 reports the exact byte equality failure, with 5522 passed and three failed tests. Trace the test's pending writes, reproduce with the production storage timer, and establish a stable durable baseline before the refusal boundary without weakening live, pending, durable-byte, workspace or retry assertions. Prove the witness still rejects an actual old-generation overwrite. The independent full browser suite passed all 247 tests.
+* **Related:** f-20261010-07 owns already-repaired replacement durability, f-20261010-08 owns already-repaired metadata preservation, and f-20261007-07 fixed timer cleanup after test teardown. This is a distinct in-test byte-baseline observation with no shared Root asserted.
+* **Found by:** Root final-gate inspection in the f-20261010-08 drain session. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
