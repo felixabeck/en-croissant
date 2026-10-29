@@ -19059,3 +19059,22 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Open question:** none; extend the f-20260930-02 remedy (warm the module graph outside the timed test, or a per-test timeout sized to the measured cold import) to these two tests.
 * **Proof:** run both files with the coverage instrumentation and `--maxWorkers` matching the gate allocation while a CPU load runs; no timeout after the fix.
 * **Found by:** Claude Code, ChessRiddle design build final gates, 2026-10-29.
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Tablebase promotion cards truncate the mate distance at desktop width
+
+* **ID:** f-20261029-17 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** b91e801f-c97a-4308-823b-d8d1bc2de01a · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-b91e801f-c97a-4308-823b-d8d1bc2de01a-1.jsonl
+* **Impact class:** ux
+* **Where:** src/components/panels/analysis/TablebaseInfo.tsx, the fixed three-column SimpleGrid and no-wrap move-card Group around OutcomeBadge.
+* **Defect:** At 1440×900 the winning promotion rows h8=Q+ and h8=R+ show their mate-distance badges as `DT…`, hiding the numerical distance. Observed in the pinned Playwright container and inspected screenshot at /tmp/chessfable-f-20261029-07/tablebase-browser.png. The badge has neither a tooltip nor a title revealing the truncated value.
+* **Spotted outside diff:** During f-20261029-07 browser verification. The ranking correction changes only category ranks, the fixed grid and badge layout predate it.
+* **Failure scenario:** Import `4k3/6KP/8/8/8/8/7p/8 w - - 0 1`, open Analysis and Tablebase at 1440×900 with the recorded Lichess response. The winning queen and rook promotions have mate distances 16 and 26, but the visible cards show only `DT…`, so the player cannot read either distance.
+* **Open question:** How should the tablebase move grid and move-card content adapt to the analysis pane's available width so promotion SAN and complete distance values remain readable at supported window and font sizes?
+* **Proof:** The new `board-keyboard: tablebase ranks winning promotions before draws and losses and plays the winner` journey deterministically renders this response. Add browser assertions comparing each distance badge's content width with its available width and retain screenshots at desktop and compact widths, red on the current truncated promotion badges and green after the responsive layout fix.
+* **Related:** f-20261029-07 has Root `-` and corrects ranking only. This layout defect has a different mechanism. f-20260829-02 is a handled general responsive-layout finding, no duplicate tablebase-specific correction was surfaced by related.
+* **Deferral:** This same-area responsive-layout design question takes its own build run under push-review-policy section 4's separate open-design-question exception. No product decision is parked and the current ranking correction does not introduce it.
+* **Found by:** Codex root and write leaf during f-20261029-07 browser verification, 2026-10-29. Plan authorship and arbitration shared the root context, detection ran on the same OpenAI model family as the code.
