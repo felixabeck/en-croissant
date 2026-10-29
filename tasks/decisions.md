@@ -10734,3 +10734,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Replace the Info-tab wait in e2e/engine-gap.spec.ts only with another observed workspace-commit witness. Retain the pointer and deletion assertions and prove the delayed transition cannot redirect the setup click to the preview. No product behavior changes.
 * **Decided by:** Codex, technical arbitration during the f-20261010-08 push workflow, 2026-10-29 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"44e60fa711f8d41b9ff4c46594eb0fd7802836db6f402e57cb8b6377d0dd5a9b","input_sha256":"bd7459706e44c21625b339f2a132bbedde2a0890b4c64b502fddc32241bc43bf","kind":"mutation-receipt","operation":"0e3c886d35e7e8c8f781654cee188db94abf40b2f1699c0198980b9fecd42113","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-08 — Establish the durable original before testing replacement refusal
+
+* **Question:** What original storage state should InfoPanel's candidate-tree refusal witness compare across the attempted replacement?
+* **Governs:** f-20261029-03
+* **Chosen:** Flush the intended original dirty tree through the existing tabStorage.flush boundary before capturing the durable-byte baseline. Retain all origin, live-tree, pending-tree, original-byte, workspace-byte and retry assertions.
+* **Rejected:** Disabling the production debounce, increasing timeouts, replacing byte equality with a weaker content assertion, or changing production replacement and storage behavior.
+* **Reason:** openActualPageConfirmation queues source-stamp and comment edits, while the test snapshots durable bytes before their normal debounced flush. TabStorageRepository.flush clears that timer and commits those intended edits. The full coverage gate observed the original bytes changing while live tree, origin and pending content remained correct. A refusal witness must isolate candidate replacement from legitimate earlier writes.
+* **Reversal path:** The single refusal test in src/components/panels/info/InfoPanel.test.tsx. Any alternative must preserve detection of an actual old-generation overwrite and retain retry proof without depending on elapsed host time.
+* **Decided by:** Codex, technical arbitration during the f-20261010-08 push workflow, 2026-10-29 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d50ebf21b8af801a5b9284fe3dce6b58ba289c3f9d4dadff29a92cbfc51761a3","input_sha256":"4d76b8c337482410ad9a3bbda81f1c42cb96ceeddd20cd12ac60584e7229d8c2","kind":"mutation-receipt","operation":"505537f812639af07a42511ec5ee1f957e33c14c705bd3b9af3508279626036b","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-08"],"target":"decisions-ledger","v":1} -->
