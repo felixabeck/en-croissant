@@ -991,6 +991,121 @@ test.each([
     }
 });
 
+test.each([
+    { prose: "Better was Bd3 in 2024 (A).", laterRound: "A" },
+    { prose: "Better was Bd3 2024 (A).", laterRound: "A" },
+])(
+    "intervening prose keeps the anchored year and round for $prose",
+    async ({ prose, laterRound }) => {
+        const pair = "0-1 Beerdsen,T-Bluebaum,M";
+        const text = `${pair} Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`;
+        const citation = recognizeGameReferences(text)[0];
+        const original = { ...game, event: "Tata Steel (A)", site: "Wijk aan Zee" };
+        expect(citation).toMatchObject({
+            label: pair,
+            context: `Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`,
+            closed: false,
+        });
+        expect(text.slice(citation.start, citation.end)).toBe(pair);
+        for (const conflict of [
+            { date: "2021.01.01", round: "9" },
+            { date: "2024.01.01", round: laterRound },
+            { date: "2021.01.01" },
+            { round: "9" },
+            { date: "2024.01.01" },
+            { round: laterRound },
+        ]) {
+            const candidate = { ...original, ...conflict };
+            const rejected = await lookupGameReference(
+                citation,
+                new AbortController().signal,
+                querySensitiveSource([candidate]),
+            );
+            expect(rejected).toEqual({ candidates: [], failures: [], complete: true });
+            await lookupUI(text, querySensitiveSource([candidate]), () => {
+                expect(admission.create).not.toHaveBeenCalled();
+            });
+        }
+        const result = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([original]),
+        );
+        expect(result).toEqual({
+            complete: true,
+            failures: [],
+            candidates: [
+                {
+                    database,
+                    source: "Source A (source-a.db3)",
+                    game: original,
+                    verification: "verified",
+                },
+            ],
+        });
+        await lookupUI(text, querySensitiveSource([original]), (host) => {
+            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
+            expect(host.firstElementChild?.textContent).toBe(text);
+            expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        date: original.date,
+                        round: original.round,
+                        event: original.event,
+                        site: original.site,
+                    }),
+                    gameOrigin: { kind: "database", database, gameId: original.id },
+                }),
+            );
+        });
+        for (const missing of [
+            { date: "????.??.??" },
+            { round: "?" },
+            { date: "????.??.??", round: "?" },
+        ]) {
+            const candidate = { ...original, ...missing };
+            const offered = await lookupGameReference(
+                citation,
+                new AbortController().signal,
+                querySensitiveSource([candidate]),
+            );
+            expect(offered).toEqual({
+                complete: true,
+                failures: [],
+                candidates: [
+                    {
+                        database,
+                        source: "Source A (source-a.db3)",
+                        game: candidate,
+                        verification: "unverified",
+                    },
+                ],
+            });
+            await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
+                expect(admission.create).not.toHaveBeenCalled();
+                expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
+                expect(host.firstElementChild?.textContent).toBe(text);
+                expect(host.textContent).toContain("GameReferences.Choose");
+                const open = [...host.querySelectorAll("button")].find(
+                    (node) => node.textContent === "Common.OpenGame",
+                )!;
+                await act(async () => open.click());
+                expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        headers: expect.objectContaining({
+                            date: candidate.date,
+                            round: candidate.round,
+                            event: candidate.event,
+                            site: candidate.site,
+                        }),
+                        gameOrigin: { kind: "database", database, gameId: candidate.id },
+                    }),
+                );
+            });
+        }
+    },
+);
+
 test.each(["Smith, JOHN", "Smith, John", "Smith, john", "JOHN Smith", "John Smith", "john Smith"])(
     "JO rejects a full single given name consistently through lookup: %s",
     async (name) => {

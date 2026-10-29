@@ -5,7 +5,12 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { DatabaseHandle, NormalizedGame, Event as Tournament } from "@/bindings";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 
-const mocks = vi.hoisted(() => ({ getTournamentGames: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  getTournamentGames: vi.fn(),
+  notify: vi.fn(),
+  createTab: vi.fn(),
+  navigate: vi.fn(),
+}));
 vi.mock("@/utils/db", () => ({ getTournamentGames: mocks.getTournamentGames }));
 vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: mocks.notify }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -15,12 +20,13 @@ vi.mock("zustand", () => ({
 }));
 vi.mock("jotai", () => ({ useAtom: () => [[], vi.fn()], useSetAtom: () => vi.fn() }));
 vi.mock("@/state/atoms", () => ({ activeTabAtom: {}, tabsAtom: {} }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("lucide-react", () => ({ Eye: () => null }));
 // Keep the table boundary interactive and render the records supplied by TournamentCard.
 vi.mock("mantine-datatable", () => ({
   DataTable: ({
     records,
+    columns,
     page,
     totalRecords,
     recordsPerPage,
@@ -30,6 +36,7 @@ vi.mock("mantine-datatable", () => ({
     onSortStatusChange,
   }: {
     records: NormalizedGame[];
+    columns?: { accessor: string; render?: (game: NormalizedGame) => ReactNode }[];
     page?: number;
     totalRecords: number;
     recordsPerPage: number;
@@ -44,6 +51,7 @@ vi.mock("mantine-datatable", () => ({
           <tbody>
             {records.map((game) => (
               <tr key={game.id}>
+                <td>{columns?.find((column) => column.accessor === "actions")?.render?.(game)}</td>
                 <td>{game.white}</td>
               </tr>
             ))}
@@ -71,8 +79,30 @@ vi.mock("mantine-datatable", () => ({
       </div>
     ),
 }));
-vi.mock("@/components/common/IconAction", () => ({ IconAction: () => null }));
-vi.mock("@/utils/tabs", () => ({ createTab: vi.fn() }));
+vi.mock("@/components/common/IconAction", () => ({
+  IconAction: ({ label, onClick }: { label: string; onClick?: () => void }) => (
+    <button type="button" aria-label={label} onClick={onClick} />
+  ),
+}));
+vi.mock("@/utils/tabs", () => ({
+  createTab: mocks.createTab,
+  runTabCreation: ({
+    create,
+    onSuccess,
+    onError,
+  }: {
+    create: () => unknown;
+    onSuccess?: () => void;
+    onError?: (error: unknown) => void;
+  }) => {
+    try {
+      create();
+      onSuccess?.();
+    } catch (error) {
+      onError?.(error);
+    }
+  },
+}));
 vi.mock("@mantine/core", () => ({
   Paper: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Stack: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -258,3 +288,81 @@ test.each([
     await vi.waitFor(() => expectPage(page, 25, displayed, count));
   },
 );
+
+const locator = {
+  collection: "22222222-2222-4222-8222-222222222222",
+  generation: "source-generation",
+  ordinal: 4,
+  stamp: "a".repeat(64),
+};
+
+function tournamentGame(linked?: NormalizedGame["linked"]): NormalizedGame {
+  return {
+    id: 11,
+    white: "White 11",
+    white_id: 11,
+    black: "Black 111",
+    black_id: 111,
+    date: "2026-01-11",
+    ply_count: 11,
+    result: "1-0",
+    event: "Candidates",
+    event_id: tournament.id,
+    site: "Test",
+    site_id: 1,
+    fen: "",
+    moves: "1. e4 e5 1-0",
+    ...(linked ? { linked } : {}),
+  };
+}
+
+async function openTournamentGame(game: NormalizedGame) {
+  const database = file("tournament-open");
+  mocks.getTournamentGames.mockResolvedValue({ data: [game] });
+  await render(database);
+  await vi.waitFor(() =>
+    expect(container.querySelector('[aria-label="Common.Open"]')).not.toBeNull(),
+  );
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Common.Open"]')!.click(),
+  );
+  return database;
+}
+
+test("opening a linked tournament game carries the qualified locator through the shared seed", async () => {
+  const game = tournamentGame(locator);
+  const database = await openTournamentGame(game);
+  expect(mocks.createTab).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      tab: { name: "White 11 - Black 111", type: "analysis" },
+      pgn: game.moves,
+      headers: game,
+      gameOrigin: {
+        kind: "database",
+        database,
+        gameId: game.id,
+        linked: locator,
+      },
+    }),
+  );
+  expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({ to: "/" });
+});
+
+test("opening a standalone tournament game keeps an ordinary database origin", async () => {
+  const game = tournamentGame();
+  const database = await openTournamentGame(game);
+  expect(mocks.createTab).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      tab: { name: "White 11 - Black 111", type: "analysis" },
+      pgn: game.moves,
+      headers: game,
+      gameOrigin: expect.objectContaining({
+        kind: "database",
+        database,
+        gameId: game.id,
+      }),
+    }),
+  );
+  expect(mocks.createTab.mock.calls[0][0].gameOrigin.linked ?? null).toBeNull();
+  expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({ to: "/" });
+});

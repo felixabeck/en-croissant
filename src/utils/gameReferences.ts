@@ -205,12 +205,18 @@ function metadataVerification(
             verified = false;
         } else if (
             siteFollows ||
-            [...afterRound.matchAll(fieldsInText)].some((match) => match[1] && fieldRound(match))
+            (!(prefix && event && site && prefix.text === `${event} ${site}`) &&
+                [...afterRound.matchAll(fieldsInText)].some(
+                    (match) => match[1] && fieldRound(match),
+                ))
         ) {
-            // Unknown text before another dated round leaves competing header/field/prose
-            // interpretations. Neither a guessed first close nor later prose verifies it.
+            // The first field is still inside an unresolved header, or site evidence
+            // placed it there. Do not compare it as date/round or promote later prose.
             return "unverified";
         }
+        // A complete event/site header already anchored the original year/round.
+        // A later tuple separated by ordinary prose is incidental and is compared
+        // only through those retained fields below.
     }
     const metadata = referenceFieldsVerification(fields, game);
     if (metadata === "rejected") return "rejected";

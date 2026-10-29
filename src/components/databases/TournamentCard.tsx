@@ -16,6 +16,7 @@ import { tabsAtom } from "@/state/atoms";
 import type { DatabaseViewStore } from "@/state/store/database";
 import { getTournamentGames } from "@/utils/db";
 import { createTab, runTabCreation } from "@/utils/tabs";
+import { databaseGameSeed } from "@/utils/databaseGame";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 
 const gamePoints = (game: NormalizedGame, player: string) => {
@@ -163,15 +164,8 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
                         void runTabCreation({
                           create: () =>
                             createTab({
-                              tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
+                              ...databaseGameSeed(game, file),
                               setTabs,
-                              pgn: game.moves,
-                              headers: game,
-                              gameOrigin: {
-                                kind: "database",
-                                database: file,
-                                gameId: game.id,
-                              },
                             }),
                           onSuccess: () => navigate({ to: "/" }),
                           onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
