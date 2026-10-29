@@ -40,6 +40,7 @@
 }
 
 [data-mantine-color-scheme="dark"] .black {
+  background: var(--cf-background);
   color: var(--cf-foreground);
 }
 
