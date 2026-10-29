@@ -10882,3 +10882,28 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Attribution:** Codex technical decision. Plan authorship and arbitration shared one context. Detection and implementation use the same OpenAI model family.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":11,"effect_sha256":"86e9b1fd3d500abf76b07211357a3b5e1fae5e4ac8665acbc7340bf671a40959","input_sha256":"255f5e758bef63d1d9f58f295cfe7c86822caf594728fe847470557480d3968a","kind":"mutation-receipt","operation":"b2db4b375812d7fe5afe0c6df1cd9174045a946acd58ca51911628be87e97591","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-31"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-32 — Tablebase move cards follow the available pane width
+
+* **Date:** 2026-10-29
+* **Governs:** f-20261029-17
+* **Question:** What owns the responsive tablebase card layout?
+* **Chosen:** Component-local pane-relative CSS Grid and internal content reflow.
+* **Rejected:** Viewport-only column breakpoints, a smaller font, or a tooltip masking clipping.
+* **Reason:** Mosaic can make the pane narrow inside a wide desktop window, and the mandate requires visible complete values.
+* **Reversal path:** Replace the CSS mechanism only with equivalent pane-resize, font-scale and text-fit proof.
+* **Attribution:** Adopted Codex plan decision. Plan authorship and arbitration share one context. Detection runs on the same OpenAI model family as the code.
+* **Superseded-by:** -
+
+### d-20261029-33 — Tablebase card acceptance uses pinned rendered evidence
+
+* **Date:** 2026-10-29
+* **Governs:** f-20261029-17
+* **Question:** What provides acceptance for the tablebase layout correction?
+* **Chosen:** Agent visual acceptance through the canonical pinned Playwright container plus nontruncation geometry assertions.
+* **Rejected:** jsdom/typecheck alone or Chrome MCP as desktop evidence.
+* **Reason:** The failure is rendered text clipping and the project supplies the container pixel contract.
+* **Reversal path:** A later equivalent project verifier must establish the same rendered claims. No native GTK acceptance is needed.
+* **Attribution:** Adopted Codex plan decision. Plan authorship and arbitration share one context. Detection runs on the same OpenAI model family as the code.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":23,"effect_sha256":"47d621700874766b6936d8e9d2cbe7c480e60a0f4ee240abca48c7cb6a9a7613","input_sha256":"93ff6493d62ffce5218ca66058324bb7489cb79e16b80a30cd4d98f82c97108a","kind":"mutation-receipt","operation":"8d6450f1a60be93606836b4b40bb71510051bbd8cc01056fe15364a3366c7438","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-32","d-20261029-33"],"target":"decisions-ledger","v":1} -->
