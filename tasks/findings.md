@@ -18894,6 +18894,9 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Origin clarification (2026-10-29):** git blame attributes setupNotationMenu's original Open game click without a destination-render wait to 001221f08, the notation pointer-menu repair. This follow-up repairs that fix's new test setup. It does not establish a repeated pointer-menu production defect or a common Root with the menu event mechanism. The wait correction is 9736068a, governed by d-20261029-07.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"d845c6f124946361180c76009023b3bc6370ed40909a61b617c6073c50a93d91","input_sha256":"9d59d334a8bc2d38c1e889f4873a6fe628eae8ea5e3e75cb96687914f81a7fee","kind":"mutation-receipt","operation":"9ac7d1512c688686924188eaf9926cfb9ebc4097c31fae6d9b638ac029cdad52","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-02"],"target":"f-20261029-02","v":1} -->
 
+* **Publication mapping (2026-10-29):** The pre-gate rebase onto published upstream 291d7fb2 maps source correction 9736068a to be05fbfd. Git range-diff marks the test patch identical. The original evidence remains historical at its named revisions. Rebase closure and full final gates on the rebased tree precede delivery.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0be3753f455041a314f7c7ddadf062bf74483eb32ebd3225debc689654e53672","input_sha256":"3cae03e20d7bdd7af81a31b0009acdbd4c4da3b168fca2add18cb264a56f1f18","kind":"mutation-receipt","operation":"9aead845f504612b6946bca15d7fbb7578067a6443daa2c2a4b91d58fe1b03d7","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-02"],"target":"f-20261029-02","v":1} -->
+
 ---
 
 ## 2026-10-29 — filed through the inbox spool
