@@ -19185,3 +19185,25 @@ Former unpublished identifier: f-20261029-04
 ```text
 Former private finding identifier: f-20261029-05
 ```
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Citation initials matching changes identity with database name capitalization and order
+
+* **ID:** f-20261029-14 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/utils/gameReferences.ts:108-116, matchesReferencePlayer.
+* **Defect:** The uppercase-word heuristic interprets JOHN as four initials, so Smith,JO matches Smith, JOHN while Smith, John is rejected. The given-first branch instead lowercases JK before this heuristic, so Smith,JK rejects JK Smith but accepts Smith, JK. Name capitalization and storage order can therefore change candidate identity or omit a valid occurrence.
+* **Failure scenario:** Click a multi-initial citation against a Library with uppercase full given names or given-first compact initials. An unrelated name may auto-open, or the intended local game is missing.
+* **Related:** f-20261029-11 is in the same citation module but concerns prose context, not player identity. There is no evidenced shared cause.
+* **Fix:** Make identity case-insensitive across both name orders, preserve ordered initials, reject JO against JOHN, and conservatively retain ambiguous compact initials for explicit selection.
+* **Proof:** Add player and observable lookup regressions for both name orders and capitalization, with real failure on production-fix removal and exact restoration.
+* **Found by:** Correctness cumulative review r1, confidence96 and98, opening-game-references build. Plan authorship and arbitration shared one context. Detection used the same OpenAI model family as code.
+* **Publication recovery:** This is the same r1 finding, not another discovery or review adoption. Its original private identifier below and all subsequent annotations/receipts remain unchanged in the archived snapshot62159f00cf0e232f74c6362e2af805aaf6575022 and the task handoff. This canonical publication record keeps current references in the same publication namespace as the three refiled dependency findings. The original reported failure describes the initial r1 code, not a new failure of current source615df424. Current root proof passed fifteen controlled reversals, related1261 tests and complete pre-review0 before upstream integration. Code closure and integrated desktop/release proof remain pending.
+
+```text
+Former private finding identifier: f-20261029-06
+```
