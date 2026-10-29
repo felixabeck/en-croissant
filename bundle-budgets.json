@@ -7,10 +7,10 @@
     "total": 1670000
   },
   "measurement": {
-    "source": "pnpm build-vite",
+    "source": "pnpm gate:run frontend-build",
     "date": "2026-10-29",
-    "entry": 556146,
-    "largestLazy": 486067,
-    "total": 1660313
+    "entry": 556213,
+    "largestLazy": 487189,
+    "total": 1661867
   }
 }
