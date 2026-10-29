@@ -10809,3 +10809,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Same files as ChessRiddle, offline, no security-scope change, and font binaries are not counted by the bundle budget. Reversal path: delete `public/fonts/` and the font stylesheet. Recorded on the build branch as entry 10 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
 * **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"69893cfd1414ee81ce116c1308289cdd001d9d7eb436eca7a27cbd78bbacd169","input_sha256":"c85f2e35d5bc128cb7145ed29da5b9de30a4c5fd97240b51b9da31c6879af18c","kind":"mutation-receipt","operation":"dcae95b81a3df36171a9c87eb3381371990f148ec56ed5b0f6ec10dbf82d6811","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-24"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-25 — Which colours stay outside the ChessRiddle restyle?
+
+* **Question:** Mantine named palettes are resolved by name for NAG annotation colours and engine arrow colours. Should the restyle re-derive them from ChessRiddle hues?
+* **Governs:** -
+* **Chosen:** No. Mantine's named palettes keep their default values. ChessRiddle semantic hues are added as new palettes (`danger`, `success`, `warning`, `info`) used by chrome (notifications, badges, alerts, buttons). Engine arrow colours, NAG colours, user drawing brushes, premove/check overlays and per-board coordinate colours stay unchanged. ChessRiddle's main-navigation colour emoji are not adopted for the narrow sidebar rail; the catalogue's Lucide `ui` identities are used instead.
+* **Rejected:** Re-deriving named palettes (silently recolours annotation and engine meaning, review-plan P-1); colour emoji in the rail.
+* **Reason:** These colours carry board meaning, not chrome. Reversal path: override the named palettes in `src/styles/theme.ts`. Recorded on the build branch as entry 11 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
+* **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"a6b15d25941c2b4dd88affeeb04a4cfb6e33581b5e25a621565638bb061e1e3b","input_sha256":"b96ecae221fe3b017bb5a49ceaf29f2b42be5fb369e0fac1e7480798597125c3","kind":"mutation-receipt","operation":"61e3b19e00e9adee9d79e92ded0a20cddf479963391f0e111b0b8bbdc0fa4c64","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-25"],"target":"decisions-ledger","v":1} -->
