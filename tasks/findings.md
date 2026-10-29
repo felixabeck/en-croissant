@@ -19217,3 +19217,19 @@ Former private finding identifier: f-20261029-05
 ```text
 Former private finding identifier: f-20261029-06
 ```
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Tournament game opening omits the linked locator required by native admission
+
+* **ID:** f-20261030-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/components/databases/TournamentCard.tsx165 constructs gameOrigin without game.linked. src/utils/tabs.ts572 passes that missing locator as null. src-tauri/src/db/linked_collections.rs3291 resolve_game rejects an absent locator with StaleGame for linked sources.
+* **Defect:** The tournament game opener still duplicates the database-game tab seed and drops the qualified linked occurrence, while the other lists and citation opener use databaseGameSeed. Query results are qualified with linked locators by db/search.rs930. Opening a valid linked tournament game therefore reaches native admission with no expected locator and is refused.
+* **Fix:** Route this fourth database-game opening path through the existing databaseGameSeed(game, file), preserving its current gesture, transaction, navigation and errors. No new helper or native contract.
+* **Proof:** Retain a component regression that actually activates the tournament row and observes the required linked locator at the admission boundary through the real shared helper. The old inline producer must fail the retained assertion, restored helper routing must pass, and standalone games must retain their existing origin. Existing full original-game admission coverage remains shared, no helper-object mirror test.
+* **Related:** f-20261010-03 repaired tournament pagination, a different defect. No shared Root is established.
+* **Found by:** Minimalism code r3 at9aa9bd2f in the full-auto opening-game-reference task, confidence98. Root independently traced the real native rejection condition. This is new adopted review issue DR10, planned in this same repair batch. Plan authorship and arbitration shared one context. Detection shared the original code's OpenAI model family through the disclosed native read-only fallback.
