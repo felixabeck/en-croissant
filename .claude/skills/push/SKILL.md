@@ -112,15 +112,9 @@ type error in the `#[cfg(test)]` function `set_test_lexer_hook` in `src-tauri/sr
 fenced clippy command exited 101 with E0308, and exited 0 without the probe. This is why the
 separate `cargo check` step was removed from this block and CI.
 
-The scheduler's shared Rust allocator bounds `CARGO_BUILD_JOBS` before the P1 bindings exporter
-and every Rust lane, including nested receipt misses and Windows clippy. Cold calibration uses
-8 GiB per job plus 1 GiB Rust overhead, beside the existing 1 GiB generic reserve. Known usable
-budgets below 9 GiB refuse before compilation. Unavailable cgroup detection assumes the supported
-minimum with a one-job Rust fallback, without changing frontend's 7 GiB usable fallback. That
-assumption requires 10 GiB including the reserve, it cannot prove an unknown machine has it.
-Lower valid caller job limits remain respected and libtest concurrency stays unchanged.
-The allocation rationale and measured reversal path live beside `rustBuildEnvironment` in
-`scripts/gate-parallelism.mjs` and in the gate-tooling rule.
+The canonical [gate-tooling contract](../../rules/gate-tooling.md#scheduling-and-placement)
+owns Rust admission and allocation policy, implemented by `rustBuildEnvironment` in
+`scripts/gate-parallelism.mjs`.
 
 `pnpm rust:windows:check` covers GNU-target type-checking and linting only. The MSVC target
 (`rust-platform`) and all Windows tests (`rust-windows-test`) remain CI-only. If the gate is red

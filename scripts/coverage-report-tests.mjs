@@ -4,7 +4,6 @@ import { existsSync, lstatSync, readdirSync, writeFileSync } from "node:fs";
 import {
   access,
   chmod,
-  copyFile,
   mkdtemp,
   mkdir,
   rm,
@@ -46,6 +45,7 @@ import {
 } from "./rust-branch-coverage.mjs";
 import { filesBelow } from "./files-below.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
+import { copyRustCoverageEntrypoint } from "./rust-coverage-test-harness.mjs";
 import { maskRustSource, maskRustSourceWithSpans } from "./rust-source-mask.mjs";
 import { classifyRustTestOnlySources, scanRustTestOnly } from "./rust-test-only.mjs";
 import { testTempRoots } from "./test-temp-root.mjs";
@@ -3569,24 +3569,11 @@ test("removal and unreadable pre-Cargo walks record filesystem messages and reje
 test("entrypoint tool-resolution failure exits 1 and leaves the planted profile set unchanged", async (t) => {
   const scratchRoot = await mkdtemp(join(tmpdir(), "coverage-no-rustup-"));
   t.after(() => rm(scratchRoot, { recursive: true, force: true }));
-  const scriptNames = [
-    "rust-branch-coverage.mjs",
-    "coverage-scope.mjs",
-    "entrypoint.mjs",
-    "files-below.mjs",
-    "rust-host.mjs",
-    "toolchain-versions.mjs",
-  ];
-  const scratchScripts = join(scratchRoot, "scripts");
   const emptyPath = join(scratchRoot, "empty-path");
   const coverageTarget = resolve(scratchRoot, "src-tauri/target/llvm-cov-target");
-  await mkdir(scratchScripts, { recursive: true });
   await mkdir(emptyPath);
   await mkdir(coverageTarget, { recursive: true });
-  await Promise.all(
-    scriptNames.map((name) => copyFile(resolve("scripts", name), join(scratchScripts, name))),
-  );
-  const entrypoint = join(scratchScripts, "rust-branch-coverage.mjs");
+  const entrypoint = await copyRustCoverageEntrypoint(scratchRoot);
   const planted = join(coverageTarget, "staged-tool-failure.profraw");
   const plantedBytes = Buffer.from("staged input");
   // Exclusive creation ensures this scratch root owns precisely the planted file.

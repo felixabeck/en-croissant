@@ -3,7 +3,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync, writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +34,8 @@ import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { startNodeCli } from "./mutation-runner-test-harness.mjs";
 import { superviseChild } from "./child-supervisor.mjs";
 import { GATE_LOG_DIRECTORY_ENV, MAX_GATE_LOG_RUNS, writeLogChunk } from "./gate-logs.mjs";
+import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
+import { copyRustCoverageEntrypoint } from "./rust-coverage-test-harness.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runnerPath = join(repositoryRoot, "scripts/run-push-gates.mjs");
@@ -37,7 +49,7 @@ const BARRIER_TIMEOUT_MS = 10_000;
 const FAKE_COMMAND = String.raw`
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const executablePath = process.argv[2];
 const executable = basename(executablePath);
@@ -51,11 +63,16 @@ const eventPath = join(state, "events.jsonl");
 const output = "fake-output:" + executable + ":" + args.join("|");
 const record = (entry) => appendFileSync(
   eventPath,
-  JSON.stringify({ ...entry, command, executable, args, at: at(), pid: process.pid }) + "\n",
+  JSON.stringify({ ...entry, command, executable, args, cwd: process.cwd(), at: at(), pid: process.pid }) + "\n",
 );
 
 record({ type: "start", output, jobs: process.env.CARGO_BUILD_JOBS, testThreads: process.env.RUST_TEST_THREADS });
-process.stdout.write(output + "\n");
+process.stdout.write(behavior.stdout ?? output + "\n");
+
+for (const { path, contents, mode } of behavior.writeFiles ?? []) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, contents, { mode });
+}
 
 if (behavior.removeExecutable) {
   try { unlinkSync(join(process.env.FAKE_BIN, behavior.removeExecutable)); } catch (error) {
@@ -138,7 +155,13 @@ function scheduledFakeCommands(blocks) {
 
 async function makeHarness(
   t,
-  { commands = {}, omittedExecutables = [], budgetBytes = 10 * GIB, barrierLanes = [] } = {},
+  {
+    commands = {},
+    omittedExecutables = [],
+    extraExecutables = [],
+    budgetBytes = 10 * GIB,
+    barrierLanes = [],
+  } = {},
 ) {
   const root = await mkdtemp(join("/tmp", "push-gates-cli-"));
   const bin = join(root, "bin");
@@ -151,7 +174,7 @@ async function makeHarness(
   await writeFile(helperPath, FAKE_COMMAND);
   await symlink("/usr/bin/env", join(bin, "env"));
 
-  for (const executable of ["pnpm", "cargo", "bash"]) {
+  for (const executable of ["pnpm", "cargo", "bash", ...extraExecutables]) {
     if (omittedExecutables.includes(executable)) continue;
     const shimPath = join(bin, executable);
     await writeFile(
@@ -2131,7 +2154,7 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
   );
 });
 
-test("Cargo allocation reaches real fake compiler and exporter processes on Rust, bindings-only and all-block routes", async (t) => {
+test("Cargo allocation survives production bindings, receipt, coverage and Windows entrypoints", async (t) => {
   const native = ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets"];
   const exporter = [
     "cargo",
@@ -2143,20 +2166,141 @@ test("Cargo allocation reaches real fake compiler and exporter processes on Rust
     "--",
     "--export-bindings-only",
   ];
-  const instrumented = ["cargo", "+nightly-2025-06-01", "llvm-cov", "--branch", "--no-report"];
-  const windows = ["cargo", "clippy", "--target", "x86_64-pc-windows-gnu", "--all-targets"];
+  const windows = [
+    "cargo",
+    "clippy",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--target",
+    "x86_64-pc-windows-gnu",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings",
+  ];
   for (const flags of [["--rust"], ["--bindings"], ["--rust", "--frontend", "--bindings"]]) {
     await t.test(flags.join(" "), async (subtest) => {
       const harness = await makeHarness(subtest, {
-        commands: {
-          "pnpm bindings:check": { childCommand: exporter },
-          "pnpm gate:ensure backend-test": { childCommand: native },
-          "pnpm gate:ensure backend-coverage": { childCommand: instrumented },
-          "pnpm rust:windows:check": { childCommand: windows },
-        },
+        extraExecutables: ["rustup", "rustc", "llvm-profdata", "llvm-cov"],
       });
+      const { root, bin } = harness;
+      // Module-relative writers and profile cleanup must own only this fixture. Coverage's
+      // entrypoint copy is shared with its failure fixture, other producers stay local here.
+      const scripts = join(root, "scripts");
+      await copyRustCoverageEntrypoint(root);
+      for (const name of [
+        "check-bindings.mjs",
+        "gate-receipt.mjs",
+        "rust-windows-check.mjs",
+        "child-supervisor.mjs",
+        "gate-logs.mjs",
+        "playwright-image.mjs",
+        "executable-path.mjs",
+      ]) {
+        await copyFile(join(repositoryRoot, "scripts", name), join(scripts, name));
+      }
+      await initializeUpstream(root, {
+        upstream: false,
+        files: { ".gitignore": "/*\n!/README.md\n!/.gitignore\n" },
+      });
+      await symlink("/usr/bin/git", join(bin, "git"));
+      await symlink(process.execPath, join(bin, "node"));
+      const llvmBin = join(root, "lib/rustlib/x86_64-unknown-linux-gnu/bin");
+      await mkdir(llvmBin, { recursive: true });
+      for (const tool of ["llvm-profdata", "llvm-cov"]) {
+        await symlink(join(bin, tool), join(llvmBin, tool));
+      }
+      const mingwBin = join(root, "mingw/usr/bin");
+      await mkdir(mingwBin, { recursive: true });
+      await symlink(join(bin, "cargo"), join(mingwBin, "x86_64-w64-mingw32-gcc"));
+      const binding = join(root, "src/bindings/generated.ts");
+      await mkdir(dirname(binding), { recursive: true });
+      await writeFile(binding, "// fixture bindings\n");
+      const target = join(root, "src-tauri/target/llvm-cov-target");
+      await mkdir(target, { recursive: true });
+      const staleProfile = join(target, "stale.profraw");
+      const freshProfile = join(target, "fresh.profraw");
+      await writeFile(staleProfile, "old counts");
+      const source = join(root, "src-tauri/src/example.rs");
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, "pub fn example() {}\n");
+      await mkdir(join(root, "backend-coverage"));
+      await writeFile(
+        join(root, "backend-coverage-areas.json"),
+        JSON.stringify({ sources: [{ exclude: [] }] }),
+      );
+      const instrumented = [
+        "cargo",
+        `+${RUST_COVERAGE_TOOLCHAIN}`,
+        "llvm-cov",
+        "--manifest-path",
+        join(root, "src-tauri/Cargo.toml"),
+        "--bin",
+        "chessfable",
+        "--locked",
+        "--branch",
+        "--no-report",
+      ];
+      // pnpm dispatches to the current production producers, never directly to canned Cargo
+      // argv. Fake tools supply outputs only after those producers start real child processes.
+      const entrypoint = (name, ...args) => ({
+        childCommand: [process.execPath, join(scripts, name), ...args],
+      });
+      await writeFile(
+        harness.configPath,
+        JSON.stringify({
+          commands: {
+            "pnpm bindings:check": entrypoint("check-bindings.mjs"),
+            "pnpm gate:ensure backend-test": entrypoint(
+              "gate-receipt.mjs",
+              "ensure",
+              "backend-test",
+            ),
+            "pnpm gate:ensure backend-coverage": entrypoint(
+              "gate-receipt.mjs",
+              "ensure",
+              "backend-coverage",
+            ),
+            "pnpm test:coverage:backend": entrypoint("rust-branch-coverage.mjs"),
+            "pnpm rust:windows:check": entrypoint("rust-windows-check.mjs"),
+            "rustc --version": { stdout: "rustc fixture\n" },
+            "cargo --version": { stdout: "cargo fixture\n" },
+            "cargo llvm-cov --version": { stdout: "cargo-llvm-cov fixture\n" },
+            [`rustup run ${RUST_COVERAGE_TOOLCHAIN} rustc --version`]: {
+              stdout: "rustc nightly fixture\n",
+            },
+            [`rustup run ${RUST_COVERAGE_TOOLCHAIN} rustc --print sysroot`]: {
+              stdout: root + "\n",
+            },
+            [`rustup run ${RUST_COVERAGE_TOOLCHAIN} rustc -vV`]: {
+              stdout: "host: x86_64-unknown-linux-gnu\n",
+            },
+            "rustup target list --installed": { stdout: "x86_64-pc-windows-gnu\n" },
+            [instrumented.join(" ")]: {
+              writeFiles: [
+                { path: freshProfile, contents: "fresh counts" },
+                {
+                  path: join(target, "debug/deps/chessfable-deadbeef"),
+                  contents: "fixture executable",
+                  mode: 0o755,
+                },
+              ],
+            },
+            [`llvm-cov export -format=lcov -instr-profile=${join(root, "backend-coverage/src-tauri.profdata")} ${join(target, "debug/deps/chessfable-deadbeef")} -sources ${source}`]:
+              {
+                stdout: `SF:${source}\nBRDA:1,0,0,1\nend_of_record\n`,
+              },
+          },
+        }),
+      );
       harness.env.CARGO_BUILD_JOBS = "64";
+      harness.env.CARGO_HOME = join(root, "cargo-home");
+      harness.env.CARGO_TARGET_DIR = join(root, "src-tauri/target");
+      harness.env.LLVM_PROFILE_FILE = join(target, "fixture-%p.profraw");
+      harness.env.CHESSFABLE_MINGW_PREFIX = join(root, "mingw");
       delete harness.env.RUST_TEST_THREADS;
+      assert.equal(existsSync(join(root, ".gate-receipts")), false);
       const result = await runCli(subtest, harness, flags);
       assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
       const events = await readEvents(harness);
@@ -2168,11 +2312,31 @@ test("Cargo allocation reaches real fake compiler and exporter processes on Rust
         const compiler = cliCommandStart(events, argv.join(" "));
         assert.ok(compiler, `missing compiler/exporter process ${argv.join(" ")}`);
         assert.equal(compiler.jobs, "1", compiler.command);
+        assert.equal(compiler.cwd, root, compiler.command);
         assert.equal(
           compiler.testThreads,
           undefined,
           "compilation sizing must not set libtest concurrency",
         );
+      }
+      if (flags.includes("--rust")) {
+        const logDirectory = result.stdout.match(/^Push gate logs: (.+)$/mu)[1];
+        for (const [gate, lane] of [
+          ["backend-test", "rust-test"],
+          ["backend-coverage", "rust-coverage"],
+        ]) {
+          assert.match(
+            await readFile(join(logDirectory, `${lane}.log`), "utf8"),
+            new RegExp(`gate receipt miss: ${gate} — receipt is absent`, "u"),
+          );
+          const receipt = JSON.parse(
+            await readFile(join(root, ".gate-receipts", `${gate}.json`), "utf8"),
+          );
+          assert.equal(receipt.gate, gate);
+        }
+        assert.equal(existsSync(staleProfile), false);
+        assert.equal(await readFile(freshProfile, "utf8"), "fresh counts");
+        assert.match(await readFile(join(root, "backend-coverage/lcov.info"), "utf8"), /^SF:/u);
       }
     });
   }
@@ -2291,21 +2455,43 @@ test("unconfirmed process cleanup blocks queued Rust and heavyweight frontend st
 });
 
 test("pre-review Windows compilation uses Rust allocation and excludes heavyweight mutation even above the one-wave threshold", async (t) => {
-  for (const budgetBytes of [10 * GIB, ONE_WAVE_BYTES + GIB]) {
+  for (const [budgetBytes, expectedJobs] of [
+    [10 * GIB, "1"],
+    [ONE_WAVE_BYTES + GIB, "5"],
+  ]) {
     const windows = "pnpm rust:windows:check";
     const mutation = "pnpm mutation:frontend -- --files src/state/workspace.ts";
     const harness = await makeHarness(t, { budgetBytes, commands: { [windows]: { delayMs: 50 } } });
     await mkdir(join(harness.root, "src/state"), { recursive: true });
     await writeFile(join(harness.root, "src/state/workspace.ts"), "export const workspace = 1;\n");
-    harness.env.CARGO_BUILD_JOBS = "1";
+    harness.env.CARGO_BUILD_JOBS = "64";
+    delete harness.env.GATE_CPU_SHARE;
     const result = await runPushGates(["--pre-review"], {
       cwd: harness.root,
       env: harness.env,
+      availableParallelism: () => 24,
       discoverChangedPaths: () => ["src-tauri/src/lib.rs", "src/state/workspace.ts"],
     });
     assert.equal(result.exitCode, 0);
     const events = await readEvents(harness);
-    assert.equal(cliCommandStart(events, windows).jobs, "1");
+    assert.equal(cliCommandStart(events, windows).jobs, expectedJobs);
     assert.ok(at(cliCommandFinish(events, windows)) < at(cliCommandStart(events, mutation)));
   }
+});
+
+test("known insufficient pre-review Rust memory refuses before Windows compiler spawn", async (t) => {
+  const harness = await makeHarness(t, { budgetBytes: 9 * GIB - 1 });
+  harness.env.CARGO_BUILD_JOBS = "64";
+  const result = await runPushGates(["--pre-review"], {
+    cwd: harness.root,
+    env: harness.env,
+    availableParallelism: () => 24,
+    discoverChangedPaths: () => ["src-tauri/src/lib.rs"],
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(
+    result.results.find(({ name }) => name === "scheduler").error.message,
+    /Rust compilation refused:.*below the minimum.*9 GiB usable/u,
+  );
+  assert.deepEqual(commandSet(await readEvents(harness)), ["pnpm gate:run frontend-build"]);
 });
