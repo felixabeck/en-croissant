@@ -4,12 +4,10 @@ import {
     type Color,
     IllegalSetup,
     type Move,
-    makeSquare,
     type PositionError,
     parseUci,
     type Setup,
     type Square,
-    type SquareName,
     squareFile,
     squareRank,
 } from "chessops";
@@ -97,24 +95,6 @@ function chessopsErrorKey(error: PositionError | FenError): ChessopsErrorKey {
 /** Translates a chessops error through the catalogue. */
 export function translateChessopsError(t: TFunction, error: PositionError | FenError): string {
     return t(chessopsErrorKey(error));
-}
-
-export function forceEnPassant(dests: Map<SquareName, SquareName[]>, pos: Chess) {
-    const epSquare = pos.epSquare ? makeSquare(pos.epSquare) : undefined;
-    if (!epSquare) {
-        return dests;
-    }
-    for (const [from, to] of dests.entries()) {
-        let seen = false;
-        if (to.includes(epSquare)) {
-            seen = true;
-            dests.set(from, [epSquare]);
-        }
-        if (!seen) {
-            dests.delete(from);
-        }
-    }
-    return dests;
 }
 
 export function getPiecesCount(pos: Chess) {

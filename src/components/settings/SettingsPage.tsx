@@ -17,7 +17,6 @@ import {
   BookOpen,
   Palette,
   ChessKnight,
-  Flag,
   Folder,
   Keyboard,
   Mouse,
@@ -39,7 +38,6 @@ import {
   chooseVariationAtom,
   enableBoardScrollAtom,
   eraseDrawablesOnClickAtom,
-  forcedEnPassantAtom,
   materialDisplayAtom,
   moveHighlightAtom,
   moveInputAtom,
@@ -83,7 +81,6 @@ const COMPACT_SETTINGS_WIDTH_EM = 50;
 type SettingCategory =
   | "board"
   | "inputs"
-  | "anarchy"
   | "appearance"
   | "sound"
   | "keybinds"
@@ -361,15 +358,6 @@ export default function Page() {
         keywords: ["spell", "check", "grammar"],
         render: () => <SettingsSwitch atom={spellCheckAtom} />,
       },
-      // Anarchy settings
-      {
-        id: "forced-en-passant",
-        category: "anarchy",
-        title: t("Settings.Anarchy.ForcedEnCroissant"),
-        description: t("Settings.Anarchy.ForcedEnCroissant.Desc"),
-        keywords: ["en passant", "forced", "croissant"],
-        render: () => <SettingsSwitch atom={forcedEnPassantAtom} />,
-      },
       // Appearance settings
       {
         id: "theme",
@@ -643,11 +631,6 @@ export default function Page() {
         description: t("Settings.Inputs.Desc"),
         icon: <Mouse size="1rem" />,
       },
-      anarchy: {
-        title: t("Settings.Anarchy"),
-        description: t("Settings.Anarchy.Desc"),
-        icon: <Flag size="1rem" />,
-      },
       appearance: {
         title: t("Settings.Appearance"),
         description: t("Settings.Appearance.Desc"),
@@ -801,9 +784,6 @@ export default function Page() {
             <Tabs.Tab value="inputs" leftSection={<Mouse size="1rem" />}>
               {t("Settings.Inputs")}
             </Tabs.Tab>
-            <Tabs.Tab value="anarchy" leftSection={<Flag size="1rem" />}>
-              {t("Settings.Anarchy")}
-            </Tabs.Tab>
             <Tabs.Tab value="appearance" leftSection={<Palette size="1rem" />}>
               {t("Settings.Appearance")}
             </Tabs.Tab>
@@ -844,16 +824,6 @@ export default function Page() {
                     {t("Settings.Inputs.Desc")}
                   </Text>
                   {renderCategorySettings("inputs")}
-                </Tabs.Panel>
-
-                <Tabs.Panel value="anarchy">
-                  <Text size="lg" fw={500} className={classes.title}>
-                    {t("Settings.Anarchy")}
-                  </Text>
-                  <Text size="xs" c="dimmed" mt={3} mb="lg">
-                    {t("Settings.Anarchy.Desc")}
-                  </Text>
-                  {renderCategorySettings("anarchy")}
                 </Tabs.Panel>
 
                 <Tabs.Panel value="appearance">

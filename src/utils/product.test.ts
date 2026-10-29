@@ -26,7 +26,7 @@ describe("product identity", () => {
         expect(bugForm).toContain(`${REPOSITORY_URL}/issues?q=`);
     });
 
-    test("brands changed catalogue keys while preserving attribution and chess-joke keys", () => {
+    test("brands changed catalogue keys while preserving upstream attribution", () => {
         const brandedKeys = [
             "Engines.Remove.Message",
             "Menu.Application.About",
@@ -42,10 +42,6 @@ describe("product identity", () => {
             expect(translation["Error.ReportIssue"]).toMatch(/<github>[^<]+<\/github>/u);
             expect(translation["Error.ReportIssue"]).not.toContain("discord");
             expect(translation["About.ModificationNotice"]).toContain("En Croissant");
-            expect(translation["Settings.Anarchy.ForcedEnCroissant"]).not.toContain("ChessFable");
-            expect(translation["Settings.Anarchy.ForcedEnCroissant.Desc"]).not.toContain(
-                "ChessFable",
-            );
         }
     });
 

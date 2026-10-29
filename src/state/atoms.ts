@@ -527,11 +527,6 @@ export const materialDisplayAtom = atomWithStorage<"diff" | "all">(
     "diff",
     createZodStorage(z.enum(["diff", "all"]), localStorage),
 );
-export const forcedEnPassantAtom = atomWithStorage<boolean>(
-    "forced-ep",
-    false,
-    createPreferenceStorage(false),
-);
 export const showCoordinatesAtom = documentPreferences.atomWithStorage<"no" | "edge" | "all">(
     "show-coordinates-v2",
     "no",

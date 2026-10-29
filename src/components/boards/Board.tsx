@@ -31,7 +31,6 @@ import {
   evalOpenFamily,
   showCommentsFamily,
   enableBoardScrollAtom,
-  forcedEnPassantAtom,
   materialDisplayAtom,
   moveHighlightAtom,
   moveInputAtom,
@@ -46,12 +45,7 @@ import { keyMapAtom } from "@/state/keybinds";
 import classes from "@/styles/Chessboard.module.css";
 import { ANNOTATION_INFO, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { getVariationLine } from "@/utils/chess";
-import {
-  forceEnPassant,
-  normalizeEditedFen,
-  positionFromFen,
-  translateChessopsError,
-} from "@/utils/chessops";
+import { normalizeEditedFen, positionFromFen, translateChessopsError } from "@/utils/chessops";
 import ShowMaterial from "../common/ShowMaterial";
 import { TreeStateContext, useVariationChooser } from "@/components/common/TreeStateContext";
 import BoardFrame from "@/components/boards/BoardFrame";
@@ -179,14 +173,12 @@ function Board({
   const showVariationArrows = useAtomValue(showVariationArrowsAtom);
   const showConsecutiveArrows = useAtomValue(showConsecutiveArrowsAtom);
   const autoPromote = useAtomValue(autoPromoteAtom);
-  const forcedEP = useAtomValue(forcedEnPassantAtom);
   const showCoordinates = useAtomValue(showCoordinatesAtom);
   const materialDisplay = useAtomValue(materialDisplayAtom);
 
   const dests = useMemo(() => {
-    const legalDests = pos ? chessgroundDests(pos) : new Map<SquareName, SquareName[]>();
-    return forcedEP && pos ? forceEnPassant(legalDests, pos) : legalDests;
-  }, [forcedEP, pos]);
+    return pos ? chessgroundDests(pos) : new Map<SquareName, SquareName[]>();
+  }, [pos]);
 
   const [pendingMove, setPendingMove] = useState<NormalMove | null>(null);
   const [keyboardSquare, setKeyboardSquare] = useState<SquareName>("e2");

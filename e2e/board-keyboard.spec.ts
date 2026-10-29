@@ -293,6 +293,31 @@ for (const scale of [100, 200]) {
     }
 }
 
+for (const { name, from, to, piece } of [
+    { name: "ordinary move", from: "e1", to: "f1", piece: "White King" },
+    { name: "en passant", from: "e5", to: "d6", piece: "White Pawn" },
+]) {
+    test(`board-keyboard: retired forced-ep preference permits ${name}`, async ({ page }) => {
+        const grid = await importAnalysisFen(page, "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2");
+        // Reproduce the legacy on-disk preference before a fresh renderer reads it.
+        await page.evaluate(() => localStorage.setItem("forced-ep", "true"));
+        await preserveStorageForReload(page);
+        await expect(grid).toBeVisible();
+        await playBoardMove(page, page.locator("cg-board").first(), from, to);
+        await expect(
+            grid.getByRole("gridcell", { name: `${to}, ${piece}`, exact: true }),
+        ).toHaveCount(1);
+        await expect(
+            grid.getByRole("gridcell", { name: `${from}, empty`, exact: true }),
+        ).toHaveCount(1);
+        if (name === "en passant") {
+            await expect(
+                grid.getByRole("gridcell", { name: "d5, empty", exact: true }),
+            ).toHaveCount(1);
+        }
+    });
+}
+
 test("board-keyboard: imported EP root reaches threefold through real moves and survives reload", async ({
     page,
     capture,
