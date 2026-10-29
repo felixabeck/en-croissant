@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "中局",
     "Board.Analysis.NoAnalysisAvailable": "沒有可用分析",
     "Board.Analysis.NotAnalysed": "未分析",
+    "Board.Analysis.NotInChessDB": "此局面尚未收錄在 ChessDB 中。",
     "Board.Analysis.PauseAllEngines": "暫停所有引擎",
     "Board.Analysis.Pin": "釘選在棋譜上方",
     "Board.Analysis.RefDBRequired": "未選取參考資料庫。請先在資料庫頁面選取一個。",

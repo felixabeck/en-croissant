@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Мітельшпіль",
     "Board.Analysis.NoAnalysisAvailable": "Аналіз недоступний",
     "Board.Analysis.NotAnalysed": "Не проаналізовано",
+    "Board.Analysis.NotInChessDB": "Цієї позиції ще немає в ChessDB.",
     "Board.Analysis.PauseAllEngines": "Призупинити всі рушії",
     "Board.Analysis.Pin": "Закріпити",
     "Board.Analysis.RefDBRequired": "Не вибрано базу даних. Спочатку виберіть базу даних на сторінці баз даних.",

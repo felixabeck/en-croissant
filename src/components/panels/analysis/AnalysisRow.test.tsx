@@ -32,6 +32,8 @@ vi.mock("@mantine/core", () => {
       </div>
     ),
     Flex: Container,
+    Text: ({ children }: any) => <span>{children}</span>,
+    Tooltip: ({ label, children }: any) => <div title={label}>{children}</div>,
     Portal: Container,
     rem: (value: number) => value,
     Table: { Tr: Container, Td: Container, Th: Container },
@@ -114,6 +116,61 @@ test("keys score display by id while copied output keeps the engine name", async
   const copied = host.querySelector('[data-testid="copy-value"]')?.getAttribute("data-value");
   expect(copied).toContain("Duplicate");
   expect(copied).not.toContain("engine-uuid-1");
+});
+
+test.each([
+  ["! (30-11)", "49.92", "!", "49.9%"],
+  ["? (12-7)", "0", "?", "0.0%"],
+  ["!! (30-11)", "100", "!!", "100.0%"],
+  ["* (5-3)", " 49.92 ", "*", "49.9%"],
+  ["!?123", undefined, "!?", null],
+  ["(30-11)", "invalid", null, null],
+  ["30-11", "", null, null],
+  ["", " ", null, null],
+  ["book", "49.92oops", null, null],
+  [" !", "Infinity", null, null],
+] as const)(
+  "ChessDB phase 2 shows the mark and finite win rate with raw note on hover: %s / %s",
+  async (note, winrate, mark, rate) => {
+    await act(async () =>
+      root.render(
+        <AnalysisRow
+          engineId="chessdb"
+          engineName="ChessDB"
+          score={{ value: { type: "cp", value: 34 }, wdl: null }}
+          moves={[]}
+          halfMoves={1}
+          threat={false}
+          fen="4k3/8/8/8/8/8/8/4K3 b - - 0 1"
+          orientation="white"
+          chessdb={{ note, winrate }}
+        />,
+      ),
+    );
+    const annotation = host.querySelector("[title]");
+    expect(annotation?.getAttribute("title")).toBe(note);
+    expect(annotation?.textContent).toBe([mark, rate].filter(Boolean).join(""));
+  },
+);
+
+test("regression coverage: rows without ChessDB annotations keep their score and move output", async () => {
+  await act(async () =>
+    root.render(
+      <AnalysisRow
+        engineId="local"
+        engineName="Stockfish"
+        score={{ value: { type: "cp", value: 34 }, wdl: null }}
+        moves={["e4"]}
+        halfMoves={0}
+        threat={false}
+        fen={INITIAL_FEN}
+        orientation="white"
+      />,
+    ),
+  );
+  expect(host.querySelector("[title]")).toBeNull();
+  expect(host.textContent).toContain("e4");
+  expect(host.textContent).not.toContain("%");
 });
 
 test("inert previous rows ignore insertion, hover preview, context and expansion; current rows remain interactive", async () => {

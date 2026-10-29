@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "미들게임",
     "Board.Analysis.NoAnalysisAvailable": "사용 가능한 분석 없음",
     "Board.Analysis.NotAnalysed": "분석되지 않음",
+    "Board.Analysis.NotInChessDB": "이 포지션은 아직 ChessDB에 없습니다.",
     "Board.Analysis.PauseAllEngines": "모든 엔진 일시 정지",
     "Board.Analysis.Pin": "기보 위에 고정",
     "Board.Analysis.RefDBRequired": "참조 데이터베이스가 선택되지 않았습니다. 먼저 데이터베이스 페이지에서 하나를 선택하세요",

@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Миттельшпиль",
     "Board.Analysis.NoAnalysisAvailable": "Анализ недоступен",
     "Board.Analysis.NotAnalysed": "Не проанализировано",
+    "Board.Analysis.NotInChessDB": "Этой позиции пока нет в ChessDB.",
     "Board.Analysis.PauseAllEngines": "Приостановить все движки",
     "Board.Analysis.Pin": "Закрепить",
     "Board.Analysis.RefDBRequired": "Не выбрана база данных. Сначала выберите базу данных на странице баз данных.",

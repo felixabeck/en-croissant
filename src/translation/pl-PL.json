@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Gra środkowa",
     "Board.Analysis.NoAnalysisAvailable": "Brak dostępnej analizy",
     "Board.Analysis.NotAnalysed": "Nie przeanalizowane",
+    "Board.Analysis.NotInChessDB": "Tej pozycji nie ma jeszcze w ChessDB.",
     "Board.Analysis.PauseAllEngines": "Wstrzymaj wszystkie silniki",
     "Board.Analysis.Pin": "Przypnij nad notacją",
     "Board.Analysis.RefDBRequired": "Nie wybrano bazy odniesienia. Wybierz ją najpierw na stronie bazy danych",

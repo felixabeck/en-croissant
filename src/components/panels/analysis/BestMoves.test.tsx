@@ -2,7 +2,10 @@ import { Accordion } from "@mantine/core";
 import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { displayEngine, engineDisplayHarness } from "@/tests/engineDisplay";
+import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
+import { createInstance } from "i18next";
+import type { ChessDBLine } from "@/utils/chessdb/api";
+import type { Engine } from "@/utils/engines";
 import {
   engineTerminalFamily,
   engineRetryFamily,
@@ -21,12 +24,15 @@ import BestMoves from "./BestMoves";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: publication.translate ?? ((key: string) => key) }),
+}));
 const publication = vi.hoisted(() => ({
   reconcile: vi.fn(),
   realForm: false,
   displayed: undefined as Settings | undefined,
   setSettings: undefined as undefined | ((update: (current: Settings) => Settings) => void),
+  translate: undefined as undefined | ((key: string) => string),
 }));
 vi.mock("@/platform/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/platform/tauri")>();
@@ -47,8 +53,13 @@ vi.mock("./EngineSettingsForm", async (importOriginal) => {
   };
 });
 vi.mock("./AnalysisRow", () => ({
-  default: ({ moves, inert, fen, halfMoves }: any) => (
-    <tr data-inert={inert} data-fen={fen} data-ply={halfMoves}>
+  default: ({ moves, inert, fen, halfMoves, chessdb }: any) => (
+    <tr
+      data-inert={inert}
+      data-fen={fen}
+      data-ply={halfMoves}
+      data-chessdb={JSON.stringify(chessdb)}
+    >
       <td>{moves.join(" ")}</td>
     </tr>
   ),
@@ -57,6 +68,7 @@ let h: ReturnType<typeof engineDisplayHarness>;
 beforeEach(() => {
   publication.reconcile.mockReset().mockResolvedValue(undefined);
   publication.realForm = false;
+  publication.translate = undefined;
   installResizeObserverStub();
   vi.useFakeTimers();
   h = engineDisplayHarness();
@@ -389,12 +401,17 @@ afterEach(async () => {
   await h.close();
   vi.useRealTimers();
 });
-const panel = (moves: string[] = [], fen = INITIAL_FEN, halfMoves = moves.length) => (
+const panel = (
+  moves: string[] = [],
+  fen = INITIAL_FEN,
+  halfMoves = moves.length,
+  engine: Engine = displayEngine,
+) => (
   <Accordion value="engine">
     <Accordion.Item value="engine">
       <BestMoves
         id={0}
-        engine={displayEngine}
+        engine={engine}
         fen={fen}
         moves={moves}
         halfMoves={halfMoves}
@@ -405,13 +422,13 @@ const panel = (moves: string[] = [], fen = INITIAL_FEN, halfMoves = moves.length
   </Accordion>
 );
 
-function terminal(moves: string[] = []) {
+function terminal(moves: string[] = [], engine: Engine = displayEngine) {
   return {
     type: "completed-without-lines" as const,
     searchedKey: analysisSearch(INITIAL_FEN, moves, false).key!,
-    context: engineLineContext(h.store.get(h.settingsAtom), displayEngine),
+    context: engineLineContext(h.store.get(h.settingsAtom), engine),
     fingerprint: "attempt",
-    engineIdentity: engineIdentity(displayEngine),
+    engineIdentity: engineIdentity(engine),
     generation: "generation",
     retry: 0,
   };
@@ -645,4 +662,115 @@ test("a failure without a snapshot renders its retained safe message once", asyn
   expect(status.textContent).not.toContain("/home/felixb/engines/stockfish");
   expect(status.textContent).not.toContain("secret");
   expect(status.textContent).not.toContain("Board.Analysis.EngineDisconnected");
+});
+
+test.each([
+  { type: "chessdb", coverage: "ChessDB phase 2" },
+  { type: "lichess", coverage: "regression coverage" },
+  { type: "local", coverage: "regression coverage" },
+] as const)(
+  "$coverage: passes annotations only for ChessDB and preserves header metrics for $type",
+  async ({ type }) => {
+    const engine: Engine =
+      type === "local"
+        ? displayEngine
+        : { type, id: displayEngine.id, name: type, url: "", loaded: true };
+    const lines: ChessDBLine[] = [
+      { ...displayLines[0], chessdb: { note: "! (30-11)", winrate: "49.92" } },
+      { ...displayLines[0], multipv: 2, chessdb: { note: "? (12-7)" } },
+    ];
+    await h.remember(lines);
+    await h.render(panel([], INITIAL_FEN, 0, engine));
+    const rows = [...h.host.querySelectorAll("[data-fen]")];
+    expect(rows).toHaveLength(2);
+    const expectedAnnotations = lines.map((line) =>
+      type === "chessdb" ? JSON.stringify(line.chessdb) : null,
+    );
+    expect(rows.map((row) => row.getAttribute("data-chessdb"))).toEqual(expectedAnnotations);
+    expect(h.host.textContent).toContain("GoMode.Depth");
+    expect(h.host.textContent).toContain("Board.Analysis.Evaluation");
+    expect(h.host.textContent).toContain("20");
+    expect(h.host.textContent?.includes("GoMode.Nodes")).toBe(type !== "chessdb");
+    expect(h.host.textContent?.includes("n/s")).toBe(type !== "chessdb");
+  },
+);
+
+const catalogues = import.meta.glob<{ translation: Record<string, string> }>(
+  "../../../translation/*.json",
+  { eager: true, import: "default" },
+);
+const translatedMessages = {
+  "en-US": "This position is not in ChessDB yet.",
+  "de-DE": "Diese Stellung ist noch nicht in ChessDB.",
+};
+
+test.each(Object.entries(translatedMessages))(
+  "ChessDB phase 2 renders the %s not-in-database message only for the searched position",
+  async (locale, message) => {
+    const i18n = createInstance();
+    await i18n.init({
+      lng: locale,
+      fallbackLng: false,
+      keySeparator: false,
+      resources: { [locale]: catalogues[`../../../translation/${locale}.json`] },
+    });
+    publication.translate = (key) => i18n.t(key);
+    const engine: Engine = {
+      type: "chessdb",
+      id: displayEngine.id,
+      name: "ChessDB",
+      url: "",
+      loaded: true,
+    };
+    await act(async () =>
+      h.store.set(engineTerminalFamily({ tab: "display-tab", engine: engine.id }), {
+        ...terminal([], engine),
+        type: "not-in-database",
+      }),
+    );
+    await h.render(panel([], INITIAL_FEN, 0, engine));
+    expect(h.host.querySelector("tbody")?.textContent).toBe(message);
+    expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
+    await h.render(panel(["e2e4"], INITIAL_FEN, 1, engine));
+    expect(h.host.textContent).not.toContain(message);
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(h.host.querySelector(".mantine-Skeleton-root")).not.toBeNull();
+  },
+);
+
+test.each(Object.entries(catalogues))(
+  "ChessDB phase 2 ships a translated not-in-database message without fallback in %s",
+  async (path, catalogue) => {
+    const locale = path.split("/").at(-1)!.replace(".json", "");
+    const i18n = createInstance();
+    await i18n.init({
+      lng: locale,
+      fallbackLng: false,
+      keySeparator: false,
+      resources: { [locale]: catalogue },
+    });
+    const key = "Board.Analysis.NotInChessDB";
+    expect(i18n.exists(key)).toBe(true);
+    expect(i18n.t(key).trim()).not.toBe("");
+    expect(i18n.t(key)).not.toBe(key);
+  },
+);
+
+test("regression coverage: Lichess no-lines terminal keeps the generic empty-state message", async () => {
+  const engine: Engine = {
+    type: "lichess",
+    id: displayEngine.id,
+    name: "Lichess",
+    url: "",
+    loaded: true,
+  };
+  await act(async () =>
+    h.store.set(
+      engineTerminalFamily({ tab: "display-tab", engine: engine.id }),
+      terminal([], engine),
+    ),
+  );
+  await h.render(panel([], INITIAL_FEN, 0, engine));
+  expect(h.host.querySelector("tbody")?.textContent).toBe("Board.Analysis.NoAnalysisAvailable");
+  expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
 });

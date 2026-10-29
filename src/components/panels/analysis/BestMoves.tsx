@@ -40,6 +40,7 @@ import {
   tabEngineSettingsFamily,
 } from "@/state/atoms";
 import { translateChessopsError } from "@/utils/chessops";
+import type { ChessDBLine } from "@/utils/chessdb/api";
 import type { Engine } from "@/utils/engines";
 import { formatNodes } from "@/utils/format";
 import { formatScore } from "@/utils/score";
@@ -142,6 +143,7 @@ function BestMovesComponent({
     lines: engineVariations,
     dimmed,
     failure,
+    terminal,
     loading,
     error,
     isGameOver,
@@ -176,6 +178,7 @@ function BestMovesComponent({
         <Accordion.Control>
           <EngineTop
             name={engine.name}
+            showNodes={engine.type !== "chessdb"}
             engineVariations={engineVariations}
             isGameOver={isGameOver}
             enabled={settings.enabled}
@@ -301,7 +304,9 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    {t("Board.Analysis.NoAnalysisAvailable")}
+                    {terminal?.type === "not-in-database"
+                      ? t("Board.Analysis.NotInChessDB")
+                      : t("Board.Analysis.NoAnalysisAvailable")}
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -349,6 +354,11 @@ function BestMovesComponent({
                     engineName={engine.name}
                     moves={engineVariation.sanMoves}
                     score={engineVariation.score}
+                    chessdb={
+                      engine.type === "chessdb"
+                        ? (engineVariation as ChessDBLine).chessdb
+                        : undefined
+                    }
                     halfMoves={displayedHalfMoves}
                     inert={dimmed}
                     threat={threat}
@@ -366,6 +376,7 @@ function BestMovesComponent({
 
 function EngineTop({
   name,
+  showNodes,
   engineVariations,
   isGameOver,
   enabled,
@@ -376,6 +387,7 @@ function EngineTop({
   failed,
 }: {
   name: string;
+  showNodes: boolean;
   engineVariations: BestMoves[] | undefined;
   isGameOver: boolean;
   enabled: boolean;
@@ -398,7 +410,8 @@ function EngineTop({
           {name}
         </Text>
         {loading && enabled && !isGameOver && !error && <Code fz="xs">{t("Common.Loading")}</Code>}
-        {progress < 100 &&
+        {showNodes &&
+          progress < 100 &&
           !failed &&
           enabled &&
           !isGameOver &&
@@ -428,14 +441,16 @@ function EngineTop({
                 {depth}
               </Text>
             </Stack>
-            <Stack align="center" gap={0}>
-              <Text size="0.7rem" tt="uppercase" fw={700} className={classes.subtitle}>
-                {t("GoMode.Nodes")}
-              </Text>
-              <Text fw="bold" fz="md">
-                {nodes}
-              </Text>
-            </Stack>
+            {showNodes && (
+              <Stack align="center" gap={0}>
+                <Text size="0.7rem" tt="uppercase" fw={700} className={classes.subtitle}>
+                  {t("GoMode.Nodes")}
+                </Text>
+                <Text fw="bold" fz="md">
+                  {nodes}
+                </Text>
+              </Stack>
+            )}
           </>
         )}
       </Group>

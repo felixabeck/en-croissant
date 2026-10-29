@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Midtspill",
     "Board.Analysis.NoAnalysisAvailable": "Ingen analyse tilgjengelig",
     "Board.Analysis.NotAnalysed": "Ikke analysert",
+    "Board.Analysis.NotInChessDB": "Denne stillingen finnes ikke i ChessDB ennå.",
     "Board.Analysis.PauseAllEngines": "Sett alle motorer på pause",
     "Board.Analysis.Pin": "Fest over notasjonen",
     "Board.Analysis.RefDBRequired": "Ingen referansedatabase funnet. Velg en database i databasesiden.",

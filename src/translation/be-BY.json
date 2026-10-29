@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Мітэльшпіль",
     "Board.Analysis.NoAnalysisAvailable": "Аналіз недаступны",
     "Board.Analysis.NotAnalysed": "Не прааналізавана",
+    "Board.Analysis.NotInChessDB": "Гэтай пазіцыі пакуль няма ў ChessDB.",
     "Board.Analysis.PauseAllEngines": "Прыпыніць усе рухавікі",
     "Board.Analysis.Pin": "Замацаваць над натацыяй",
     "Board.Analysis.RefDBRequired": "Не абрана база дадзеных. Спачатку выберыце базу дадзеных на старонцы баз дадзеных.",

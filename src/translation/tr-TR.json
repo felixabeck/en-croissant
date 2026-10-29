@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Oyunortası",
     "Board.Analysis.NoAnalysisAvailable": "Analiz yok",
     "Board.Analysis.NotAnalysed": "Analiz edilmedi",
+    "Board.Analysis.NotInChessDB": "Bu konum henüz ChessDB'de yok.",
     "Board.Analysis.PauseAllEngines": "Tüm motorları duraklat",
     "Board.Analysis.Pin": "Notasyonun üstüne sabitle",
     "Board.Analysis.RefDBRequired": "Referans veritabanı seçilmedi. Önce veritabanları sayfasından birini seçin",

@@ -83,6 +83,7 @@
     "Board.Analysis.Middlegame": "Mediogioco",
     "Board.Analysis.NoAnalysisAvailable": "Nessuna analisi disponibile",
     "Board.Analysis.NotAnalysed": "Non analizzata",
+    "Board.Analysis.NotInChessDB": "Questa posizione non è ancora in ChessDB.",
     "Board.Analysis.PauseAllEngines": "Metti in pausa tutti i motori",
     "Board.Analysis.Pin": "Fissa sopra la notazione",
     "Board.Analysis.RefDBRequired": "Nessun database selezionato. Inizia selezionandone uno nella pagina del database",

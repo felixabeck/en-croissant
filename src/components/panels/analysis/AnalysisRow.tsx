@@ -1,5 +1,5 @@
 import type { Key } from "@lichess-org/chessground/types";
-import { Box, CopyButton, Flex, Portal, rem, Table } from "@mantine/core";
+import { Box, CopyButton, Flex, Portal, rem, Table, Text, Tooltip } from "@mantine/core";
 import { useForceUpdate } from "@mantine/hooks";
 import { IconAction } from "@/components/common/IconAction";
 import { IconCheck, IconChevronDown, IconCopy } from "@tabler/icons-react";
@@ -16,6 +16,7 @@ import MoveCell from "@/components/common/MoveCell";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { moveHighlightAtom, previewBoardOnHoverAtom, scoreTypeFamily } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import type { ChessDBLine } from "@/utils/chessdb/api";
 import { formatScore } from "@/utils/score";
 import ScoreBubble from "./ScoreBubble";
 
@@ -29,6 +30,7 @@ function AnalysisRow({
   fen,
   orientation,
   inert = false,
+  chessdb,
 }: {
   engineId: string;
   engineName: string;
@@ -39,6 +41,7 @@ function AnalysisRow({
   fen: string;
   orientation: "white" | "black";
   inert?: boolean;
+  chessdb?: ChessDBLine["chessdb"];
 }) {
   const [open, setOpen] = useState<boolean>(false);
   const { t } = useTranslation();
@@ -75,17 +78,32 @@ function AnalysisRow({
   useEffect(() => reset(), [open, reset]);
 
   const [evalDisplay, setEvalDisplay] = useAtom(scoreTypeFamily(engineId));
+  const mark = chessdb?.note.match(/^[^\p{L}\p{N}\s()]+/u)?.[0];
+  const winrate = chessdb?.winrate?.trim() ? Number(chessdb.winrate) : Number.NaN;
+  const scoreBubble = (
+    <ScoreBubble
+      size="md"
+      score={score}
+      evalDisplay={evalDisplay}
+      setEvalDisplay={inert ? undefined : setEvalDisplay}
+    />
+  );
 
   return (
     <>
       <Table.Tr inert={inert} opacity={inert ? 0.5 : 1} style={{ verticalAlign: "top" }}>
-        <Table.Td width={70}>
-          <ScoreBubble
-            size="md"
-            score={score}
-            evalDisplay={evalDisplay}
-            setEvalDisplay={inert ? undefined : setEvalDisplay}
-          />
+        <Table.Td width={chessdb ? undefined : 70}>
+          {chessdb ? (
+            <Tooltip label={chessdb.note}>
+              <Flex align="center" gap="xs" wrap="nowrap">
+                {scoreBubble}
+                {mark && <Text fw={700}>{mark}</Text>}
+                {Number.isFinite(winrate) && <Text size="sm">{winrate.toFixed(1)}%</Text>}
+              </Flex>
+            </Tooltip>
+          ) : (
+            scoreBubble
+          )}
         </Table.Td>
         <Table.Td>
           <Flex
