@@ -19135,3 +19135,25 @@ Former unpublished identifier: f-20261029-02
 ```text
 Former unpublished identifier: f-20261029-03
 ```
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Engine score updates retire an in-flight citation search
+
+* **ID:** f-20261029-12 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/components/common/GameNotation.tsx GameReferenceProvider owner={root}, and GameReference.tsx useLayoutEffect keyed by owner.
+* **Defect:** Citation ownership is the immutable root object. EvalListener calls the actual tree store setScore for arriving engine lines. setScore uses Immer to update a root node score, replacing that root object's identity without replacing the preparation. The new provider effect therefore aborts its request and clears the dialog on an ordinary analysis update.
+* **Failure scenario:** Click a preparation citation while an engine is analyzing and Library search is pending. An arriving score update closes the search and suppresses its result even though the preparation and citation still own the request. Repeated engine updates can prevent any lookup from completing.
+* **Fix:** Bind lookup retirement to the existing actual document/store lifetime, preserving cancellation on real owner retirement or replacement and avoiding cancellation on score-only updates. Trace existing tree/tab generation ownership before choosing a boundary. Do not introduce a registry or hash the entire tree on engine events.
+* **Proof:** A real-tree-store component regression must hold lookup pending, apply an actual score update, prove the same lookup remains live and can open the correct result. A genuine source owner retirement still cancels and suppresses stale admission. Retain the regression during root-controlled production-fix removal.
+* **Evidence:** src/components/boards/EvalListener.tsx calls setScore at line286. src/state/store/tree.ts setScore at745 updates node.score inside produce. GameNotation selects root at108 and passes it as owner at110. Source trace establishes the ordinary path, runtime regression is still required.
+* **Found by:** Codex root during implementation inspection. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+* **Publication recovery:** This is the same task finding originally allocated the unpublished branch-local identifier below. That private snapshot and its receipts remain unchanged in the archived source at62159f00cf0e232f74c6362e2af805aaf6575022 and the task handoff. A concurrently published, different finding already uses that identifier. This fresh canonical filing supplies a unique publication identity without altering the published record or claiming another defect, discovery or review adoption. Historical source reports are interpreted through the explicit publication mapping.
+
+```text
+Former unpublished identifier: f-20261029-04
+```
