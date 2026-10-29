@@ -18995,3 +18995,20 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Open question:** none beyond confirming the response semantics; the fix is to rank child categories from the mover's perspective (child `loss` first, then `blessed-loss`, `draw`, `cursed-win`, `win`), keeping the SAN tie-break.
 * **Proof:** A unit test of `compareTablebaseMoves` (or of the rendered order) with child categories `loss`, `draw` and `win` asserting the `loss` move first, red before the fix.
 * **Found by:** Codex review-correctness lens, ChessRiddle design build, 2026-10-29.
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### WDL evaluation bar has unnamed progress bars and reports per-mille values as percentages
+
+* **ID:** f-20261029-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** ux
+* **Where:** src/components/panels/analysis/ScoreBubble.tsx:17-48, the WDL branch rendering three `Progress.Section`s with `value={w}`, `value={d}`, `value={l}`.
+* **Defect:** The three sections render as ARIA progressbars without an accessible name, and their values are the engine's per-mille WDL numbers passed as percentages, so assistive technology announces for example "450%". Both properties predate the ChessRiddle design build, whose diff only restyled the sections (base 9b76350b, `git show 9b76350b:src/components/panels/analysis/ScoreBubble.tsx`).
+* **Spotted outside diff:** during the ChessRiddle design build's review repair (fix-1), when an e2e engine line was given a non-null WDL payload and the chip clicked to WDL.
+* **Failure scenario:** In the analysis panel with an engine that reports WDL, click an evaluation chip. The axe check reports `aria-progressbar-name` for `div[aria-valuetext="450%"]`, `div[aria-valuetext="300%"]` and `div[aria-valuetext="250%"]`.
+* **Evidence:** container run `pnpm test:e2e:container --project=engine-gap` with a temporary WDL payload; output kept at /tmp/chessriddle-design-review-fixes/proof-wdl-attempt.log lines 90-118 (axe rule `aria-progressbar-name`). The temporary payload was reverted; no committed test covers the WDL view in the browser.
+* **Open question:** none; name each section (win/draw/loss, translated) and pass percentages (per-mille / 10) or set an explicit value text.
+* **Proof:** give one line of the two-engine e2e scenario in e2e/engine-gap.spec.ts a WDL payload, click the chip, and let the existing `assertAccessible` pass; record its snapshot through `pnpm test:e2e:update` after inspecting the diff. Unit coverage already exists in src/components/panels/analysis/ScoreBubble.test.tsx.
+* **Found by:** Codex fix leaf during the ChessRiddle design build review, 2026-10-29.
