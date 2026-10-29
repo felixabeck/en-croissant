@@ -19199,6 +19199,9 @@ Former unpublished identifier: f-20261029-04
 Former private finding identifier: f-20261029-05
 ```
 
+* **Code closure r3, 2026-10-30:** DR1 remains NOT CLOSED. Four read-only lenses independently found that exact event/site context Tata Steel (A) Wijk aan Zee followed by2022 (3), intervening prose and2024 (A) returns unverified before comparing the anchored original fields. A date2021.01.01/round9 game is wrongly retained despite all applicable conflicts. The adjacent-tuple repair and its tests did not cover this class. Root traced the early return at gameReferences.ts212. This is supplied DR1 rework, not a new independent adoption or an accepted source. Repair must preserve identifiable anchored constraints across later prose without promoting incidental prose fields, retaining all previous adjacent, header/site, bare-year, identity and ownership cases. Actual retained-regression red/green and fresh root/full pre-review remain required. Plan authorship and arbitration shared one context. Detection shared the original code's OpenAI family through the disclosed native read-only fallback.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cf217616f00cda5221d82983ebe792601390fef5f587d983561ae112f2d0b0fc","input_sha256":"af83b5e26acb17a3679f40bf23d903897297521f8cf800a88ecb235897dcbd93","kind":"mutation-receipt","operation":"08f35adcd2cd48cce84b91f2b145ec433814eed91fc944e709e70b6dff71adda","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-13"],"target":"f-20261029-13","v":1} -->
+
 ---
 
 ## 2026-10-29 — filed through the inbox spool
