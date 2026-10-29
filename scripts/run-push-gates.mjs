@@ -6,7 +6,11 @@ import { availableParallelism as defaultAvailableParallelism } from "node:os";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
-import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
+import {
+  gateBudgetBytes,
+  rustBuildEnvironment,
+  VITEST_MINIMUM_BUDGET_BYTES,
+} from "./gate-parallelism.mjs";
 import {
   CHILD_TERMINATION_TIMEOUT_MS,
   E2E_LANE_TERMINATION_TIMEOUT_MS,
@@ -31,13 +35,13 @@ import { importSpecifierBasePath } from "./import-path.mjs";
 
 const GIB = 1024 ** 3;
 
-// Shares apply after the selected e2e container reservation. Coverage gets half when cargo or
+// Shares apply after the selected e2e container reservation. Coverage gets half when
 // concurrent mutation shares P2 and the full remainder otherwise. With e2e selected, it is raised
 // to VITEST_MINIMUM_BUDGET_BYTES when the post-reservation budget can fund that floor.
 export const P2_VITEST_SHARE = 0.5;
 
 // Concurrent mutation gets 35% of the post-container remainder, leaving 15% beside coverage's
-// 50% share for cargo/contract/receipt peaks. A coverage floor that raises its share consumes
+// 50% share for contract/receipt peaks. A coverage floor that raises its share consumes
 // that nominal remainder. Below the one-wave budget, mutation runs after P2 with the full remainder.
 export const P2_MUTATION_SHARE = 0.35;
 
@@ -81,6 +85,7 @@ export const PUSH_GATE_SCHEDULE = Object.freeze({
     }),
     Object.freeze({
       name: "rust-lint",
+      rustCompilation: true,
       commands: Object.freeze([
         "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
         "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
@@ -91,12 +96,14 @@ export const PUSH_GATE_SCHEDULE = Object.freeze({
     }),
     Object.freeze({
       name: "rust-test",
+      rustCompilation: true,
       commands: Object.freeze(["pnpm gate:ensure backend-test"]),
       blocks: Object.freeze(["rust"]),
       requires: Object.freeze(["setup-rust", "frontend-build"]),
     }),
     Object.freeze({
       name: "rust-coverage",
+      rustCompilation: true,
       commands: Object.freeze(["pnpm gate:ensure backend-coverage"]),
       blocks: Object.freeze(["rust"]),
       requires: Object.freeze(["setup-rust", "frontend-build"]),
@@ -158,6 +165,7 @@ export const PRE_REVIEW_GATE_SCHEDULE = Object.freeze({
     }),
     Object.freeze({
       name: "windows-clippy",
+      rustCompilation: true,
       commands: Object.freeze(["pnpm rust:windows:check"]),
       requires: Object.freeze(["frontend-build"]),
     }),
@@ -653,6 +661,7 @@ async function runCommand(
     env,
     spawnProcess,
     signalForwarding,
+    childCleanup,
     superviseProcess = defaultSuperviseChild,
     writeCapturedOutput = writeLogChunk,
   },
@@ -699,6 +708,11 @@ async function runCommand(
         return { type: "interrupted", outcome: await supervisor.exitOrTerminationFailure() };
       }),
     ]);
+  } catch (error) {
+    // A rejected supervisor completion cannot confirm that the process group is gone.
+    // Latch this across every queued lane before returning an ordinary task failure.
+    childCleanup.error ??= error;
+    return { code: 1, error, terminationError: error, logError: logCapture.error };
   } finally {
     closeSync(fd);
   }
@@ -706,7 +720,9 @@ async function runCommand(
   const logError = logCapture.error;
   if (completion.type === "interrupted") {
     if (completion.outcome.type === "termination-failed") {
+      childCleanup.error ??= completion.outcome.error;
       return {
+        code: 1,
         terminationError: completion.outcome.error,
         logError,
       };
@@ -750,6 +766,15 @@ function skipTask(task, reason) {
   }
 }
 
+function blockedStartReason(context) {
+  if (context.signalForwarding.requestedSignal) {
+    return `cancelled by ${context.signalForwarding.requestedSignal}`;
+  }
+  if (context.childCleanup.error)
+    return "child cleanup is unconfirmed, so no further work may start";
+  return undefined;
+}
+
 function logProgress(task, phase, message) {
   const duration =
     task.startedAt === undefined ? "" : ` duration=${formatDuration(task.durationMs)}`;
@@ -758,8 +783,8 @@ function logProgress(task, phase, message) {
 }
 
 async function runStep(task, command, context) {
-  if (context.signalForwarding.requestedSignal) {
-    skipTask(task, `cancelled by ${context.signalForwarding.requestedSignal}`);
+  if (blockedStartReason(context)) {
+    skipTask(task, blockedStartReason(context));
     return task;
   }
   try {
@@ -782,8 +807,8 @@ async function runStep(task, command, context) {
     logProgress(task, "finish", `error=${errorMessage(error)}`);
     return task;
   }
-  if (context.signalForwarding.requestedSignal) {
-    skipTask(task, `cancelled by ${context.signalForwarding.requestedSignal}`);
+  if (blockedStartReason(context)) {
+    skipTask(task, blockedStartReason(context));
     return task;
   }
 
@@ -815,8 +840,8 @@ async function runLane(lane, env, context, results) {
     phase: "P2",
   });
   results.set(lane.name, task);
-  if (context.signalForwarding.requestedSignal) {
-    skipTask(task, `cancelled by ${context.signalForwarding.requestedSignal}`);
+  if (blockedStartReason(context)) {
+    skipTask(task, blockedStartReason(context));
     return task;
   }
 
@@ -824,10 +849,12 @@ async function runLane(lane, env, context, results) {
   logProgress(task, "start", `commands=${lane.commands.length}`);
   let result = { code: 0 };
   for (const [index, command] of lane.commands.entries()) {
-    if (context.signalForwarding.requestedSignal) {
+    if (blockedStartReason(context)) {
       result = {
         ...result,
-        code: signalExitCode(context.signalForwarding.requestedSignal),
+        code: context.signalForwarding.requestedSignal
+          ? signalExitCode(context.signalForwarding.requestedSignal)
+          : 1,
       };
       break;
     }
@@ -842,8 +869,12 @@ async function runLane(lane, env, context, results) {
         command: commandLabel(command),
         index,
       });
-      if (context.signalForwarding.requestedSignal) {
-        result = { code: signalExitCode(context.signalForwarding.requestedSignal) };
+      if (blockedStartReason(context)) {
+        result = {
+          code: context.signalForwarding.requestedSignal
+            ? signalExitCode(context.signalForwarding.requestedSignal)
+            : 1,
+        };
         break;
       }
       result = await runCommand(command, step, { ...context, env });
@@ -878,16 +909,9 @@ async function runLane(lane, env, context, results) {
   return task;
 }
 
-function makeLaneEnvironment(
-  env,
-  laneName,
-  budgetBytes,
-  concurrentMutation,
-  cargoLanesPresent,
-  e2eSelected,
-) {
+function makeLaneEnvironment(env, laneName, budgetBytes, concurrentMutation, e2eSelected) {
   if (laneName === "frontend-coverage") {
-    const memoryShare = cargoLanesPresent || concurrentMutation ? P2_VITEST_SHARE : 1;
+    const memoryShare = concurrentMutation ? P2_VITEST_SHARE : 1;
     const cpuShare = concurrentMutation ? P2_CPU_SHARE : 1;
     const budgetAfterContainer = budgetBytes - (e2eSelected ? E2E_CONTAINER_MEMORY_BYTES : 0);
     const sharedBudget = Math.floor(budgetAfterContainer * memoryShare);
@@ -976,7 +1000,7 @@ export async function runPushGates(
     cwd = process.cwd(),
     env = process.env,
     availableParallelism = defaultAvailableParallelism,
-    getGateBudgetBytes = () => gateBudgetBytes({ env }),
+    getGateBudgetBytes = (options) => gateBudgetBytes({ env, ...options }),
     discoverChangedPaths = undefined,
     discoverChanges = discoverPreReviewChanges,
     runGit = spawnSync,
@@ -1018,16 +1042,23 @@ export async function runPushGates(
     spawnProcess,
     superviseProcess,
     signalForwarding,
+    childCleanup: {},
     beforeStep,
     logDirectory,
     writeCapturedOutput,
   };
-  const runSerialStep = async (entry, phase) => {
+  const runSerialStep = async (entry, phase, stepEnv = env) => {
     const task = createTaskResult(logDirectory, entry.name, "step", { phase });
     stepResults.push(task);
-    const finished = await runStep(task, entry.command, context);
+    const finished = await runStep(task, entry.command, { ...context, env: stepEnv });
     if (!resultsByName.has(entry.name)) resultsByName.set(entry.name, finished);
     return finished;
+  };
+  let rustEnv;
+  const getRustEnvironment = () => {
+    if (blockedStartReason(context)) return env;
+    rustEnv ??= rustBuildEnvironment({ env, availableParallelism, getGateBudgetBytes });
+    return rustEnv;
   };
 
   try {
@@ -1063,6 +1094,8 @@ export async function runPushGates(
 
       const mutationLane = runnableLanes.find((lane) => lane.selfSizing === "mutation");
       const baseLanes = runnableLanes.filter((lane) => lane !== mutationLane);
+      const rustLane = baseLanes.find((lane) => lane.rustCompilation);
+      const compilerEnv = rustLane ? getRustEnvironment() : env;
       let concurrentMutation = false;
       if (mutationLane) {
         budgetBytes = getGateBudgetBytes();
@@ -1070,29 +1103,28 @@ export async function runPushGates(
         concurrentMutation =
           budgetBytes >= ONE_WAVE_BYTES && cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
       }
-      const basePromises = baseLanes.map((lane) => runLane(lane, env, context, resultsByName));
+      const basePromises = baseLanes.map((lane) =>
+        runLane(lane, lane.rustCompilation ? compilerEnv : env, context, resultsByName),
+      );
       let mutationPromise;
       if (mutationLane && concurrentMutation) {
-        const laneEnv = makeLaneEnvironment(
-          env,
-          "frontend-mutation",
-          budgetBytes,
-          true,
-          false,
-          false,
-        );
-        mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
+        const rustPromise = rustLane
+          ? basePromises[baseLanes.indexOf(rustLane)]
+          : Promise.resolve();
+        mutationPromise = rustPromise.then(() => {
+          const laneEnv = makeLaneEnvironment(
+            env,
+            "frontend-mutation",
+            budgetBytes,
+            !rustLane,
+            false,
+          );
+          return runLane(mutationLane, laneEnv, context, resultsByName);
+        });
       }
       await Promise.all(basePromises);
       if (mutationLane && !concurrentMutation) {
-        const laneEnv = makeLaneEnvironment(
-          env,
-          "frontend-mutation",
-          budgetBytes,
-          false,
-          false,
-          false,
-        );
+        const laneEnv = makeLaneEnvironment(env, "frontend-mutation", budgetBytes, false, false);
         mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
       }
       if (mutationPromise) await mutationPromise;
@@ -1147,13 +1179,12 @@ export async function runPushGates(
             skipTask(skipped, "frontend-build failed, so bindings:check was skipped");
             stepResults.push(skipped);
           } else {
-            await runSerialStep(bindingsEntry, "P1");
+            await runSerialStep(bindingsEntry, "P1", getRustEnvironment());
           }
         }
 
         const buildReady = !frontendBuild || frontendBuild.status === "passed";
         const setupReady = !setupRust || setupRust.status === "passed";
-        const rustLanesPresent = blocks.has("rust") && setupReady && buildReady;
         const lanes = PUSH_GATE_SCHEDULE.lanes.filter((lane) => selectedByBlocks(lane, blocks));
         const runnableLanes = [];
         for (const lane of lanes) {
@@ -1182,22 +1213,30 @@ export async function runPushGates(
           cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
         const laneByName = new Map(runnableLanes.map((lane) => [lane.name, lane]));
         const e2eSelected = laneByName.has("e2e");
+        const rustLanes = runnableLanes.filter((lane) => lane.rustCompilation);
+        const compilerEnv = rustLanes.length ? getRustEnvironment() : env;
         const baseLanes = runnableLanes.filter(
           (lane) => lane.name !== "e2e" && lane.name !== "frontend-mutation",
         );
         const p2Promises = new Map();
+        // Cold native, cross-target and instrumented contexts own the same unpartitioned
+        // compiler envelope. Ordinary failure releases admission after terminal cleanup.
+        // Keep contract/bundle useful concurrency, then admit heavyweight frontend work.
+        // Replace this ordering only after comparable cold proof supports partitioning.
+        let rustDone = Promise.resolve();
+        for (const lane of rustLanes) {
+          rustDone = rustDone.then(() => runLane(lane, compilerEnv, context, resultsByName));
+          p2Promises.set(lane.name, rustDone);
+        }
         for (const lane of baseLanes) {
+          if (lane.rustCompilation) continue;
           const laneEnv = lane.selfSizing
-            ? makeLaneEnvironment(
-                env,
-                lane.name,
-                budgetBytes,
-                concurrentMutation,
-                rustLanesPresent,
-                e2eSelected,
-              )
+            ? makeLaneEnvironment(env, lane.name, budgetBytes, concurrentMutation, e2eSelected)
             : env;
-          p2Promises.set(lane.name, runLane(lane, laneEnv, context, resultsByName));
+          const lanePromise = lane.selfSizing
+            ? rustDone.then(() => runLane(lane, laneEnv, context, resultsByName))
+            : runLane(lane, laneEnv, context, resultsByName);
+          p2Promises.set(lane.name, lanePromise);
         }
 
         const e2eLane = laneByName.get("e2e");
@@ -1218,10 +1257,11 @@ export async function runPushGates(
               mutationLane.name,
               budgetBytes,
               concurrentMutation,
-              rustLanesPresent,
               e2eSelected,
             );
-            mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
+            mutationPromise = rustDone.then(() =>
+              runLane(mutationLane, laneEnv, context, resultsByName),
+            );
             p2Promises.set(mutationLane.name, mutationPromise);
           } else {
             const dependencies = [
@@ -1234,7 +1274,6 @@ export async function runPushGates(
                 mutationLane.name,
                 budgetBytes,
                 false,
-                rustLanesPresent,
                 e2eSelected,
               );
               return runLane(mutationLane, laneEnv, context, resultsByName);

@@ -41,6 +41,17 @@ export const CONSERVATIVE_CGROUP_LIMIT_BYTES = 8 * 1024 ** 3;
 export const CONSERVATIVE_VITEST_WORKERS = 22;
 export const CONSERVATIVE_STRYKER_RUNNERS = 5;
 
+// Cold calibration at e3aea1f3 (2026-10-28/29), under the unmodified agent-gate cap:
+// bindings, native clippy/test, Windows GNU clippy and nightly coverage all passed at one job.
+// Largest compiler/linker process HWM was native test at 6704693248 bytes (6.24 GiB).
+// 8 GiB gives about 28% headroom, plus 1 GiB for Rust orchestration beside the generic reserve.
+// Exclusive Rust admission avoids spending this same envelope in several target contexts.
+// Cost: slower cold gates or explicit refusal below 9 GiB usable (10 GiB including the reserve).
+// Replace these costs/admission only with comparable cold measurements and equivalent proof.
+export const RUST_COMPILER_JOB_BYTES = 8 * 1024 ** 3;
+export const RUST_OVERHEAD_BYTES = 1024 ** 3;
+export const RUST_MINIMUM_BUDGET_BYTES = RUST_OVERHEAD_BYTES + RUST_COMPILER_JOB_BYTES;
+
 function detectionError(path, detail, cause = undefined) {
   const error = new Error(
     `Cannot determine the gate memory limit from ${path}: ${detail}. ` +
@@ -188,6 +199,10 @@ function configuredMemoryBudget(env) {
 export function gateBudgetBytes({
   env = process.env,
   stderr = process.stderr,
+  fallback = {
+    budgetBytes: CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES,
+    description: "the conservative 8 GiB agent-scope configuration",
+  },
   ...memoryOptions
 } = {}) {
   const override = configuredMemoryBudget(env);
@@ -196,10 +211,8 @@ export function gateBudgetBytes({
     return memoryLimitBytes(memoryOptions) - UNSIZED_PROCESS_RESERVE_BYTES;
   } catch (error) {
     const reason = errorMessage(error).replaceAll(/[\r\n]+/gu, " ");
-    stderr.write(
-      `Gate memory detection failed (${reason}); using the conservative 8 GiB agent-scope configuration.\n`,
-    );
-    return CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES;
+    stderr.write(`Gate memory detection failed (${reason}). Using ${fallback.description}.\n`);
+    return fallback.budgetBytes;
   }
 }
 
@@ -263,6 +276,55 @@ export function workerCount({
   const cpuCap = Math.max(1, Math.floor(cpuCount * share));
   const memoryCap = Math.floor((budget - baseBytes) / perWorkerBytes);
   return Math.max(1, Math.min(cpuCap, memoryCap));
+}
+
+/** One compiler allowance for push lanes, P1 bindings and pre-review Windows compilation. */
+export function rustBuildEnvironment({
+  env = process.env,
+  availableParallelism = defaultAvailableParallelism,
+  getGateBudgetBytes = (options) => gateBudgetBytes({ env, ...options }),
+} = {}) {
+  const budgetBytes = getGateBudgetBytes({
+    // Detection failure is not evidence of sufficient memory. This fallback assumes the
+    // supported minimum and admits one job, without changing frontend's 7 GiB usable fallback.
+    fallback: {
+      budgetBytes: RUST_MINIMUM_BUDGET_BYTES,
+      description: "the one-job Rust fallback (requires 9 GiB usable, 10 GiB with the reserve)",
+    },
+  });
+  const cpuCount = availableParallelism();
+  let jobs;
+  try {
+    jobs = workerCount({
+      perWorkerBytes: RUST_COMPILER_JOB_BYTES,
+      baseBytes: RUST_OVERHEAD_BYTES,
+      budgetBytes,
+      env,
+      availableParallelism: () => cpuCount,
+    });
+  } catch (error) {
+    throw new Error(
+      `Rust compilation refused: ${error.message} Provide at least 9 GiB usable gate memory.`,
+      {
+        cause: error,
+      },
+    );
+  }
+  const inherited = env.CARGO_BUILD_JOBS;
+  if (inherited !== undefined && inherited !== "default") {
+    const value = /^[+-]?\d+$/u.test(inherited) ? Number(inherited) : NaN;
+    if (!Number.isSafeInteger(value) || value === 0) {
+      throw new Error(
+        `CARGO_BUILD_JOBS must be a nonzero integer or default (received ${JSON.stringify(inherited)}).`,
+      );
+    }
+    // Cargo's negative values subtract from available CPUs, with a one-job floor.
+    const inheritedJobs = value < 0 ? Math.max(1, cpuCount + value) : value;
+    jobs = Math.min(jobs, inheritedJobs);
+  }
+  // Environment takes precedence over ordinary Cargo build.jobs configuration. Never change
+  // RUST_TEST_THREADS here, this allowance governs compilation rather than libtest execution.
+  return { ...env, CARGO_BUILD_JOBS: String(jobs) };
 }
 
 /** Select package slots that maximize total Stryker runners without oversubscribing CPU or memory. */

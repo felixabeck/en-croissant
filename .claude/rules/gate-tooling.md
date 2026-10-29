@@ -24,24 +24,46 @@ The push skill's §2 runs every final gate through one command,
 `pnpm gates:push -- [--rust] [--frontend] [--bindings]` (`scripts/run-push-gates.mjs`; no flags is
 the contract-only run). For the selected blocks, it runs the mutation guard first (always) and
 `setup-rust` for Rust or bindings, then rebuilds `dist/` for every `dist/` consumer and runs
-`bindings:check` with `--bindings`, then the contract, Rust lint, Rust test, Rust coverage, frontend
-coverage and bundle lanes concurrently; e2e waits for bundle and every cargo lane because its
-container build rewrites `dist/`, a Rust compile input, and frontend mutation runs last unless the
-budget allows one wave. `agent-gate` (tuxedo-config's strict launcher) takes the machine-wide
-heavy-gate lock (`~/.cache/agent-kit/heavy-gate.lock`; a waiting gate prints `heavy-gate.holder`)
-and runs the whole run in its own `agents.slice/agent-gate-*.scope`, capped at 70 % of the slice's
-`MemoryHigh`. It fails closed: exit 125 (`agent-gate: REFUSED — …`) means nothing started and a
+`bindings:check` with `--bindings`. Contract and bundle run concurrently with one complete Rust
+lane at a time, in declaration order: lint, test, coverage. Frontend coverage and mutation wait
+until all Rust work terminates. An ordinary lane failure still admits later Rust lanes. Signals
+and unconfirmed child cleanup prevent queued starts. E2e waits for bundle and every Rust lane,
+including failures, because its container build rewrites `dist/`, a Rust compile input. After
+Rust, frontend coverage shares memory only with concurrent mutation. Mutation runs last unless
+the existing budget and CPU thresholds allow one frontend wave.
+
+The shared [gate-performance reference](~/.claude/references/gate-performance.md) owns machine-wide
+slot admission and scope caps. `agent-gate` takes one shared slot and runs the whole run in its
+own `agents.slice/agent-gate-*.scope`. It fails closed: exit 125 (`agent-gate: REFUSED — …`) means nothing started and a
 retry is safe; a missing launcher fails the gate with no in-place fallback. Never wrap a gate
 command in another `flock` on `heavy-gate.lock`: it deadlocks against the launcher's own lock.
 A nested `agent-gate` is safe and runs in place. `gate:ensure` and `gate:run` enter the gate scope
 themselves through `agent-gate` (in place when already inside one), so a standalone receipt run
 is placed and locked like the scheduler; `gate:check` only reads the cache and starts no scope.
 `scripts/gate-parallelism.mjs` sizes
-workers from that scope's complete cgroup chain, including the `agents.slice` budget, and uses the
-recorded conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit
-exists. The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
+workers from that scope's complete cgroup chain, including the `agents.slice` budget. Frontend
+consumers retain the conservative 8 GiB scope / 7 GiB usable fallback if an ancestor limit cannot
+be read or no finite limit exists.
+
+The shared Rust allocator applies before the P1 bindings exporter, each admitted Rust lane and
+pre-review Windows compilation. Cold calibration covers bindings, native clippy/test, Windows GNU
+clippy and nightly coverage. It allocates 8 GiB per compiler job plus 1 GiB Rust overhead, beside
+the existing 1 GiB generic reserve. The largest measured process was native test at 6704693248
+bytes, about 6.24 GiB. Known budgets below 9 GiB usable refuse before compilation. Unavailable
+detection uses a one-job Rust fallback assuming that minimum, which requires 10 GiB including the
+reserve and does not establish that an unknown machine has sufficient memory. CPU sizing and
+lower valid inherited `CARGO_BUILD_JOBS` limits still apply, including Cargo's negative/default
+semantics. Ordinary Cargo configuration cannot raise the computed bound. Libtest concurrency is
+unchanged. Pre-review heavyweight mutation also waits for Windows compilation and its cleanup.
+This removes observed cold compiler collisions at the cost of slower cold gates or explicit
+insufficient-budget refusal, without omitting proof. Replace the exclusive admission or sizing
+costs only after comparable cold measurements support the replacement with identical proof and
+containment, and delete this operative prose with the replaced mechanism.
+
+The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
 mutation only when mutation shares its concurrent schedule. The schedule and its constants are
-`d-20260930-03`, `d-20260930-04`, `d-20261002-01` (placement), and `d-20261002-03` (reserve).
+`d-20260930-03`, `d-20261002-01` (placement), and `d-20261002-03` (reserve). This Rust admission
+replaces only the concurrent Rust and Rust-related frontend-share clauses of `d-20260930-04`.
 
 ## Mutation gate routing
 

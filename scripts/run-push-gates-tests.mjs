@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync, writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
@@ -35,6 +35,7 @@ const EVENT_WAIT_TIMEOUT_MS = 10_000;
 const BARRIER_TIMEOUT_MS = 10_000;
 
 const FAKE_COMMAND = String.raw`
+import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -53,7 +54,7 @@ const record = (entry) => appendFileSync(
   JSON.stringify({ ...entry, command, executable, args, at: at(), pid: process.pid }) + "\n",
 );
 
-record({ type: "start", output });
+record({ type: "start", output, jobs: process.env.CARGO_BUILD_JOBS, testThreads: process.env.RUST_TEST_THREADS });
 process.stdout.write(output + "\n");
 
 if (behavior.removeExecutable) {
@@ -73,12 +74,18 @@ let finished = false;
 process.on("SIGTERM", () => finish(behavior.signalExitCode ?? 0));
 process.on("SIGINT", () => finish(behavior.signalExitCode ?? 0));
 
+if (behavior.childCommand) {
+  const [childExecutable, ...childArgs] = behavior.childCommand;
+  const result = spawnSync(childExecutable, childArgs, { stdio: "inherit" });
+  if (result.status !== 0) finish(result.status ?? 1);
+}
+
 if (behavior.signalRunner) process.kill(process.ppid, behavior.signalRunner);
 if (behavior.killSelf) {
   setImmediate(() => process.kill(process.pid, behavior.killSelf));
 } else if (behavior.barrierLane) {
   const markerDirectory = process.env.FAKE_BARRIER_DIR;
-  const expected = process.env.FAKE_BARRIER_LANES.split(",");
+  const expected = behavior.barrierPeers ?? process.env.FAKE_BARRIER_LANES.split(",");
   mkdirSync(markerDirectory, { recursive: true });
   writeFileSync(join(markerDirectory, behavior.barrierLane), String(process.pid));
   const deadline = Date.now() + ${BARRIER_TIMEOUT_MS};
@@ -131,7 +138,7 @@ function scheduledFakeCommands(blocks) {
 
 async function makeHarness(
   t,
-  { commands = {}, omittedExecutables = [], budgetBytes = 7 * GIB, barrierLanes = [] } = {},
+  { commands = {}, omittedExecutables = [], budgetBytes = 10 * GIB, barrierLanes = [] } = {},
 ) {
   const root = await mkdtemp(join("/tmp", "push-gates-cli-"));
   const bin = join(root, "bin");
@@ -303,9 +310,9 @@ async function temporarySchedulerRoot(t) {
 
 test("every scheduled child inherits the run directory in both push placements and pre-review", async (t) => {
   for (const [args, budgetBytes] of [
-    [["--rust", "--frontend", "--bindings"], 7 * GIB],
+    [["--rust", "--frontend", "--bindings"], 10 * GIB],
     [["--rust", "--frontend", "--bindings"], ONE_WAVE_BYTES + GIB],
-    [["--pre-review"], 7 * GIB],
+    [["--pre-review"], 10 * GIB],
   ]) {
     await t.test(`${args.join(" ")} with ${budgetBytes} bytes`, async (subtest) => {
       const cwd = await temporarySchedulerRoot(subtest);
@@ -797,7 +804,7 @@ test("Rust-only pre-review waits for the frontend build before Windows clippy", 
   const events = [];
   const result = await runPushGates(["--pre-review"], {
     cwd,
-    env: { ...process.env, GATE_MEMORY_BYTES: String(7 * GIB) },
+    env: { ...process.env, GATE_MEMORY_BYTES: String(10 * GIB) },
     discoverChangedPaths: () => ["src-tauri/src/lib.rs"],
     spawnProcess: makeMockSpawner({ events }),
   });
@@ -1252,21 +1259,21 @@ test("spawn failures, signals and SIGKILL codes propagate from P0, P1 and lanes 
 
   for (const signal of ["SIGTERM", "SIGINT"]) {
     await t.test(
-      `${signal} during concurrent contract, Rust-test and frontend-coverage lanes leaves every held process group gone`,
+      `${signal} while Rust is admitted cancels queued Rust and heavyweight frontend starts`,
       async (subtest) => {
         const harness = await makeHarness(subtest, {
           budgetBytes: ONE_WAVE_BYTES + GIB,
           commands: {
             "pnpm gates:contract:check": { hold: true },
             "pnpm gate:ensure backend-test": { hold: true },
-            "pnpm gate:ensure frontend-coverage": { hold: true },
+            "pnpm bundle:check": { hold: true },
           },
         });
         const running = startCli(subtest, harness, ["--rust", "--frontend", "--bindings"]);
         const heldCommands = [
           "pnpm gates:contract:check",
           "pnpm gate:ensure backend-test",
-          "pnpm gate:ensure frontend-coverage",
+          "pnpm bundle:check",
         ];
         const held = await Promise.all(
           heldCommands.map((command) =>
@@ -1285,6 +1292,18 @@ test("spawn failures, signals and SIGKILL codes propagate from P0, P1 and lanes 
             groupExists(event.pid),
             false,
             `${event.command} process group ${event.pid} must be gone`,
+          );
+        }
+        const commands = commandSet(await readEvents(harness));
+        for (const command of [
+          "pnpm gate:ensure backend-coverage",
+          "pnpm gate:ensure frontend-coverage",
+          "pnpm gate:ensure frontend-mutation",
+          "pnpm gate:ensure e2e-container",
+        ]) {
+          assert.ok(
+            !commands.includes(command),
+            `${command} must remain queued after cancellation`,
           );
         }
       },
@@ -1509,39 +1528,68 @@ test("lane command order, exit precedence, logs, e2e ordering and all-lane compl
 });
 
 test("P2 memory/CPU placement, concurrency anchor and cgroup-read guards (PG-47, PG-50, PG-58, PG-59, PG-85, PG-118)", async (t) => {
-  await t.test("all eligible all-blocks P2 lanes rendezvous concurrently", async (subtest) => {
-    const barrierLanes = [
-      "contract",
-      "rust-lint",
-      "rust-test",
-      "rust-coverage",
-      "frontend-coverage",
-      "bundle",
-    ];
-    if (availableParallelism() >= 2) barrierLanes.push("frontend-mutation");
-    const commands = {};
-    for (const lane of barrierLanes) {
-      const command = {
-        contract: "pnpm gates:contract:check",
-        "rust-lint": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
-        "rust-test": "pnpm gate:ensure backend-test",
-        "rust-coverage": "pnpm gate:ensure backend-coverage",
-        "frontend-coverage": "pnpm gate:ensure frontend-coverage",
-        bundle: "pnpm bundle:check",
-        "frontend-mutation": "pnpm gate:ensure frontend-mutation",
-      }[lane];
-      commands[command] = { barrierLane: lane };
-    }
-    const harness = await makeHarness(subtest, {
-      budgetBytes: ONE_WAVE_BYTES + 5 * GIB,
-      barrierLanes,
-      commands,
-    });
-    const result = await runCli(subtest, harness, ["--rust", "--frontend", "--bindings"]);
-    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    const markers = await readdir(join(harness.state, "barrier"));
-    assert.deepEqual(markers.sort(), barrierLanes.sort());
-  });
+  await t.test(
+    "exclusive Rust admission retains contract and bundle concurrency then a frontend wave",
+    async (subtest) => {
+      const barrierLanes = ["contract", "rust-lint", "bundle"];
+      const commands = {};
+      for (const lane of barrierLanes) {
+        const command = {
+          contract: "pnpm gates:contract:check",
+          "rust-lint": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+          "rust-test": "pnpm gate:ensure backend-test",
+          "rust-coverage": "pnpm gate:ensure backend-coverage",
+          "frontend-coverage": "pnpm gate:ensure frontend-coverage",
+          bundle: "pnpm bundle:check",
+          "frontend-mutation": "pnpm gate:ensure frontend-mutation",
+        }[lane];
+        commands[command] = { barrierLane: lane };
+      }
+      const frontendPeers = ["frontend-coverage", "e2e"];
+      if (availableParallelism() >= 2) frontendPeers.push("frontend-mutation");
+      for (const lane of frontendPeers) {
+        const command = {
+          "frontend-coverage": "pnpm gate:ensure frontend-coverage",
+          e2e: "pnpm gate:ensure e2e-container",
+          "frontend-mutation": "pnpm gate:ensure frontend-mutation",
+        }[lane];
+        commands[command] = { barrierLane: lane, barrierPeers: frontendPeers };
+      }
+      const harness = await makeHarness(subtest, {
+        budgetBytes: ONE_WAVE_BYTES + 5 * GIB,
+        barrierLanes,
+        commands,
+      });
+      const result = await runCli(subtest, harness, ["--rust", "--frontend", "--bindings"]);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+      const markers = await readdir(join(harness.state, "barrier"));
+      assert.deepEqual(markers.sort(), [...barrierLanes, ...frontendPeers].sort());
+      const events = await readEvents(harness);
+      const lintFinish = cliCommandFinish(events, "pnpm rust:windows:check");
+      const testStart = cliCommandStart(events, "pnpm gate:ensure backend-test");
+      const testFinish = cliCommandFinish(events, "pnpm gate:ensure backend-test");
+      const coverageStart = cliCommandStart(events, "pnpm gate:ensure backend-coverage");
+      const coverageFinish = cliCommandFinish(events, "pnpm gate:ensure backend-coverage");
+      assert.ok(
+        at(lintFinish) < at(testStart),
+        "the complete lint lane must release admission before test",
+      );
+      assert.ok(
+        at(testFinish) < at(coverageStart),
+        "native tests must release admission before instrumented compilation",
+      );
+      for (const command of [
+        "pnpm gate:ensure frontend-coverage",
+        "pnpm gate:ensure frontend-mutation",
+        "pnpm gate:ensure e2e-container",
+      ]) {
+        assert.ok(
+          at(coverageFinish) < at(cliCommandStart(events, command)),
+          `${command} must wait for all Rust work`,
+        );
+      }
+    },
+  );
 
   await t.test("mutation runs after P2 below ONE_WAVE_BYTES", async (subtest) => {
     const harness = await makeHarness(subtest, { budgetBytes: ONE_WAVE_BYTES - 1 });
@@ -1666,9 +1714,9 @@ test("P2 memory/CPU placement, concurrency anchor and cgroup-read guards (PG-47,
   );
 
   await t.test(
-    "gate budget and CPU detection are not read for contract, Rust, or bindings-only runs",
+    "contract-only runs do not acquire a Rust or frontend allocation",
     async (subtest) => {
-      for (const flags of [[], ["--rust"], ["--bindings"]]) {
+      for (const flags of [[]]) {
         const cwd = await temporarySchedulerRoot(subtest);
         let budgetReads = 0;
         let cpuReads = 0;
@@ -2034,7 +2082,7 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
     "coverage and mutation receive memory and CPU shares in both placements",
     async (subtest) => {
       for (const [budgetBytes, cpuCount, concurrent, cargo] of [
-        [7 * GIB, 24, false, true],
+        [10 * GIB, 24, false, true],
         [ONE_WAVE_BYTES + GIB, 24, true, true],
         [ONE_WAVE_BYTES + GIB, 1, false, true],
         [ONE_WAVE_BYTES + GIB, 24, true, false],
@@ -2058,11 +2106,9 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
           (event) =>
             event.type === "start" && event.command === "pnpm gate:ensure frontend-mutation",
         );
-        const cargoLanesRun =
-          cargo && events.some((event) => event.command === "pnpm gate:ensure backend-test");
         const budgetAfterContainer = budgetBytes - E2E_CONTAINER_MEMORY_BYTES;
         const coverageMemory = Math.floor(
-          budgetAfterContainer * (cargoLanesRun || concurrent ? P2_VITEST_SHARE : 1),
+          budgetAfterContainer * (concurrent ? P2_VITEST_SHARE : 1),
         );
         const minimumWorkerFloor =
           budgetAfterContainer >= VITEST_MINIMUM_BUDGET_BYTES ? VITEST_MINIMUM_BUDGET_BYTES : 0;
@@ -2083,4 +2129,183 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
       }
     },
   );
+});
+
+test("Cargo allocation reaches real fake compiler and exporter processes on Rust, bindings-only and all-block routes", async (t) => {
+  const native = ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets"];
+  const exporter = [
+    "cargo",
+    "run",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--bin",
+    "chessfable",
+    "--",
+    "--export-bindings-only",
+  ];
+  const instrumented = ["cargo", "+nightly-2025-06-01", "llvm-cov", "--branch", "--no-report"];
+  const windows = ["cargo", "clippy", "--target", "x86_64-pc-windows-gnu", "--all-targets"];
+  for (const flags of [["--rust"], ["--bindings"], ["--rust", "--frontend", "--bindings"]]) {
+    await t.test(flags.join(" "), async (subtest) => {
+      const harness = await makeHarness(subtest, {
+        commands: {
+          "pnpm bindings:check": { childCommand: exporter },
+          "pnpm gate:ensure backend-test": { childCommand: native },
+          "pnpm gate:ensure backend-coverage": { childCommand: instrumented },
+          "pnpm rust:windows:check": { childCommand: windows },
+        },
+      });
+      harness.env.CARGO_BUILD_JOBS = "64";
+      delete harness.env.RUST_TEST_THREADS;
+      const result = await runCli(subtest, harness, flags);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+      const events = await readEvents(harness);
+      const expected = [
+        ...(flags.includes("--bindings") ? [exporter] : []),
+        ...(flags.includes("--rust") ? [native, instrumented, windows] : []),
+      ];
+      for (const argv of expected) {
+        const compiler = cliCommandStart(events, argv.join(" "));
+        assert.ok(compiler, `missing compiler/exporter process ${argv.join(" ")}`);
+        assert.equal(compiler.jobs, "1", compiler.command);
+        assert.equal(
+          compiler.testThreads,
+          undefined,
+          "compilation sizing must not set libtest concurrency",
+        );
+      }
+    });
+  }
+});
+
+test("known insufficient Rust memory refuses bindings-only and all-block exporters before spawn", async (t) => {
+  for (const flags of [["--bindings"], ["--rust", "--frontend", "--bindings"]]) {
+    const harness = await makeHarness(t, { budgetBytes: 9 * GIB - 1 });
+    const result = await runCli(t, harness, flags);
+    assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /Rust compilation refused:.*below the minimum.*9 GiB usable/u);
+    const commands = commandSet(await readEvents(harness));
+    assert.deepEqual(
+      commands,
+      [
+        "pnpm mutation:guard:check",
+        "bash scripts/setup-rust.sh",
+        "pnpm gate:run frontend-build",
+      ].sort(),
+    );
+  }
+});
+
+test("ordinary failed Rust lanes release admission in declaration order and finish every selected proof", async (t) => {
+  const harness = await makeHarness(t, {
+    commands: {
+      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings": {
+        exitCode: 11,
+      },
+      "pnpm gate:ensure backend-test": { exitCode: 7 },
+      "pnpm gate:ensure backend-coverage": { exitCode: 9 },
+    },
+  });
+  const result = await runCli(t, harness, ["--rust", "--frontend"]);
+  assert.equal(result.code, 11, `${result.stdout}\n${result.stderr}`);
+  const events = await readEvents(harness);
+  const lint = cliCommandFinish(
+    events,
+    "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
+  );
+  const native = cliCommandStart(events, "pnpm gate:ensure backend-test");
+  const coverage = cliCommandStart(events, "pnpm gate:ensure backend-coverage");
+  assert.ok(at(lint) < at(native));
+  assert.ok(at(cliCommandFinish(events, native.command)) < at(coverage));
+  assert.ok(
+    at(cliCommandFinish(events, coverage.command)) <
+      at(cliCommandStart(events, "pnpm gate:ensure e2e-container")),
+  );
+  for (const command of [
+    "pnpm gate:ensure frontend-coverage",
+    "pnpm gate:ensure frontend-mutation",
+    "pnpm gate:ensure e2e-container",
+  ]) {
+    assert.equal(cliCommandFinish(events, command).code, 0);
+  }
+});
+
+test("unconfirmed process cleanup blocks queued Rust and heavyweight frontend starts after P1 or a Rust lane", async (t) => {
+  for (const command of [
+    "pnpm bindings:check",
+    "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+  ]) {
+    await t.test(command, async (subtest) => {
+      const harness = await makeHarness(subtest, { commands: { [command]: { hold: true } } });
+      const commandsByChild = new WeakMap();
+      let heldSupervisor;
+      let heldEvent;
+      const result = await runPushGates(["--rust", "--frontend", "--bindings"], {
+        cwd: harness.root,
+        env: harness.env,
+        spawnProcess(executable, args, options) {
+          const child = spawn(executable, args, options);
+          commandsByChild.set(child, [executable, ...args].join(" "));
+          return child;
+        },
+        superviseProcess(child, options) {
+          const supervisor = superviseChild(child, options);
+          if (commandsByChild.get(child) !== command) return supervisor;
+          heldSupervisor = supervisor;
+          return {
+            ...supervisor,
+            done: waitForEvent(
+              harness,
+              (event) => event.type === "start" && event.command === command,
+            ).then((event) => {
+              heldEvent = event;
+              throw new Error("injected unconfirmed process-group cleanup");
+            }),
+          };
+        },
+      });
+      try {
+        assert.equal(result.exitCode, 1);
+        assert.ok(
+          groupExists(heldEvent.pid),
+          "the unconfirmed child must still be alive during the assertion",
+        );
+        const commands = commandSet(await readEvents(harness));
+        for (const queued of [
+          "pnpm gate:ensure backend-test",
+          "pnpm gate:ensure backend-coverage",
+          "pnpm gate:ensure frontend-coverage",
+          "pnpm gate:ensure frontend-mutation",
+          "pnpm gate:ensure e2e-container",
+        ]) {
+          assert.ok(!commands.includes(queued), `${queued} started beside unconfirmed cleanup`);
+        }
+        const failed = result.results.find(({ terminationError }) => terminationError);
+        assert.match(failed.terminationError.message, /unconfirmed process-group cleanup/u);
+      } finally {
+        await heldSupervisor?.terminate();
+      }
+      assert.equal(groupExists(heldEvent.pid), false);
+    });
+  }
+});
+
+test("pre-review Windows compilation uses Rust allocation and excludes heavyweight mutation even above the one-wave threshold", async (t) => {
+  for (const budgetBytes of [10 * GIB, ONE_WAVE_BYTES + GIB]) {
+    const windows = "pnpm rust:windows:check";
+    const mutation = "pnpm mutation:frontend -- --files src/state/workspace.ts";
+    const harness = await makeHarness(t, { budgetBytes, commands: { [windows]: { delayMs: 50 } } });
+    await mkdir(join(harness.root, "src/state"), { recursive: true });
+    await writeFile(join(harness.root, "src/state/workspace.ts"), "export const workspace = 1;\n");
+    harness.env.CARGO_BUILD_JOBS = "1";
+    const result = await runPushGates(["--pre-review"], {
+      cwd: harness.root,
+      env: harness.env,
+      discoverChangedPaths: () => ["src-tauri/src/lib.rs", "src/state/workspace.ts"],
+    });
+    assert.equal(result.exitCode, 0);
+    const events = await readEvents(harness);
+    assert.equal(cliCommandStart(events, windows).jobs, "1");
+    assert.ok(at(cliCommandFinish(events, windows)) < at(cliCommandStart(events, mutation)));
+  }
 });

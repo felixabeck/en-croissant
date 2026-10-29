@@ -66,10 +66,16 @@ Choose flags from the changed paths: `--rust` for Rust/Tauri changes, `--fronten
 changes, and all three flags for cross-layer contracts or changes to workflows, dependencies, or
 toolchain inputs. A Markdown/planning-only push uses no flags. The mutation guard and contract lane
 run on every invocation; the runner also runs the fenced commands below as their lane contents.
-Receipt-backed gates may run concurrently while preserving each lane's command order. A failure
+One complete Rust lane runs at a time in declaration order, alongside contract and bundle.
+Frontend coverage and mutation wait for every Rust lane to terminate, then retain their frontend
+budget, e2e reservation and CPU rules. Ordinary Rust failures do not skip later selected lanes.
+Signals or unconfirmed child cleanup stop queued starts. A failure
 returns to `repair`, commit, and the required affected final-gate rerun before push.
 
-`pnpm gates:push` and `pnpm checks:pre-review` run through `agent-gate`; its contract (lock, scope, memory cap, exit 125, nesting, worker sizing, e2e reserve, the `flock` deadlock) is `.claude/rules/gate-tooling.md` "Scheduling and placement" — read it before running a gate.
+`pnpm gates:push` and `pnpm checks:pre-review` run through `agent-gate`. Read
+`.claude/rules/gate-tooling.md` "Scheduling and placement" before running a gate for admission,
+worker sizing, e2e reservation, exit 125 and nesting. The shared
+[gate-performance reference](~/.claude/references/gate-performance.md) owns machine slots and caps.
 
 **Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
 
@@ -105,6 +111,16 @@ pnpm gate:ensure backend-coverage
 type error in the `#[cfg(test)]` function `set_test_lexer_hook` in `src-tauri/src/lexer.rs`: the
 fenced clippy command exited 101 with E0308, and exited 0 without the probe. This is why the
 separate `cargo check` step was removed from this block and CI.
+
+The scheduler's shared Rust allocator bounds `CARGO_BUILD_JOBS` before the P1 bindings exporter
+and every Rust lane, including nested receipt misses and Windows clippy. Cold calibration uses
+8 GiB per job plus 1 GiB Rust overhead, beside the existing 1 GiB generic reserve. Known usable
+budgets below 9 GiB refuse before compilation. Unavailable cgroup detection assumes the supported
+minimum with a one-job Rust fallback, without changing frontend's 7 GiB usable fallback. That
+assumption requires 10 GiB including the reserve, it cannot prove an unknown machine has it.
+Lower valid caller job limits remain respected and libtest concurrency stays unchanged.
+The allocation rationale and measured reversal path live beside `rustBuildEnvironment` in
+`scripts/gate-parallelism.mjs` and in the gate-tooling rule.
 
 `pnpm rust:windows:check` covers GNU-target type-checking and linting only. The MSVC target
 (`rust-platform`) and all Windows tests (`rust-windows-test`) remain CI-only. If the gate is red
@@ -244,8 +260,10 @@ pnpm checks:pre-review
 ```
 
 The scheduler selects only lanes whose inputs changed. The frontend build runs first whenever the
-Windows clippy or bundle lane is selected; those lanes consume its `dist/` output. Commands in the
-selected lanes are:
+Windows clippy or bundle lane is selected, those lanes consume its `dist/` output. Windows clippy
+uses the same Rust allocation as push and completes before heavyweight mutation starts, including
+when the budget allows concurrent frontend work. Signals and unconfirmed cleanup prevent queued
+starts. Commands in the selected lanes are:
 
 ```bash
 pnpm gate:run frontend-build

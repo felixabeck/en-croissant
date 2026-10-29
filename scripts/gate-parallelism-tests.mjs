@@ -16,6 +16,7 @@ import {
   vitestMaxWorkers,
   VITEST_WORKER_BYTES,
   workerCount,
+  rustBuildEnvironment,
 } from "./gate-parallelism.mjs";
 
 const GIB = 1024 ** 3;
@@ -25,6 +26,114 @@ const PROCESS_CGROUP_FILE = "/proc/self/cgroup";
 const CGROUP_PATH = "/tenant/agent";
 const CGROUP_DIRECTORY = resolve(CGROUP_ROOT, `.${CGROUP_PATH}`);
 const CGROUP_PARENT = dirname(CGROUP_DIRECTORY);
+
+test("Rust compiler jobs spend the measured envelope instead of CPU-only fan-out", () => {
+  const allocation = (budget, cpus = 24, env = {}) =>
+    rustBuildEnvironment({
+      env,
+      getGateBudgetBytes: () => budget,
+      availableParallelism: () => cpus,
+    });
+  assert.equal(allocation(Math.floor(9.8 * GIB)).CARGO_BUILD_JOBS, "1");
+  assert.equal(allocation(34 * GIB).CARGO_BUILD_JOBS, "4");
+  assert.equal(allocation(90 * GIB, 2).CARGO_BUILD_JOBS, "2");
+  assert.equal(allocation(90 * GIB, 24, { GATE_CPU_SHARE: "0.125" }).CARGO_BUILD_JOBS, "3");
+  assert.equal(allocation(9 * GIB).CARGO_BUILD_JOBS, "1");
+  for (const budget of [0, 7 * GIB, 9 * GIB - 1]) {
+    assert.throws(
+      () => allocation(budget),
+      /Rust compilation refused:.*below the minimum.*9 GiB usable/u,
+    );
+  }
+});
+
+test("Rust fallback admits one job only for unavailable detection and retains the generic reserve", () => {
+  for (const fixture of [
+    linuxFixture(),
+    linuxFixture({
+      readFailures: { [join(CGROUP_PARENT, "memory.max")]: new Error("unreadable ancestor") },
+    }),
+  ]) {
+    let stderr = "";
+    const env = {};
+    const allocation = rustBuildEnvironment({
+      env,
+      availableParallelism: () => 24,
+      getGateBudgetBytes: (options) =>
+        gateBudgetBytes({
+          ...fixture,
+          env,
+          stderr: { write: (line) => (stderr += line) },
+          ...options,
+        }),
+    });
+    assert.equal(allocation.CARGO_BUILD_JOBS, "1");
+    assert.match(stderr, /one-job Rust fallback.*9 GiB usable, 10 GiB with the reserve/u);
+  }
+  for (const limit of [10 * GIB - 1, 10 * GIB]) {
+    const fixture = linuxFixture({ memory: { [CGROUP_DIRECTORY]: String(limit) } });
+    let stderr = "";
+    const allocate = () =>
+      rustBuildEnvironment({
+        env: {},
+        availableParallelism: () => 24,
+        getGateBudgetBytes: (options) =>
+          gateBudgetBytes({
+            ...fixture,
+            env: {},
+            stderr: { write: (line) => (stderr += line) },
+            ...options,
+          }),
+      });
+    if (limit < 10 * GIB) assert.throws(allocate, /Rust compilation refused/u);
+    else assert.equal(allocate().CARGO_BUILD_JOBS, "1");
+    assert.equal(stderr, "", "known insufficient memory must never become detection fallback");
+  }
+});
+
+test("Rust allocation respects lower inherited Cargo jobs and clamps positive, negative and default controls", () => {
+  for (const [inherited, expected] of [
+    [undefined, "4"],
+    ["2", "2"],
+    ["+2", "2"],
+    ["64", "4"],
+    ["-23", "1"],
+    ["-22", "2"],
+    ["-99", "1"],
+    ["-1", "4"],
+    ["default", "4"],
+  ]) {
+    const env = {
+      RUST_TEST_THREADS: "7",
+      ...(inherited === undefined ? {} : { CARGO_BUILD_JOBS: inherited }),
+    };
+    const result = rustBuildEnvironment({
+      env,
+      getGateBudgetBytes: () => 34 * GIB,
+      availableParallelism: () => 24,
+    });
+    assert.equal(result.CARGO_BUILD_JOBS, expected, String(inherited));
+    assert.equal(result.RUST_TEST_THREADS, "7");
+    assert.equal(env.CARGO_BUILD_JOBS, inherited);
+  }
+  for (const value of ["0", "-0", "abc", "", "1.5"]) {
+    assert.throws(
+      () =>
+        rustBuildEnvironment({
+          env: { CARGO_BUILD_JOBS: value },
+          getGateBudgetBytes: () => 34 * GIB,
+          availableParallelism: () => 24,
+        }),
+      /CARGO_BUILD_JOBS/u,
+    );
+  }
+  const result = rustBuildEnvironment({
+    env: {},
+    getGateBudgetBytes: () => 34 * GIB,
+    availableParallelism: () => 24,
+  });
+  assert.equal(Object.hasOwn(result, "RUST_TEST_THREADS"), false);
+});
 
 function fakeFsError(code, path) {
   return Object.assign(new Error(`${code}: ${path}`), { code });
