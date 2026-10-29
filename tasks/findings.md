@@ -19029,3 +19029,21 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Open question:** none; trace which side of the channel can drop first and make the test wait on the receiver or assert the send outcome without unwrap.
 * **Proof:** repeat the single test under `cargo llvm-cov` instrumentation (or with an injected delay on the receiver side) until it fails before the fix and never after.
 * **Found by:** Claude Code, ChessRiddle design build final gates, 2026-10-29.
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Vitest tests that reset modules still cross the 5 s timeout under push-gate load
+
+* **ID:** f-20261029-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** src/state/pathOwners.test.ts ("refuses clearing without retiring migrated keys after an incomplete startup scan", line ~610, `vi.resetModules()` plus dynamic import of ./practiceStorage) and src/state/store/database.test.ts ("database-view durable admission > refuses setTournamentsActiveTab before publishing, then admits the same retry and reloads", it.each at line 195).
+* **Defect:** Both timed out at Vitest's 5 s default in the frontend-coverage lane while the Rust lanes ran concurrently; database.test.ts took 89 s in total. Both pass alone and in a sequential `pnpm gate:ensure frontend-coverage` rerun (233/233). pathOwners also timed out once in a 4-worker `vitest run` while other builds held the heavy-gate slots. This is the failure class `f-20260930-02` describes and handled; it recurs.
+* **Spotted outside diff:** ChessRiddle design build, 2026-10-29 (Phase 1 proof and final gates). The branch does not touch either test file or its imports.
+* **Failure scenario:** `pnpm gates:push -- --rust --frontend --bindings` on a machine where a drain holds the other heavy-gate slot: frontend-coverage exits 1 with "Test timed out in 5000ms" for the two tests.
+* **Evidence:** /home/felixb/Projekte/chessfable.worktrees/chessriddle-design/artifacts/gates/20261029T154857345Z-621891/receipt-frontend-coverage.log ("Test Files 2 failed | 231 passed"); sequential rerun "gate passed: frontend-coverage".
+* **Related:** f-20260930-02 (same mechanism, handled).
+* **Open question:** none; extend the f-20260930-02 remedy (warm the module graph outside the timed test, or a per-test timeout sized to the measured cold import) to these two tests.
+* **Proof:** run both files with the coverage instrumentation and `--maxWorkers` matching the gate allocation while a CPU load runs; no timeout after the fix.
+* **Found by:** Claude Code, ChessRiddle design build final gates, 2026-10-29.
