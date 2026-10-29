@@ -10723,3 +10723,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** lower limits.total toward a later production build at or under 1,650,000 B, and limits.entry toward one at or under 555,000 B. Do not weaken the refused-read screen, the public-account recovery behavior, the succeeded-only fill predicate, or the ChessDB not-in-database and failure terminals.
 * **Decided by:** Claude Code, build session b17dddf5-6a16-4984-ac53-fb221980886b, full auto, diff review round 1 records repair · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"18477289325a0a50ff5532d7587768a9454beeab4cd5dbd68b9f8ecafcd1468a","input_sha256":"34403391122c75a6438844a579fb04909c4815d315f9c471ff3b769f88490461","kind":"mutation-receipt","operation":"399dedee87da8858d36a351062f65a9e069004206e0a9be9578d2642b8c193cc","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-15"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-07 — Wait for workspace commit before notation pointer assertions
+
+* **Question:** What should distinguish the workspace notation from the outgoing Library preview in setupNotationMenu?
+* **Governs:** f-20261029-02
+* **Chosen:** After Open game, wait for the workspace-only Info tab before resolving or interacting with notation. Keep the shared setup for all workspace menu and deletion cases and preserve every pointer, selection, subtree and screenshot assertion.
+* **Rejected:** Waiting only for the router URL, adding a fixed delay, retrying the click, raising timeouts, weakening current-move assertions or changing production navigation.
+* **Reason:** The unchanged exact scenario failed in hosted run 40870417020 and once in ten local container iterations. The local trace shows the URL already at the board route while Library DOM still renders. The Nc6 click selects the outgoing preview, then the newly committed workspace correctly starts at its initial position. Existing workspace-tabs and files-preview tests already wait for workspace-specific controls after navigation.
+* **Reversal path:** Replace the Info-tab wait in e2e/engine-gap.spec.ts only with another observed workspace-commit witness. Retain the pointer and deletion assertions and prove the delayed transition cannot redirect the setup click to the preview. No product behavior changes.
+* **Decided by:** Codex, technical arbitration during the f-20261010-08 push workflow, 2026-10-29 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"44e60fa711f8d41b9ff4c46594eb0fd7802836db6f402e57cb8b6377d0dd5a9b","input_sha256":"bd7459706e44c21625b339f2a132bbedde2a0890b4c64b502fddc32241bc43bf","kind":"mutation-receipt","operation":"0e3c886d35e7e8c8f781654cee188db94abf40b2f1699c0198980b9fecd42113","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-07"],"target":"decisions-ledger","v":1} -->
