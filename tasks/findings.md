@@ -19239,3 +19239,19 @@ Former private finding identifier: f-20261029-06
 * **Proof:** Retain a component regression that actually activates the tournament row and observes the required linked locator at the admission boundary through the real shared helper. The old inline producer must fail the retained assertion, restored helper routing must pass, and standalone games must retain their existing origin. Existing full original-game admission coverage remains shared, no helper-object mirror test.
 * **Related:** f-20261010-03 repaired tournament pagination, a different defect. No shared Root is established.
 * **Found by:** Minimalism code r3 at9aa9bd2f in the full-auto opening-game-reference task, confidence98. Root independently traced the real native rejection condition. This is new adopted review issue DR10, planned in this same repair batch. Plan authorship and arbitration shared one context. Detection shared the original code's OpenAI model family through the disclosed native read-only fallback.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Citation repair promotes an ambiguous combined-header prefix to a verified match
+
+* **ID:** f-20261030-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** behaviour
+* **Where:** src/utils/gameReferences.ts208 complete combined-prefix exception and its verification fallthrough, introduced in28e4b71a.
+* **Defect:** For citation `0-1 Beerdsen,T-Bluebaum,M Tata Steel Wijk aan Zee 2020 (A) Better was Bd3 2022 (3).`, a candidate with event Tata Steel, site Wijk aan Zee, Date2020.01.01 and RoundA becomes verified because its own combined header prefix bypasses the later-tuple ambiguity branch. A similar bare parenthesis `(A) Better was Bd3 2022 (3).` also promotes certainty. A shorter matching prefix does not establish a certain closing boundary, so exhaustive unique lookup may auto-open an ambiguous occurrence. The previous producer retained this case as unverified.
+* **Fix:** Preserve applicable original field constraints while keeping unresolved competing header/prose boundaries unverified. Only an unambiguous match may auto-open. Preserve the R3 supplied contradiction rejection and original/unknown candidate retention, adjacent readings and actual known-site priority. Name the boundary predicate accurately and share the existing field comparison, no new parser framework.
+* **Proof:** Query-sensitive lookup and rendered action regression must fail on71e915f5 and pass after repair. Include dated-round and round-only ambiguous combined prefixes, no automatic admission, explicit selected occurrence identity and unambiguous single-reading controls. Root independently reverse only the production repair with retained tests, restore exact hashes and run full related and pre-review proof before closure review.
+* **Follow-up of:** f-20261029-13. Correction-created DR12 in its28e4b71a repair, a new false-certainty regression while the supplied DR1 contradictions are closed. No shared Root is asserted for different local causes.
+* **Found by:** Correctness code R4 at70199ec1, confidence93, selected Executor Grok. Root traced the new early-return exception and final verified result. Plan authorship and arbitration share root context. This detection and the R3 repair author share xAI family. Final review remains incomplete and no publication is claimed.
