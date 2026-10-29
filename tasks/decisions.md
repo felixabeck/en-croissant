@@ -10959,8 +10959,8 @@ Former private decision identifier: d-20261029-19
 
 * **Later publication adoption:** The current remote subsequently published a different tablebase decision as d-20261029-31. This fresh writer-allocated entry preserves the native-test mechanism and proof. The earlier private publication31 and its continuation33 remain immutable in backup/opening-game-references-before-design-20261029 and the raw task handoff. No published decision or receipt is renamed. The old third-control recipe remains historical and the separate corrected continuation adoption governs it.
 
-* **Decided by:** Codex under Felix's full-auto feature request and its mandatory verified-release workflow. Plan authorship and arbitration shared one context. Detection used the same OpenAI model family as code. · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"069ab05bb197d24ebc1a3f9e36d20f8c79b4d7d3fbc1f257e3d8500e24cf46bc","input_sha256":"c38189bf28e2be79bf3fe27273cb89db7ca345869b4718f84d77998d812d2f8b","kind":"mutation-receipt","operation":"a2a0ce1f78a13be7f8d084f7bca16017e444583eca9fbc82a8c6d58f6ca90a1c","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-34"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex under Felix's full-auto feature request and its mandatory verified-release workflow. Plan authorship and arbitration shared one context. Detection used the same OpenAI model family as code. · **Superseded-by:** d-20261029-35
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"b382e3bf9490b7e363bd0362376e2072d46dab3883edc5394011f34d36c69da1","input_sha256":"c38189bf28e2be79bf3fe27273cb89db7ca345869b4718f84d77998d812d2f8b","kind":"mutation-receipt","operation":"a2a0ce1f78a13be7f8d084f7bca16017e444583eca9fbc82a8c6d58f6ca90a1c","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-34"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261029-35 — Use a real extra readiness command for the continuation proof
 
