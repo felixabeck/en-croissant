@@ -10859,3 +10859,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The ceiling decision must rest on the tree that ships. Reversal path: lower `limits.total` once cuts bring the total back under 1,650,000 B. Recorded on the build branch as entry 23 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
 * **Decided by:** Claude Code, autonomously during push review under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"cb32b20899eb6e938e0f8c17b423857435807651b42cab2654ade791922ba9a4","input_sha256":"67f49e363c9c08ae94c4a6104bb8ff310f6f00fe34034b0c878143079eed3de4","kind":"mutation-receipt","operation":"4e87962c41dfed2d5e3183237fb685f118929f18e22dd5c825f99ec4dd20a6f6","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-29"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-30 — Correct the heading of d-20261029-27: it corrects d-20261029-25
+
+* **Question:** The heading of d-20261029-27 names the decision it corrects by its pre-publication number. Which decision does it correct?
+* **Governs:** -
+* **Chosen:** d-20261029-27 corrects d-20261029-25 (which colours stay outside the ChessRiddle restyle), as its body already states. Its choice is unchanged: Mantine named palettes keep their default values, with the single exception of the warm `dark` scale in `src/styles/theme.ts`.
+* **Rejected:** Leaving the heading unmatched to its body (raised by the records lens during the renumbering closure).
+* **Reason:** Headings are citation targets too. Reversal path: none needed; this corrects wording only and d-20261029-27 stays byte-identical as history.
+* **Decided by:** Claude Code, autonomously during push review under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c407b3d624a6e4e6d6b806cba181fe1c629694f2ec5b339e7a62870dbe6a4702","input_sha256":"8409b406272c3e3b7e5cd6d00007e386115c3c4fa1e6b89b3a8ce7de368f9d10","kind":"mutation-receipt","operation":"7bba121cd309a83e088e0a865a9482838d513c1ac1c0ebae72b67c9cc17c8e39","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-30"],"target":"decisions-ledger","v":1} -->
