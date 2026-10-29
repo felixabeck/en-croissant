@@ -10779,3 +10779,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Only the same library reproduces the same artwork. Reversal path: reinstall Tabler and revert the icon phase commit. Recorded on the build branch as entry 07 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
 * **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2d00a86acb552b763d39b696d1d5dece98e68dc3d93c01191cb877726c69ddd5","input_sha256":"e9343dcf69241f8db41995955245ae367a0059c4f633fb734ad92c92b7fe6758","kind":"mutation-receipt","operation":"b6a1952bb327aa1c4e1d625eb3d0e252582f8b2d0461e474d9d02d6f6c78692d","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-21"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-22 — Which ChessRiddle values win when its DESIGN.md and globals.css disagree?
+
+* **Question:** ChessRiddle's DESIGN.md documents some token values (for example background `#faf8f0`) that differ from its executable `globals.css` (`hsl(48 29% 97.1%)` = `#faf9f5`). Which does ChessFable copy?
+* **Governs:** -
+* **Chosen:** The executable values in `frontend/web/src/app/globals.css` and the implemented `src/components/ui/*` styles.
+* **Rejected:** The DESIGN.md prose values, which ChessRiddle no longer renders.
+* **Reason:** Familiarity means matching what ChessRiddle users actually see. Reversal path: copy the prose values into `src/styles/theme.ts`. Recorded on the build branch as entry 08 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
+* **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e7aaf530bf60d778f56da274fbcce35b0accbf4bda011e9284f2d5d8b0b8887a","input_sha256":"843feef8dc9653bf1e802a24cf0634716eac7c360a922e4ca39edc1a5b212b9f","kind":"mutation-receipt","operation":"c755be75038301abb1e003b1f6fed0e8854dfd565072a0073b6186b2d3885f41","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-22"],"target":"decisions-ledger","v":1} -->
