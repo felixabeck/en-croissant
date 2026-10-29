@@ -2520,11 +2520,11 @@ async function verifyGameOpening(session, ownedRoot) {
     },
   );
   await assertion(
-    "DS2 database explorer persists the successful selection with its exact decimal storage_size in plain JSON",
+    "DS2 database explorer persists the successful selection with its exact decimal storage_size",
     async () => {
       requireSeed();
       const raw = await session.execute("return sessionStorage.getItem('database-view')");
-      const selected = raw && JSON.parse(raw).state?.database;
+      const selected = raw && deserializeStorageValue(raw)?.state?.database;
       const expected = (
         await stat(join(ownedRoot, "verify-game-opening.db3"), { bigint: true })
       ).size.toString();
