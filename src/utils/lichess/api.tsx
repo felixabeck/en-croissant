@@ -291,22 +291,25 @@ export async function getBestMoves(
   );
   return [
     100,
-    data.pvs?.map((m, i) => {
-      const { uciMoves, sanMoves } = replayUciMoves(pos.clone(), m.moves.split(" "));
+    data.pvs
+      ?.map((m, i): BestMoves => {
+        const { uciMoves, sanMoves } = replayUciMoves(pos.clone(), m.moves.split(" "));
 
-      return {
-        score: {
-          value: "cp" in m ? { type: "cp", value: m.cp } : { type: "mate", value: m.mate },
-          wdl: null,
-        },
-        nodes: BigInt(data.knodes) * 1000n,
-        depth: data.depth,
-        multipv: i + 1,
-        nps: 0n,
-        sanMoves,
-        uciMoves,
-      };
-    }) ?? [],
+        return {
+          score: {
+            value: "cp" in m ? { type: "cp", value: m.cp } : { type: "mate", value: m.mate },
+            wdl: null,
+          },
+          nodes: BigInt(data.knodes) * 1000n,
+          depth: data.depth,
+          multipv: i + 1,
+          nps: 0n,
+          sanMoves,
+          uciMoves,
+        };
+      })
+      .filter(({ uciMoves }) => uciMoves.length > 0)
+      .map((line, i) => ({ ...line, multipv: i + 1 })) ?? [],
   ];
 }
 

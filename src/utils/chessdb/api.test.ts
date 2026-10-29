@@ -252,6 +252,7 @@ test("concurrent MultiPV 1 and 5 deduplicate the root and overlapping child requ
 });
 
 test("selected child PV requests run concurrently and MultiPV is capped at five", async () => {
+    expect(api.CHESSDB_MAX_MULTIPV).toBe(5);
     let release!: () => void;
     let started!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -265,16 +266,16 @@ test("selected child PV requests run concurrently and MultiPV is capped at five"
         if (url.searchParams.get("action") === "queryall")
             return { status: "ok", moves: [...roots, "a2a3"].map((uci) => move(uci)) };
         if (url.searchParams.get("action") === "querypv") {
-            if (++children === api.CHESSDB_MAX_MULTIPV) started();
+            if (++children === 5) started();
             await gate;
         }
         return fullResponses(url);
     });
     const result = lookup(50);
     await allStarted;
-    expect(requests("querypv")).toHaveLength(api.CHESSDB_MAX_MULTIPV);
+    expect(requests("querypv")).toHaveLength(5);
     release();
-    expect(lines(await result)).toHaveLength(api.CHESSDB_MAX_MULTIPV);
+    expect(lines(await result)).toHaveLength(5);
 });
 
 test("counter-independent positions share both move-list and child-PV cache entries", async () => {

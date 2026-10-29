@@ -91,6 +91,62 @@ describe("getBestMoves", () => {
             multi_pv: 1,
         });
     });
+
+    test("drops a cloud PV with no legal moves", async () => {
+        mocks.getPublicLichessJson.mockReset().mockResolvedValue(
+            JSON.stringify({
+                fen: INITIAL_FEN,
+                knodes: 123,
+                depth: 24,
+                pvs: [{ cp: 35, moves: "e2e5" }],
+            }),
+        );
+
+        await expect(
+            getBestMoves(
+                "tab",
+                { t: "Infinite" },
+                {
+                    fen: INITIAL_FEN,
+                    moves: [],
+                    extraOptions: [{ name: "MultiPV", type: "string", value: "2" }],
+                },
+            ),
+        ).resolves.toEqual([100, []]);
+    });
+
+    test("numbers kept cloud PVs contiguously after dropping an illegal first line", async () => {
+        mocks.getPublicLichessJson.mockReset().mockResolvedValue(
+            JSON.stringify({
+                fen: INITIAL_FEN,
+                knodes: 123,
+                depth: 24,
+                pvs: [
+                    { cp: 35, moves: "e2e5" },
+                    { cp: 24, moves: "e2e4 e7e5" },
+                    { mate: 3, moves: "d2d4 d7d5" },
+                ],
+            }),
+        );
+
+        await expect(
+            getBestMoves(
+                "tab",
+                { t: "Infinite" },
+                {
+                    fen: INITIAL_FEN,
+                    moves: [],
+                    extraOptions: [{ name: "MultiPV", type: "string", value: "3" }],
+                },
+            ),
+        ).resolves.toMatchObject([
+            100,
+            [
+                { multipv: 1, uciMoves: ["e2e4", "e7e5"], sanMoves: ["e4", "e5"] },
+                { multipv: 2, uciMoves: ["d2d4", "d7d5"], sanMoves: ["d4", "d5"] },
+            ],
+        ]);
+    });
 });
 
 describe("getLichessAccount", () => {
