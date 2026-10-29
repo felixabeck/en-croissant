@@ -683,9 +683,11 @@ describe("InfoPanel game loading and cancellation", () => {
 
   test("actual discard refuses the candidate tree before changing the current page and succeeds on retry", async () => {
     await openActualPageConfirmation();
+    // Settle queued edits and read normalization before snapshotting the durable refusal baseline.
+    expect(tabStorage.flush()).toEqual([]);
+    const oldPending = tabStorage.readTree(tabAId);
     const oldBytes = sessionStorage.getItem(tabAId);
     const oldTree = treeStore.getState();
-    const oldPending = tabStorage.readTree(tabAId);
     const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
     const set = Storage.prototype.setItem;
     const refused = vi
