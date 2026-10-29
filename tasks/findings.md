@@ -19090,3 +19090,26 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Verified:** 181 related unit tests passed. All six desktop/compact/320px cases at 100%/200% font scale failed the new text-fit assertion on original source, passed with the fix, failed with only source stashed through Git, and passed after byte-identical restoration. The root independently reproduced the related tests and six-case browser matrix. Post-review canonical container verification passed all 20 board-keyboard tests. Ten affected PNGs were inspected, no snapshot baseline changed. Existing outer analysis-tab scrolling remains where its 16rem minimum exceeds the visible tile, so this is component fit evidence rather than a global responsive-layout claim.
 * **Review:** Eight fresh read-only push lenses approved without retained findings. Plan P1 closed in r2 and its independent assigned-container and pane-resize assertions are implemented. Plan authorship and arbitration share one context. Detection ran on the same OpenAI model family as the code. Full history and evidence: tasks/handoffs/2026-10-29-f-20261029-17-review.md. Final release gates and push follow this closure record.
 <!-- ledger-meta {"command":"close","effect_lines":3,"effect_sha256":"8b3239cbe2ca45671075f2891608c278226f169b63bd4bb3e7249b2dab37e904","header_sha256":"3e9dec85b55854e5f08551665f766eede81f432e251f292700b78a8b739ca5fc","header_status":"handled","input_sha256":"3529c3fbf78e6471d419bbc265fd94770f29da4ed5adb4ebd0beeb318d32c0dc","kind":"mutation-receipt","operation":"ec1840c6ccaebc682faae86f726c92a0d9d53f9df0583de8e30a6812ca61a335","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-17"],"target":"f-20261029-17","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Native database-selection verifier decodes the compressed store as plain JSON
+
+* **ID:** f-20261029-10 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** tooling
+* **Where:** scripts/verify-app.mjs DS2, selected database read at line2535.
+* **Defect:** The actual native citation staging run gate-citation-assertions-negative.zVQCAj failed DS2 with Unexpected token and compressed UTF-16 bytes at JSON.parse(raw). The published database store writes database-view through serializeStorageValue after f-20261010-01, while DS2 still requires plain JSON. All newly staged citation checks were reached separately, and this failure predates their input changes.
+* **Failure scenario:** Open the native database explorer in the ordinary full verify:app journey after successful selection. The correct compressed database-view value throws in the verifier's JSON parser, so the full desktop proof reports failure despite the admitted selection.
+* **Spotted outside diff:** Root real-product verification of opening-game-references, based on published f187917677a094c8f55dc926174308ea41254a3f.
+* **Fix:** Decode through the existing deserializeStorageValue already imported by the verifier, retain exact successful type, handle and decimal-string storage_size comparisons, remove only the obsolete plain-JSON wording from the live assertion label and stage its real stored input at the observation boundary. No product persistence or fixture change.
+* **Evidence:** /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-citation-assertions-negative.zVQCAj/log and completion.record, actual status1. src/state/store/database.ts writes serialized compressed state at lines211 and337.
+* **Related:** f-20261010-01 is the handled compressed admission change. No shared Root with the older practice flake f-20261011-05 is claimed.
+* **Found by:** Codex root. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+* **Publication recovery:** This is the same task finding originally allocated the unpublished branch-local identifier below. That private snapshot and its receipts remain unchanged in the archived source at62159f00cf0e232f74c6362e2af805aaf6575022 and the task handoff. A concurrently published, different finding already uses that identifier. This fresh canonical filing supplies a unique publication identity without altering the published record or claiming another defect, discovery or review adoption. Historical source reports are interpreted through the explicit publication mapping.
+
+```text
+Former unpublished identifier: f-20261029-02
+```
