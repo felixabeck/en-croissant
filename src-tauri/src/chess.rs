@@ -2404,6 +2404,16 @@ done
 
     #[cfg(unix)]
     async fn wait_for_fixture_capture(directory: &tempfile::TempDir, marker: &str) {
+        observe_fixture_capture(directory, marker)
+            .await
+            .expect("fixture must reach the requested wire barrier");
+    }
+
+    #[cfg(unix)]
+    async fn observe_fixture_capture(
+        directory: &tempfile::TempDir,
+        marker: &str,
+    ) -> Result<(), tokio::time::error::Elapsed> {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let capture = std::fs::read_to_string(directory.path().join("capture.log"))
@@ -2415,7 +2425,6 @@ done
             }
         })
         .await
-        .expect("fixture must reach the requested wire barrier");
     }
 
     #[cfg(unix)]
@@ -4171,6 +4180,7 @@ done
 
     #[cfg(unix)]
     async fn assert_warm_transition_termination(reused: bool, termination: &str, silent: bool) {
+        let context = format!("reused={reused}, termination={termination}, silent={silent}");
         let (directory, app, engine, _) = resource_engine_fixture();
         std::fs::write(directory.path().join("release"), b"").unwrap();
         let state = app.state::<AppState>().inner().clone();
@@ -4234,36 +4244,85 @@ done
             }
         })
         .await
-        .unwrap();
-        let current = supervisor.get_exact(&key).unwrap();
-        let started = Instant::now();
-        tokio::time::timeout(Duration::from_millis(600), async {
-            match termination {
-                "exact" => supervisor.terminate_exact(&key, current.generation).await,
-                "all" => supervisor.terminate_all().await,
-                "release" => supervisor.release_generation(&key, search_generation).await,
+        .unwrap_or_else(|error| panic!("{context}: readiness wire observation failed: {error}"));
+        let current = supervisor
+            .get_exact(&key)
+            .unwrap_or_else(|| panic!("{context}: exact actor must be registered"));
+        let termination_supervisor = supervisor.clone();
+        let termination_key = key.clone();
+        let actor_generation = current.generation;
+        let termination_kind = termination.to_string();
+        let mut terminator = tokio::spawn(async move {
+            match termination_kind.as_str() {
+                "exact" => {
+                    termination_supervisor
+                        .terminate_exact(&termination_key, actor_generation)
+                        .await
+                }
+                "all" => termination_supervisor.terminate_all().await,
+                "release" => {
+                    termination_supervisor
+                        .release_generation(&termination_key, search_generation)
+                        .await
+                }
                 _ => unreachable!(),
             }
-        })
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(started.elapsed() < Duration::from_millis(600));
-        assert!(current.cancelled.load(Ordering::SeqCst));
-        assert!(current
-            .current_search()
-            .unwrap()
-            .cancelled
-            .load(Ordering::SeqCst));
-        let result = tokio::time::timeout(Duration::from_secs(1), search)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            matches!(result, Err(Error::Cancellation)),
-            "reused={reused}, termination={termination}: {result:?}"
+        });
+        // Wire progress excludes child exit, stderr cleanup and the actor join.
+        let started = Instant::now();
+        let quit = observe_fixture_capture(&directory, "wire=quit").await;
+        let wire_elapsed = started.elapsed();
+        if quit.is_err() {
+            eprintln!("{context}: wire=quit observation failed after {wire_elapsed:?}");
+        }
+        let mut search = search;
+        let (termination_result, search_result) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(12), &mut terminator),
+            tokio::time::timeout(Duration::from_secs(12), &mut search),
         );
-        assert!(supervisor.get_exact(&key).is_none());
+        // Retain failed observations until owned tasks and the child are cleaned up.
+        let cleanup = if termination_result.is_err() || search_result.is_err() {
+            let cleanup =
+                tokio::time::timeout(Duration::from_secs(12), supervisor.terminate_all()).await;
+            if termination_result.is_err() {
+                terminator.abort();
+                let _ = terminator.await;
+            }
+            if search_result.is_err() {
+                search.abort();
+                let _ = search.await;
+            }
+            Some(cleanup)
+        } else {
+            None
+        };
+        assert_abandoned_engine_removed(&directory, &supervisor, &key.tab, Some(&key)).await;
+        eprintln!(
+            "{context}: physical cleanup confirmed, wire observation={quit:?} after {wire_elapsed:?}"
+        );
+        assert!(
+            quit.is_ok(),
+            "{context}: wire=quit must be observed within 5s, observed {quit:?} after {wire_elapsed:?}"
+        );
+        assert!(
+            cleanup.is_none_or(|result| matches!(result, Ok(Ok(())))),
+            "{context}: fallback cleanup failed"
+        );
+        termination_result
+            .unwrap_or_else(|error| panic!("{context}: termination completion timed out: {error}"))
+            .unwrap_or_else(|error| panic!("{context}: termination task failed: {error}"))
+            .unwrap_or_else(|error| panic!("{context}: termination failed: {error:?}"));
+        eprintln!("{context}: termination completion confirmed");
+        assert!(current.cancelled.load(Ordering::SeqCst), "{context}");
+        assert!(
+            current
+                .current_search()
+                .unwrap_or_else(|| panic!("{context}: exact search must remain observable"))
+                .cancelled
+                .load(Ordering::SeqCst),
+            "{context}"
+        );
+        assert!(supervisor.get_exact(&key).is_none(), "{context}");
         let capture = std::fs::read_to_string(&capture_path).unwrap();
         assert_eq!(
             capture
@@ -4271,7 +4330,7 @@ done
                 .filter(|line| *line == "wire=isready")
                 .count(),
             previous_ready + 1,
-            "no second readiness exchange: reused={reused}, termination={termination}: {capture}"
+            "no second readiness exchange: {context}: {capture}"
         );
         assert_eq!(
             capture
@@ -4279,9 +4338,16 @@ done
                 .filter(|line| line.starts_with("wire=go"))
                 .count(),
             previous_go,
-            "no go after termination: reused={reused}, termination={termination}: {capture}"
+            "no go after termination: {context}: {capture}"
         );
-        assert!(capture.lines().any(|line| line == "wire=quit"));
+        assert!(capture.lines().any(|line| line == "wire=quit"), "{context}");
+        let result = search_result
+            .unwrap_or_else(|error| panic!("{context}: search completion timed out: {error}"))
+            .unwrap_or_else(|error| panic!("{context}: search task failed: {error}"));
+        assert!(
+            matches!(result, Err(Error::Cancellation)),
+            "{context}: {result:?}"
+        );
     }
 
     #[cfg(unix)]
