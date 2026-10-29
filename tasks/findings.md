@@ -18919,3 +18919,18 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 
 * **Repair commit:** 18e21b50 contains the test baseline correction and preserves all refusal assertions. Author remains Felix Beck, committer Codex with this drain session's email. The product source is unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c808be38e79416f66eb8699053f101fe7424688d49e1f0b12c20b09a7099e839","input_sha256":"87526ae48d1e2586505da7653b5a47855ad661f09d43127210a9c56598a8015b","kind":"mutation-receipt","operation":"1a9bd4c1c025507b719322a0653176569554d9ac6f33e8254072cff51c3fc374","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-03"],"target":"f-20261029-03","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Full frontend coverage repeatedly times out unrelated suites under the default local gate budget
+
+* **ID:** f-20261029-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 4ddaefcf-0026-46de-b526-ddaac572ef8a · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-4ddaefcf-0026-46de-b526-ddaac572ef8a-1.jsonl
+* **Impact class:** tooling
+* **Where:** scripts/gate-parallelism.mjs workerCount and scripts/run-push-gates.mjs makeLaneEnvironment, local frontend-coverage execution.
+* **Defect:** Final attempt gate-push-gate.IN5zNC at a234e354 reports 37 failed tests across 12 suites, predominantly five-second deadlines and subsequent assertion failures after timed-out tests. The earlier full attempt at cb4ff32d also timed out the same DatabasePanel unreadable and list-failure cases. Both passed in two scoped coverage runs. Current full coverage also times out tabs/workspace overflow witnesses, engine, puzzle and analysis fixtures. The independently full browser suite passes all 247 tests. These recurring execution failures block release of the already reviewed test-only repairs. No new production defect or individual-test repair is established by these observations.
+* **Proof:** Preserve artifacts/gates/20261029T133407149Z-1809809/frontend-coverage.log and the preceding 20261029T124504600Z-1383646 transcript. Verify the existing GATE_MEMORY_BYTES override and worker sizing, then rerun unchanged full coverage at the documented conservative seven-GiB available gate budget, reserving four GiB for e2e when the final scheduler runs. No test selection, timeout, retry, assertion, floor or mutation threshold may change. Record actual results rather than attributing every assertion failure to load in advance. A complete clean-tree gate attempt remains mandatory after the operational decision is committed and reviewed.
+* **Related:** f-20261022-05 concerns workspace mutation OOM and has no demonstrated common cause with these Vitest deadlines. f-20261029-03 separately repaired a real durable-byte baseline defect, and the corrected InfoPanel witness is not among this attempt's failures. No shared Root is asserted.
+* **Found by:** Root final-gate inspection in the f-20261010-08 drain session. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
