@@ -260,3 +260,25 @@ Round d4 (1b42657e..685f461c): tests D-6 CLOSED, APPROVED.
 
 diff_adopted_per_round: d1=7, d2=0, d3=1, d4=0. All diff findings closed; Defers f-20261029-07,
 f-20261029-08. REVIEWED_THROUGH before final gates: 685f461c (plus this record commit).
+
+## Rebase onto 291d7fb2 and closure round d5
+
+Upstream moved to `291d7fb2` (ChessDB engine upgrade, its own total-ceiling raise to 1,660,000 B
+under `d-20261029-13`/`-15`). Conflicts resolved without guesses: `bundle-budgets.json`
+measurement (upstream's kept for intermediate commits, combined figure recorded last),
+`docs/bundle-budgets.md` (both entries kept), `AnalysisRow.tsx` (upstream's ChessDB mark and
+win-rate tooltip structure kept, restyle `className` added), and this branch's
+`d-20261027-14` trailer commit dropped in favour of `findings.py set-trailer` naming both
+successors (`d-20261029-15`, `d-20261029-16`).
+
+Post-rebase evidence: upstream's two ChessDB snapshots (old style) re-recorded; a new flake was
+found and fixed as D-7 (`3381c6f2`): restyled notification text sat at fractional grid positions
+and rasterized differently between runs (root permission guidance 7/40 repeats failed on the
+branch, 40/40 passed on `291d7fb2`); `will-change: transform` on title and description, five
+notification baselines re-recorded (glyph edges), full container suite `--repeat-each=2`
+502/502. Combined bundle 1,658,119 B total (`d-20261029-23`, supersedes `-22`).
+
+Round d5 (range-diff `!` commits plus `6d386f30..5be5cb76`): correctness, root-cause,
+engine-protocol, persisted-state, tests, records — all APPROVED, no findings.
+diff_adopted_per_round: d1=7, d2=0, d3=1, d4=0, d5=0 (D-7 was found by the orchestrator's
+post-rebase verification, not a lens).
