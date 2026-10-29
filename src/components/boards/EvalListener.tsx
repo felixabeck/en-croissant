@@ -396,31 +396,27 @@ function EngineListener({
       generation: attempt.nativeOwner?.generation ?? null,
       retry,
     });
-    const finishWithoutLines = () => {
-      if (
-        searchedKey !== null &&
-        engine.type === "local" &&
-        isCurrentAttempt(attempt) &&
-        !attempt.hasLines
-      ) {
-        setTerminal({ ...terminalIdentity(searchedKey), type: "completed-without-lines" });
+    const finishWithoutLines = (
+      type: "completed-without-lines" | "not-in-database" = "completed-without-lines",
+    ) => {
+      if (searchedKey !== null && isCurrentAttempt(attempt) && !attempt.hasLines) {
+        setTerminal({ ...terminalIdentity(searchedKey), type });
+        if (engine.type !== "local") setProgress(100);
       }
     };
     const failAttempt = (error: unknown) => {
       if (searchedKey === null || !isCurrentAttempt(attempt)) return;
       const failure = errorUnlessCancelled(error);
       if (!failure || failure.category === "cancelled") return;
-      if (engine.type === "local") {
-        attempt.failed = true;
-        setTerminal({
-          ...terminalIdentity(searchedKey),
-          type: "failed",
-          snapshot: failure.engineFailure,
-          message: failure.message,
-          cleanupFailed: failure.backendCategory === "operation-and-cleanup",
-        });
-        setProgress(0);
-      }
+      attempt.failed = true;
+      setTerminal({
+        ...terminalIdentity(searchedKey),
+        type: "failed",
+        snapshot: failure.engineFailure,
+        message: failure.message,
+        cleanupFailed: failure.backendCategory === "operation-and-cleanup",
+      });
+      setProgress(0);
       notifyUnlessCancelled(t("Common.Error"), error);
     };
     const runSearch = async () => {
@@ -485,6 +481,10 @@ function EngineListener({
         attempt.nativeOwner?.generation ?? "",
       )
         .then((result) => {
+          if (result && !Array.isArray(result)) {
+            finishWithoutLines(result.type);
+            return;
+          }
           if (
             isCurrentAttempt(attempt) &&
             result &&

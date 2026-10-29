@@ -1057,6 +1057,7 @@ export type AnalysisTerminal = {
     retry: number;
 } & (
     | { type: "completed-without-lines" }
+    | { type: "not-in-database" }
     | {
           type: "failed";
           snapshot?: EngineTerminalSnapshot;

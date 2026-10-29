@@ -71,8 +71,7 @@ export function matchingEngineTerminal(
     retry: number,
     searchedKey?: string,
 ): AnalysisTerminal | null {
-    return engine.type === "local" &&
-        engine.loaded &&
+    return engine.loaded &&
         terminal?.context === context &&
         terminal.engineIdentity === engineIdentity(engine) &&
         terminal.retry === retry &&
@@ -133,6 +132,7 @@ export function useDisplayedEngineLines(
         ? matchingEngineTerminal(terminal, engine, context, retry, search.key)
         : null;
     const failure = currentTerminal?.type === "failed" ? currentTerminal : null;
+    const remoteNoLines = engine.type !== "local" && currentTerminal !== null && !failure;
     const waiting = eligible && current === undefined && !currentTerminal;
     const request = JSON.stringify([scope, search.key, threat, retry]);
     const [expired, setExpired] = useState<string | null>(null);
@@ -149,9 +149,16 @@ export function useDisplayedEngineLines(
             : undefined;
     return {
         lines:
-            error || isGameOver ? undefined : search.available ? (current ?? fallback?.lines) : [],
+            error || isGameOver
+                ? undefined
+                : remoteNoLines
+                  ? []
+                  : search.available
+                    ? (current ?? fallback?.lines)
+                    : [],
         dimmed: fallback !== undefined || (failure !== null && current !== undefined),
         failure,
+        terminal: currentTerminal,
         loading,
         searchedBoardFen: fallback ? fallback.searchedBoardFen : search.searchedBoardFen,
         halfMoves: fallback ? fallback.halfMoves : halfMoves,

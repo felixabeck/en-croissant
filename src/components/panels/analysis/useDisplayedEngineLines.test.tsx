@@ -544,3 +544,62 @@ test("the failed display retains the normalized safe message without a snapshot"
     ),
   ).toBe("Engine exited with code 1");
 });
+
+test.each(["not-in-database", "completed-without-lines", "failed"] as const)(
+  "remote %s terminals match only the current position, settings, engine identity and retry",
+  async (type) => {
+    const remote: Engine = {
+      type: "chessdb",
+      id: displayEngine.id,
+      name: displayEngine.name,
+      url: "https://chessdb.cn",
+      loaded: true,
+    };
+    const atom = engineTerminalFamily({ tab: "display-tab", engine: remote.id });
+    const current = {
+      ...terminal(),
+      type,
+      generation: null,
+      engineIdentity: engineIdentity(remote),
+      context: engineLineContext(h.store.get(h.settingsAtom), remote),
+      message: "Remote request failed",
+    };
+    await h.render(<Probe engine={remote} />);
+    await act(async () => h.store.set(atom, current));
+    expect(display.terminal).toBe(current);
+    expect(display.failure).toBe(type === "failed" ? current : null);
+    const expectedLines = type === "failed" ? undefined : [];
+    expect(display.lines).toEqual(expectedLines);
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(display.loading).toBe(false);
+    for (const engine of [
+      { ...remote, loaded: false },
+      { ...remote, id: "other" },
+      { ...remote, url: "https://other.test" },
+    ]) {
+      await h.render(<Probe engine={engine} />);
+      expect(display.terminal).toBeNull();
+    }
+    await h.render(<Probe engine={remote} moves={["e2e4"]} />);
+    expect(display.terminal).toBeNull();
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(display.loading).toBe(true);
+    await h.render(<Probe engine={remote} />);
+    expect(display.terminal).toBe(current);
+    await h.render(<Probe engine={remote} tabId="another-tab" />);
+    expect(display.terminal).toBeNull();
+    await h.render(<Probe engine={remote} />);
+    await act(async () =>
+      h.store.set(h.settingsAtom, (settings) => ({ ...settings, go: { t: "Depth", c: 12 } })),
+    );
+    expect(display.terminal).toBeNull();
+    await act(async () =>
+      h.store.set(h.settingsAtom, (settings) => ({ ...settings, go: { t: "Infinite" } })),
+    );
+    expect(display.terminal).toBe(current);
+    await act(async () =>
+      h.store.set(engineRetryFamily({ tab: "display-tab", engine: remote.id }), 1),
+    );
+    expect(display.terminal).toBeNull();
+  },
+);

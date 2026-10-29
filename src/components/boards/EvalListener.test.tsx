@@ -247,6 +247,8 @@ beforeEach(() => {
   store.set(engineRetryFamily({ tab: "tab-1", engine: engine.id }), 0);
   store.set(movesAtom("tab-1", chessdbEngine.id), new Map());
   store.set(progressAtom("tab-1", chessdbEngine.id), 0);
+  store.set(noLinesAtom("tab-1", chessdbEngine.id), null);
+  store.set(engineRetryFamily({ tab: "tab-1", engine: chessdbEngine.id }), 0);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -304,6 +306,122 @@ test("a current ChessDB promise result populates its cache and progress", async 
   );
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(81);
 });
+
+test("a typed ChessDB absence reaches its exact display key and navigation clears it", async () => {
+  fixtures.chessdbGetBestMoves.mockResolvedValueOnce({ type: "not-in-database" });
+  store.set(enginesAtom, [chessdbEngine] as any);
+  let display: ReturnType<typeof useDisplayedEngineLines> | undefined;
+  function Display() {
+    display = useDisplayedEngineLines(chessdbEngine, fixtures.fen, fixtures.moves);
+    return null;
+  }
+  const render = () =>
+    act(async () =>
+      root.render(
+        <WorkspaceTabScope tabId="tab-1">
+          <EvalListener />
+          <Display />
+        </WorkspaceTabScope>,
+      ),
+    );
+  await render();
+  expect(store.get(noLinesAtom("tab-1", chessdbEngine.id))).toMatchObject({
+    type: "not-in-database",
+    searchedKey: `${INITIAL_FEN}:`,
+    generation: null,
+    retry: 0,
+  });
+  expect(display?.terminal?.type).toBe("not-in-database");
+  expect(display?.lines).toEqual([]);
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(display?.loading).toBe(false);
+  fixtures.fen = positionB;
+  await render();
+  expect(store.get(noLinesAtom("tab-1", chessdbEngine.id))).toBeNull();
+  expect(display?.terminal).toBeNull();
+  await act(async () => vi.advanceTimersByTime(1000));
+  expect(display?.loading).toBe(true);
+});
+
+test.each(["chessdb", "lichess"] as const)(
+  "a rejected %s lookup reaches the failed display and Retry requests again",
+  async (type) => {
+    const remote = { ...chessdbEngine, type };
+    const lookup = type === "chessdb" ? fixtures.chessdbGetBestMoves : fixtures.lichessGetBestMoves;
+    lookup.mockRejectedValueOnce(new Error("Remote request failed"));
+    store.set(enginesAtom, [remote] as any);
+    let display: ReturnType<typeof useDisplayedEngineLines> | undefined;
+    function Display() {
+      display = useDisplayedEngineLines(remote, fixtures.fen, fixtures.moves);
+      return null;
+    }
+    await act(async () =>
+      root.render(
+        <WorkspaceTabScope tabId="tab-1">
+          <EvalListener />
+          <Display />
+        </WorkspaceTabScope>,
+      ),
+    );
+    expect(display?.failure).toMatchObject({
+      type: "failed",
+      message: "Remote request failed",
+      searchedKey: `${INITIAL_FEN}:`,
+      retry: 0,
+    });
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(display?.loading).toBe(false);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      store.set(engineRetryFamily({ tab: "tab-1", engine: remote.id }), (n) => n + 1),
+    );
+    expect(display?.failure).toBeNull();
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(fixtures.prepareEngineSearch).not.toHaveBeenCalled();
+  },
+);
+
+test("an empty Lichess result completes with the generic no-analysis display", async () => {
+  const remote = { ...chessdbEngine, type: "lichess" as const };
+  fixtures.lichessGetBestMoves.mockResolvedValueOnce([100, []]);
+  store.set(enginesAtom, [remote] as any);
+  let display: ReturnType<typeof useDisplayedEngineLines> | undefined;
+  function Display() {
+    display = useDisplayedEngineLines(remote, fixtures.fen, fixtures.moves);
+    return null;
+  }
+  await act(async () =>
+    root.render(
+      <WorkspaceTabScope tabId="tab-1">
+        <EvalListener />
+        <Display />
+      </WorkspaceTabScope>,
+    ),
+  );
+  expect(display?.terminal?.type).toBe("completed-without-lines");
+  expect(display?.lines).toEqual([]);
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(display?.loading).toBe(false);
+});
+
+test.each(["absent", "failed"])(
+  "a stale remote %s outcome cannot mark a newer search",
+  async (outcome) => {
+    const result = deferred<{ type: "not-in-database" }>();
+    fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+    store.set(enginesAtom, [chessdbEngine] as any);
+    await rerender();
+    fixtures.fen = positionB;
+    await rerender();
+    await act(async () => {
+      if (outcome === "absent") result.resolve({ type: "not-in-database" });
+      else result.reject(new Error("obsolete remote failure"));
+      await flush();
+    });
+    expect(store.get(noLinesAtom("tab-1", chessdbEngine.id))).toBeNull();
+    expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  },
+);
 
 test("A to B to A does not let a generation-equivalent remote attempt complete", async () => {
   const results = [
