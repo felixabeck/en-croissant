@@ -18,7 +18,12 @@ import {
 } from "./gameReferences";
 
 vi.mock("./db", () => ({ getDatabases: vi.fn(), query_games: vi.fn(), query_players: vi.fn() }));
-const admission = vi.hoisted(() => ({ create: vi.fn(async () => "opened"), navigate: vi.fn() }));
+const admission = vi.hoisted(() => ({
+    create: vi.fn(
+        async (_args: Parameters<typeof import("@/utils/tabs").createTab>[0]) => "opened",
+    ),
+    navigate: vi.fn(),
+}));
 vi.mock("@/utils/tabs", async (original) => ({
     ...(await original<typeof import("@/utils/tabs")>()),
     createTab: admission.create,
@@ -601,6 +606,390 @@ test.each([
         }
     },
 );
+
+test.each([
+    {
+        kind: "event-only parenthesis",
+        context: "Tata Steel (A) Wijk aan Zee 2022 (3)",
+        short: { event: "Tata Steel", site: "Wijk aan Zee" },
+        full: { event: "Tata Steel (A)", site: "Wijk aan Zee" },
+        earlyDate: "2021.01.01",
+        retained: [false, false, false],
+    },
+    {
+        kind: "event-only year-round",
+        context: "Tata Steel 2020 (A) Wijk aan Zee 2022 (3)",
+        short: { event: "Tata Steel", site: "Wijk aan Zee" },
+        full: { event: "Tata Steel 2020 (A)", site: "Wijk aan Zee" },
+        earlyDate: "2020.01.01",
+        retained: [false, false, false],
+    },
+    {
+        kind: "site-only parenthesis",
+        context: "Wijk aan Zee (A) 2022 (3)",
+        short: { event: "Unspecified event", site: "Wijk aan Zee" },
+        full: { event: "Unspecified event", site: "Wijk aan Zee (A)" },
+        earlyDate: "2021.01.01",
+        retained: [true, true, false],
+    },
+    {
+        kind: "site-only year-round",
+        context: "Wijk aan Zee 2020 (A) 2022 (3)",
+        short: { event: "Unspecified event", site: "Wijk aan Zee" },
+        full: { event: "Unspecified event", site: "Wijk aan Zee 2020 (A)" },
+        earlyDate: "2020.01.01",
+        retained: [true, false, false],
+    },
+    {
+        kind: "combined parenthesis",
+        context: "Tata Steel Wijk aan Zee (A) 2022 (3)",
+        short: { event: "Tata Steel", site: "Wijk aan Zee" },
+        full: { event: "Tata Steel", site: "Wijk aan Zee (A)" },
+        earlyDate: "2021.01.01",
+        retained: [true, true, false],
+    },
+    {
+        kind: "combined year-round",
+        context: "Tata Steel Wijk aan Zee 2020 (A) 2022 (3)",
+        short: { event: "Tata Steel", site: "Wijk aan Zee" },
+        full: { event: "Tata Steel", site: "Wijk aan Zee 2020 (A)" },
+        earlyDate: "2020.01.01",
+        retained: [true, false, false],
+    },
+])(
+    "complete header confidence handles a shorter $kind boundary before later constraints",
+    async ({ context, short, full, earlyDate, retained }) => {
+        const label = `0-1 Beerdsen,T-Bluebaum,M ${context}`;
+        const citation = recognizeGameReferences(label)[0];
+        for (const [index, metadata] of [
+            { date: earlyDate, round: "A" },
+            { date: "2022.12.01", round: "A" },
+            { date: "2021.01.01", round: "3" },
+        ].entries()) {
+            const candidate = { ...game, ...short, ...metadata };
+            const result = await lookupGameReference(
+                citation,
+                new AbortController().signal,
+                querySensitiveSource([candidate]),
+            );
+            expect(result).toEqual({
+                candidates: retained[index]
+                    ? [
+                          {
+                              database,
+                              source: "Source A (source-a.db3)",
+                              game: candidate,
+                              verification: "unverified",
+                          },
+                      ]
+                    : [],
+                failures: [],
+                complete: true,
+            });
+            await lookupUI(label, querySensitiveSource([candidate]), async (host) => {
+                expect(admission.create).not.toHaveBeenCalled();
+                const open = [...host.querySelectorAll("button")].find(
+                    (node) => node.textContent === "Common.OpenGame",
+                );
+                await act(async () => open?.click());
+                expect(admission.create).toHaveBeenCalledTimes(retained[index] ? 1 : 0);
+                expect(admission.create.mock.calls.map(([args]) => args.gameOrigin)).toEqual(
+                    retained[index] ? [{ kind: "database", database, gameId: candidate.id }] : [],
+                );
+            });
+        }
+        const unresolved = { ...game, ...short };
+        const offered = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([unresolved]),
+        );
+        expect(offered).toMatchObject({
+            complete: true,
+            candidates: [{ game: unresolved, verification: "unverified" }],
+        });
+        await lookupUI(label, querySensitiveSource([unresolved]), async (host) => {
+            expect(admission.create).not.toHaveBeenCalled();
+            expect(host.textContent).toContain("GameReferences.Choose");
+            const open = [...host.querySelectorAll("button")].find(
+                (node) => node.textContent === "Common.OpenGame",
+            )!;
+            await act(async () => open.click());
+            expect(admission.create).toHaveBeenCalledTimes(1);
+        });
+        const counterpart = { ...game, ...full };
+        const verified = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([counterpart]),
+        );
+        expect(verified).toMatchObject({
+            complete: true,
+            candidates: [{ game: counterpart, verification: "verified" }],
+        });
+        await lookupUI(label, querySensitiveSource([counterpart]), () => {
+            expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        ...full,
+                        date: counterpart.date,
+                        round: counterpart.round,
+                    }),
+                    gameOrigin: { kind: "database", database, gameId: counterpart.id },
+                }),
+            );
+        });
+    },
+);
+
+test("a shorter event prefix cannot authorize automatic admission", async () => {
+    const label = "0-1 Beerdsen,T-Bluebaum,M Tata Steel (A) Wijk aan Zee 2022 (3)";
+    const candidate = {
+        ...game,
+        event: "Tata Steel",
+        site: "Wijk aan Zee",
+        date: "2021.01.01",
+        round: "A",
+    };
+    await lookupUI(label, querySensitiveSource([candidate]), () => {
+        expect(admission.create).not.toHaveBeenCalled();
+    });
+});
+
+test.each(["(A)", "2020 (A)"])(
+    "competing unresolved header extensions require explicit choice: %s",
+    async (extension) => {
+        const label = `0-1 Beerdsen,T-Bluebaum,M Hall ${extension} Annex 2022 (3)`;
+        const candidate = {
+            ...game,
+            event: "Unspecified event",
+            site: "Hall",
+            date: "2021.01.01",
+            round: "A",
+        };
+        const result = await lookupGameReference(
+            recognizeGameReferences(label)[0],
+            new AbortController().signal,
+            querySensitiveSource([candidate]),
+        );
+        expect(result).toMatchObject({
+            complete: true,
+            candidates: [{ game: candidate, verification: "unverified" }],
+        });
+        await lookupUI(label, querySensitiveSource([candidate]), (host) => {
+            expect(admission.create).not.toHaveBeenCalled();
+            expect(host.textContent).toContain("GameReferences.Choose");
+        });
+        const counterpart = { ...game, event: candidate.event, site: `Hall ${extension} Annex` };
+        await lookupUI(label, querySensitiveSource([counterpart]), () => {
+            expect(admission.create).toHaveBeenCalledTimes(1);
+        });
+    },
+);
+
+test.each(["Wijk aan Zee", "?", ""])(
+    "genuine round-only metadata retains verified admission with site %j",
+    async (site) => {
+        const label = "0-1 Beerdsen,T-Bluebaum,M Tata Steel (3) Better was Bd3 (A) in 2020.";
+        const candidate = { ...game, event: "Tata Steel", site };
+        const result = await lookupGameReference(
+            recognizeGameReferences(label)[0],
+            new AbortController().signal,
+            querySensitiveSource([candidate]),
+        );
+        expect(result).toMatchObject({
+            complete: true,
+            candidates: [{ game: candidate, verification: "verified" }],
+        });
+        await lookupUI(label, querySensitiveSource([candidate]), () => {
+            expect(admission.create).toHaveBeenCalledTimes(1);
+        });
+    },
+);
+
+test.each(["2024: Better was Bd3.", "2024 improvements included Bd3."])(
+    "year-led prose retains original metadata for explicit selection: %s",
+    async (prose) => {
+        const label = "0-1 Beerdsen,T-Bluebaum,M Tata Steel (A) Wijk aan Zee 2022 (3)";
+        const text = `${label} ${prose}`;
+        const candidate = { ...game, event: "Tata Steel (A)", site: "Wijk aan Zee" };
+        const citation = recognizeGameReferences(text)[0];
+        const result = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([candidate]),
+        );
+        expect(result).toEqual({
+            complete: true,
+            failures: [],
+            candidates: [
+                {
+                    database,
+                    source: "Source A (source-a.db3)",
+                    game: candidate,
+                    verification: "unverified",
+                },
+            ],
+        });
+        expect(citation).toMatchObject({
+            label,
+            context: `Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`,
+        });
+        await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
+            expect(admission.create).not.toHaveBeenCalled();
+            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(label);
+            expect(host.textContent).toContain("GameReferences.Choose");
+            expect(host.textContent).toContain("Source A (source-a.db3)");
+            const open = [...host.querySelectorAll("button")].find(
+                (node) => node.textContent === "Common.OpenGame",
+            )!;
+            await act(async () => open.click());
+            expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        date: "2022.12.01",
+                        round: "3",
+                        event: candidate.event,
+                        site: candidate.site,
+                    }),
+                    gameOrigin: { kind: "database", database, gameId: candidate.id },
+                }),
+            );
+        });
+        for (const conflict of [{ date: "2021.01.01" }, { date: "2024.01.01" }, { round: "9" }]) {
+            const conflicting = { ...candidate, ...conflict };
+            const rejected = await lookupGameReference(
+                citation,
+                new AbortController().signal,
+                querySensitiveSource([conflicting]),
+            );
+            expect(rejected.candidates).toEqual([]);
+            await lookupUI(text, querySensitiveSource([conflicting]), () => {
+                expect(admission.create).not.toHaveBeenCalled();
+            });
+        }
+    },
+);
+
+test("the known site establishes a later year even without another round", async () => {
+    const label = "0-1 Beerdsen,T-Bluebaum,M Tata Steel (A) Wijk aan Zee 2022";
+    const citation = recognizeGameReferences(label)[0];
+    const candidate = {
+        ...game,
+        event: "Tata Steel",
+        site: "Wijk aan Zee",
+        date: "2021.01.01",
+        round: "A",
+    };
+    const rejected = await lookupGameReference(
+        citation,
+        new AbortController().signal,
+        querySensitiveSource([candidate]),
+    );
+    expect(rejected).toEqual({ candidates: [], failures: [], complete: true });
+    await lookupUI(label, querySensitiveSource([candidate]), () => {
+        expect(admission.create).not.toHaveBeenCalled();
+    });
+    const uncertain = { ...candidate, date: "2022.12.01" };
+    const offered = await lookupGameReference(
+        citation,
+        new AbortController().signal,
+        querySensitiveSource([uncertain]),
+    );
+    expect(offered).toMatchObject({
+        complete: true,
+        candidates: [{ game: uncertain, verification: "unverified" }],
+    });
+    const counterpart = { ...uncertain, event: "Tata Steel (A)", round: "3" };
+    const verified = await lookupGameReference(
+        citation,
+        new AbortController().signal,
+        querySensitiveSource([counterpart]),
+    );
+    expect(verified).toMatchObject({
+        complete: true,
+        candidates: [{ game: counterpart, verification: "verified" }],
+    });
+    await lookupUI(label, querySensitiveSource([counterpart]), () => {
+        expect(admission.create).toHaveBeenCalledTimes(1);
+    });
+});
+
+test.each([
+    { prose: "2024 (A): Better was Bd3.", laterRound: "A" },
+    { prose: "2024 (1) was a different tournament.", laterRound: "1" },
+])("viable competing readings require a choice for $prose", async ({ prose, laterRound }) => {
+    const pair = "0-1 Beerdsen,T-Bluebaum,M";
+    const text = `${pair} Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`;
+    const citation = recognizeGameReferences(text)[0];
+    const original = { ...game, event: "Tata Steel (A)", site: "Wijk aan Zee" };
+    const expectChoice = async (candidate: NormalizedGame) => {
+        const result = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([candidate]),
+        );
+        expect(result).toEqual({
+            complete: true,
+            failures: [],
+            candidates: [
+                {
+                    database,
+                    source: "Source A (source-a.db3)",
+                    game: candidate,
+                    verification: "unverified",
+                },
+            ],
+        });
+        await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
+            expect(admission.create).not.toHaveBeenCalled();
+            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
+            expect(host.firstElementChild?.textContent).toBe(text);
+            expect(host.textContent).toContain("Source A (source-a.db3)");
+            expect(host.textContent).toContain("GameReferences.Choose");
+            const open = [...host.querySelectorAll("button")].find(
+                (node) => node.textContent === "Common.OpenGame",
+            )!;
+            await act(async () => open.click());
+            expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        date: candidate.date,
+                        round: candidate.round,
+                        event: candidate.event,
+                        site: candidate.site,
+                    }),
+                    gameOrigin: { kind: "database", database, gameId: candidate.id },
+                }),
+            );
+        });
+    };
+    await expectChoice(original);
+    await expectChoice({ ...original, date: "2024.01.01", round: laterRound });
+    for (const missing of [
+        { date: "????.??.??" },
+        { round: "?" },
+        { date: "????.??.??", round: "?" },
+    ])
+        await expectChoice({ ...original, ...missing });
+    for (const conflict of [
+        { date: "2023.01.01", round: "9" },
+        { date: "2022.12.01", round: laterRound },
+        { date: "2024.01.01", round: "3" },
+        { date: "2023.01.01", round: "?" },
+    ]) {
+        const candidate = { ...original, ...conflict };
+        const rejected = await lookupGameReference(
+            citation,
+            new AbortController().signal,
+            querySensitiveSource([candidate]),
+        );
+        expect(rejected).toEqual({ candidates: [], failures: [], complete: true });
+        await lookupUI(text, querySensitiveSource([candidate]), () => {
+            expect(admission.create).not.toHaveBeenCalled();
+        });
+    }
+});
 
 test.each(["Smith, JOHN", "Smith, John", "Smith, john", "JOHN Smith", "John Smith", "john Smith"])(
     "JO rejects a full single given name consistently through lookup: %s",

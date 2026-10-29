@@ -86,6 +86,7 @@ export function recognizeGameReferences(text: string): GameReference[] {
 const normalized = (text: string) =>
     text.normalize("NFC").toLocaleLowerCase("en").replace(/’/g, "'").replace(/\s+/g, " ").trim();
 const initialsOf = (text: string) => normalized(text).replace(/[.\s-]/g, "");
+const knownMetadata = (text: string) => (text && !/^\?+$/.test(text) ? normalized(text) : "");
 
 type ReferenceVerification = "verified" | "unverified" | "rejected";
 
@@ -121,15 +122,34 @@ export function matchesReferencePlayer(reference: ReferencePlayer, name: string 
     return referencePlayerVerification(reference, name) !== "rejected";
 }
 
+function referenceFieldsVerification(
+    fields: RegExpMatchArray,
+    game: NormalizedGame,
+): ReferenceVerification {
+    const year = fields[1];
+    const round = fieldRound(fields);
+    let verified = true;
+    if (year) {
+        const actual = /^\d{4}/.exec(game.date ?? "")?.[0];
+        if (actual && actual !== year) return "rejected";
+        if (!actual) verified = false;
+    }
+    if (round) {
+        const actual = knownMetadata(game.round ?? "");
+        if (actual && actual !== normalized(round)) return "rejected";
+        if (!actual) verified = false;
+    }
+    return verified ? "verified" : "unverified";
+}
+
 function metadataVerification(
     reference: GameReference,
     game: NormalizedGame,
 ): ReferenceVerification {
     const context = normalized(reference.context);
     if (!context) return "verified";
-    const known = (value: string) => (value && !/^\?+$/.test(value) ? normalized(value) : "");
-    const event = known(game.event);
-    const site = known(game.site);
+    const event = knownMetadata(game.event);
+    const site = knownMetadata(game.site);
     const prefixes = [
         { text: event && site ? `${event} ${site}` : "", includesSite: true },
         { text: event, includesSite: false },
@@ -149,27 +169,59 @@ function metadataVerification(
             : "unverified";
     // Unknown text before a lexical close stays unverified, but its identifiable supplied
     // fields still constrain the game. An open prose tail supplies no incidental fields.
-    const fields = anchored ?? (reference.closed ? closingFields(remaining) : undefined);
+    let fields = anchored ?? (reference.closed ? closingFields(remaining) : undefined);
     if (!fields) return "unverified";
-    const year = fields[1];
-    const round = fieldRound(fields);
+    let fieldText = remaining;
+    let siteResolved = prefix?.includesSite;
     let verified = Boolean(anchored);
-    if (year) {
-        const actual = /^\d{4}/.exec(game.date ?? "")?.[0];
-        if (actual && actual !== year) return "rejected";
-        if (!actual) verified = false;
+    if (anchored && fieldRound(anchored)) {
+        // The first field can extend a shorter header. Account for adjacent fields or
+        // the still-supplied known site before treating that first round as a close.
+        const afterRound = remaining.slice(anchored[0].length).trim();
+        const siteFollows = Boolean(
+            prefix &&
+            !siteResolved &&
+            site &&
+            (afterRound === site || afterRound.startsWith(`${site} `)),
+        );
+        const afterSite = siteFollows ? afterRound.slice(site.length).trim() : afterRound;
+        const continuation = fieldsAtStart.exec(afterSite);
+        if (continuation && siteFollows) {
+            fields = continuation;
+            fieldText = afterSite;
+            siteResolved ||= siteFollows;
+            verified = false;
+        } else if (continuation && fieldRound(continuation)) {
+            // Adjacency alone leaves both readings applicable. Matching either preserves
+            // a choice, but cannot establish which tuple was actually supplied metadata.
+            const original = referenceFieldsVerification(anchored, game);
+            const alternative = referenceFieldsVerification(continuation, game);
+            return original === "rejected" && alternative === "rejected"
+                ? "rejected"
+                : "unverified";
+        } else if (continuation) {
+            // A bare following year can begin prose. Keep the identifiable original
+            // date/round constraints while the competing reading requires a choice.
+            verified = false;
+        } else if (
+            siteFollows ||
+            [...afterRound.matchAll(fieldsInText)].some((match) => match[1] && fieldRound(match))
+        ) {
+            // Unknown text before another dated round leaves competing header/field/prose
+            // interpretations. Neither a guessed first close nor later prose verifies it.
+            return "unverified";
+        }
     }
-    if (round) {
-        const actual = known(game.round ?? "");
-        if (actual && actual !== normalized(round)) return "rejected";
-        if (!actual) verified = false;
+    const metadata = referenceFieldsVerification(fields, game);
+    if (metadata === "rejected") return "rejected";
+    if (fieldRound(fields)) {
         // Only fields before this established close belong to the citation. Later prose,
         // including years and parenthesized variation markers, is outside game metadata.
-        return verified ? "verified" : "unverified";
+        return verified && metadata === "verified" ? "verified" : "unverified";
     }
-    const residual = remaining.slice(fields[0].length).trim();
-    if (prefix && !prefix.includesSite && site && residual) return "rejected";
-    return verified && !residual ? "verified" : "unverified";
+    const residual = fieldText.slice(fields[0].length).trim();
+    if (prefix && !siteResolved && site && residual) return "rejected";
+    return verified && metadata === "verified" && !residual ? "verified" : "unverified";
 }
 
 function referenceGameVerification(
