@@ -7,10 +7,10 @@
     "total": 1660000
   },
   "measurement": {
-    "source": "pnpm exec vite build",
+    "source": "pnpm build-vite",
     "date": "2026-10-29",
-    "entry": 555639,
-    "largestLazy": 482342,
-    "total": 1651064
+    "entry": 550971,
+    "largestLazy": 496862,
+    "total": 1658119
   }
 }
