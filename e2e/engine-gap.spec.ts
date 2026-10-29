@@ -47,6 +47,8 @@ async function setupNotationMenu(
     await selectFilesTreeRow(page, filesWorkspaceFixture.pgnFile.name);
     if (scope === "workspace") {
         await page.getByRole("button", { name: "Open game", exact: true }).click();
+        // The router URL can update before the outgoing preview unmounts.
+        await expect(page.getByRole("tab", { name: "Info", exact: true })).toBeVisible();
     }
     const notation = page.locator(".mantine-ScrollArea-viewport").filter({
         has: page.getByRole("button", { name: "e4", exact: true }),
