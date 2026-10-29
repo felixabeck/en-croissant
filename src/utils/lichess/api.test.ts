@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { INITIAL_FEN } from "chessops/fen";
 import { cancellationError } from "@/platform/tauri";
 import type { ArtifactPublication } from "@/bindings";
 import { assertAccountExportTicketOrder } from "@/utils/tests/accountExportTicketOrder";
@@ -34,12 +35,63 @@ vi.mock("@/platform/tauri", async () => {
     };
 });
 
-import { convertToNormalized, downloadLichess, getLichessAccount } from "./api";
+import { convertToNormalized, downloadLichess, getBestMoves, getLichessAccount } from "./api";
 
 const publication: ArtifactPublication = {
     handle: { id: { id: "artifact" }, kind: "fileWorkspace" },
     durability: "Durable",
 };
+
+describe("getBestMoves", () => {
+    test("cloud PVs truncate at illegal or unparsable moves with aligned UCI and SAN", async () => {
+        mocks.getPublicLichessJson.mockReset().mockResolvedValue(
+            JSON.stringify({
+                fen: INITIAL_FEN,
+                knodes: 123,
+                depth: 24,
+                pvs: [
+                    { cp: 35, moves: "e2e4 e7e5 e2e3 g1f3" },
+                    { mate: 3, moves: "d2d4 invalid d7d5" },
+                ],
+            }),
+        );
+
+        await expect(
+            getBestMoves(
+                "tab",
+                { t: "Infinite" },
+                { fen: INITIAL_FEN, moves: [], extraOptions: [] },
+            ),
+        ).resolves.toEqual([
+            100,
+            [
+                {
+                    score: { value: { type: "cp", value: 35 }, wdl: null },
+                    nodes: 123000n,
+                    depth: 24,
+                    multipv: 1,
+                    nps: 0n,
+                    uciMoves: ["e2e4", "e7e5"],
+                    sanMoves: ["e4", "e5"],
+                },
+                {
+                    score: { value: { type: "mate", value: 3 }, wdl: null },
+                    nodes: 123000n,
+                    depth: 24,
+                    multipv: 2,
+                    nps: 0n,
+                    uciMoves: ["d2d4"],
+                    sanMoves: ["d4"],
+                },
+            ],
+        ]);
+        expect(mocks.getPublicLichessJson).toHaveBeenCalledExactlyOnceWith({
+            kind: "cloud_eval",
+            fen: INITIAL_FEN,
+            multi_pv: 1,
+        });
+    });
+});
 
 describe("getLichessAccount", () => {
     beforeEach(() => {

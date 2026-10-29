@@ -1,5 +1,5 @@
 import { cancellationError, tauri } from "@/platform/tauri";
-import { type Color, type Move, makeUci, type Role } from "chessops";
+import { type Color, type Move, makeUci, parseUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns } from "chessops/pgn";
@@ -140,6 +140,20 @@ export function getMainLine(root: TreeNode): string[] {
 export function uciNormalize(chess: Chess, move: Move) {
     const frcMove = normalizeMove(chess, move);
     return makeUci(frcMove);
+}
+
+// Advance the supplied position through the legal prefix, keeping UCI and SAN index-aligned.
+export function replayUciMoves(pos: Chess, moves: readonly string[]) {
+    const uciMoves: string[] = [];
+    const sanMoves: string[] = [];
+    for (const uci of moves) {
+        const move = parseUci(uci);
+        if (!move || !pos.isLegal(move)) break;
+        uciMoves.push(uciNormalize(pos, move));
+        sanMoves.push(makeSan(pos, move));
+        pos.play(move);
+    }
+    return { uciMoves, sanMoves };
 }
 
 export function getVariationLine(root: TreeNode, position: number[]): string[] {

@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { parseUci } from "chessops";
-import { INITIAL_FEN, parseFen } from "chessops/fen";
+import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import type { Token } from "@/bindings";
 import {
     ANNOTATION_INFO,
@@ -16,7 +16,9 @@ import {
     hasMorePriority,
     parsePGN,
     parseStartHeader,
+    replayUciMoves,
 } from "../chess";
+import { positionFromFen } from "../chessops";
 import {
     createNode,
     defaultTree,
@@ -43,6 +45,59 @@ function tokens(fen: string, san: string): Token[] {
 
 beforeEach(() => {
     mocks.lexPgn.mockReset();
+});
+
+test.each([
+    { moves: [], ucis: [], sans: [] },
+    { moves: ["invalid", "e2e4"], ucis: [], sans: [] },
+    { moves: ["e2e5", "e2e4"], ucis: [], sans: [] },
+    {
+        moves: ["e2e4", "e7e5", "g1f3"],
+        ucis: ["e2e4", "e7e5", "g1f3"],
+        sans: ["e4", "e5", "Nf3"],
+    },
+    {
+        moves: ["e2e4", "e7e5", "e2e3", "g1f3"],
+        ucis: ["e2e4", "e7e5"],
+        sans: ["e4", "e5"],
+    },
+    { moves: ["e2e4", "invalid", "e7e5"], ucis: ["e2e4"], sans: ["e4"] },
+])("replayUciMoves keeps only the legal prefix of $moves", ({ moves, ucis, sans }) => {
+    const [pos] = positionFromFen(INITIAL_FEN);
+    if (!pos) throw new Error("Expected a valid initial position");
+    const expected = pos.clone();
+    for (const uci of ucis) expected.play(parseUci(uci)!);
+
+    expect(replayUciMoves(pos, moves)).toEqual({ uciMoves: ucis, sanMoves: sans });
+    expect(makeFen(pos.toSetup())).toBe(makeFen(expected.toSetup()));
+});
+
+test.each([
+    {
+        fen: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
+        move: "e1g1",
+        uci: "e1h1",
+        san: "O-O",
+    },
+    {
+        fen: "4k3/8/8/8/8/8/8/1R1K1R2 w KQ - 0 1",
+        move: "d1b1",
+        uci: "d1b1",
+        san: "O-O-O",
+    },
+    {
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 23",
+        move: "e7e5",
+        uci: "e7e5",
+        san: "e5",
+    },
+    { fen: "7k/P7/8/8/8/8/8/4K3 w - - 0 1", move: "a7a8q", uci: "a7a8q", san: "a8=Q+" },
+    { fen: "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 8", move: "e5d6", uci: "e5d6", san: "exd6" },
+])("replayUciMoves normalizes $move from its supplied position", ({ fen, move, uci, san }) => {
+    const [pos] = positionFromFen(fen);
+    if (!pos) throw new Error("Expected a valid fixture position");
+
+    expect(replayUciMoves(pos, [move])).toEqual({ uciMoves: [uci], sanMoves: [san] });
 });
 
 test.each(

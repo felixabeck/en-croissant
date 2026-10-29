@@ -1,12 +1,11 @@
-import { type Chess, parseUci } from "chessops";
+import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
-import { makeSan } from "chessops/san";
 import { z } from "zod";
 import type { BestMoves, EngineOptions, GoMode, ScoreValue } from "@/bindings";
 import { remoteHttp } from "@/platform/http";
 import { positionFromFen } from "../chessops";
 import { getBoardState } from "../treeReducer";
-import { uciNormalize } from "../chess";
+import { replayUciMoves } from "../chess";
 
 const endpoint = "https://www.chessdb.cn/cdb.php";
 
@@ -44,6 +43,8 @@ const bestResponseSchema = statusSchema.pipe(z.union([bestOkSchema, nonOkSchema]
 export const CHESSDB_CACHE_CAPACITY = 128;
 export const CHESSDB_MAX_IN_FLIGHT = 128;
 export const CHESSDB_QUEUE_CAPACITY = 128;
+// Cap displayed lines and concurrent child PV requests to match LinesSlider's 1..5 policy.
+export const CHESSDB_MAX_MULTIPV = 5;
 
 class PositionRequests<T> {
     private cache = new Map<string, T>();
@@ -138,14 +139,15 @@ export async function getBestMoves(
                 | undefined
         )?.value ?? "1",
     );
-    const multipv = Number.isFinite(requested) ? Math.max(1, Math.min(5, requested)) : 1;
+    const multipv = Number.isFinite(requested)
+        ? Math.max(1, Math.min(CHESSDB_MAX_MULTIPV, requested))
+        : 1;
     const lines = await Promise.all(
         response.moves.slice(0, multipv).map(async (move, i): Promise<ChessDBLine> => {
             const child = pos.clone();
-            const uciMoves: string[] = [];
-            const sanMoves: string[] = [];
+            const { uciMoves, sanMoves } = replayUciMoves(child, [move.uci]);
             let depth = 0;
-            if (appendMove(child, move.uci, uciMoves, sanMoves)) {
+            if (uciMoves.length > 0) {
                 const childFen = makeFen(child.toSetup());
                 try {
                     const pv = await childPvs.get(
@@ -158,9 +160,9 @@ export async function getBestMoves(
                     );
                     if ("pv" in pv) {
                         depth = pv.depth;
-                        for (const uci of pv.pv) {
-                            if (!appendMove(child, uci, uciMoves, sanMoves)) break;
-                        }
+                        const continuation = replayUciMoves(child, pv.pv);
+                        uciMoves.push(...continuation.uciMoves);
+                        sanMoves.push(...continuation.sanMoves);
                     }
                 } catch {
                     // A missing child PV leaves the ranked move available.
@@ -182,15 +184,6 @@ export async function getBestMoves(
         }),
     );
     return [100, lines.filter((line) => line.uciMoves.length > 0)];
-}
-
-function appendMove(pos: Chess, uci: string, ucis: string[], sans: string[]): boolean {
-    const move = parseUci(uci);
-    if (!move || !pos.isLegal(move)) return false;
-    ucis.push(uciNormalize(pos, move));
-    sans.push(makeSan(pos, move));
-    pos.play(move);
-    return true;
 }
 
 function chessDBevalToScore(score: number): ScoreValue {

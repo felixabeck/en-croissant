@@ -3,7 +3,6 @@ import { logFailureSafely, safeFailureContext } from "@/platform/errors";
 import type { Color } from "@lichess-org/chessground/types";
 import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
-import { makeSan } from "chessops/san";
 import { z } from "zod";
 import {
   type ArtifactPublication,
@@ -13,7 +12,7 @@ import {
   type NormalizedGame,
   type PathRef,
 } from "@/bindings";
-import { parsePGN, uciNormalize } from "@/utils/chess";
+import { parsePGN, replayUciMoves } from "@/utils/chess";
 import { positionFromFen } from "@/utils/chessops";
 import {
   getLichessGamesQueryParams,
@@ -293,17 +292,7 @@ export async function getBestMoves(
   return [
     100,
     data.pvs?.map((m, i) => {
-      const uciMoves = m.moves.split(" ");
-      const posCopy = pos.clone();
-      const normalizedUciMoves: string[] = [];
-
-      const sanMoves = uciMoves.map((m) => {
-        const move = parseUci(m)!;
-        const san = makeSan(posCopy, move);
-        normalizedUciMoves.push(uciNormalize(posCopy, move));
-        posCopy.play(move);
-        return san;
-      });
+      const { uciMoves, sanMoves } = replayUciMoves(pos.clone(), m.moves.split(" "));
 
       return {
         score: {
@@ -315,7 +304,7 @@ export async function getBestMoves(
         multipv: i + 1,
         nps: 0n,
         sanMoves,
-        uciMoves: normalizedUciMoves,
+        uciMoves,
       };
     }) ?? [],
   ];

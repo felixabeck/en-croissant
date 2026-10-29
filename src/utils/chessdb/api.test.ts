@@ -163,6 +163,35 @@ test("queue rejection never changes the unknown outcome", async () => {
     expect(requests("queue")).toHaveLength(1);
 });
 
+test("an unknown lookup resolves while queueing is pending and stays unchanged after release", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    let queueSettled = false;
+    respond(async (url) => {
+        if (url.searchParams.get("action") === "queue") {
+            await gate;
+            queueSettled = true;
+            return { status: "ok" };
+        }
+        return { status: "unknown" };
+    });
+    const lookupResult = lookup();
+    try {
+        expect(await lookupResult).toEqual({ type: "not-in-database" });
+        expect(requests("queue")).toHaveLength(1);
+        expect(queueSettled).toBe(false);
+    } finally {
+        release();
+    }
+    await transport.mock.results[1].value;
+    expect(queueSettled).toBe(true);
+    expect(await lookupResult).toEqual({ type: "not-in-database" });
+    expect(await lookup()).toEqual({ type: "not-in-database" });
+    expect(requests("queue")).toHaveLength(1);
+});
+
 test.each([
     "invalid board",
     "checkmate",
@@ -233,17 +262,19 @@ test("selected child PV requests run concurrently and MultiPV is capped at five"
     });
     let children = 0;
     respond(async (url) => {
+        if (url.searchParams.get("action") === "queryall")
+            return { status: "ok", moves: [...roots, "a2a3"].map((uci) => move(uci)) };
         if (url.searchParams.get("action") === "querypv") {
-            if (++children === 5) started();
+            if (++children === api.CHESSDB_MAX_MULTIPV) started();
             await gate;
         }
         return fullResponses(url);
     });
     const result = lookup(50);
     await allStarted;
-    expect(requests("querypv")).toHaveLength(5);
+    expect(requests("querypv")).toHaveLength(api.CHESSDB_MAX_MULTIPV);
     release();
-    expect(lines(await result)).toHaveLength(5);
+    expect(lines(await result)).toHaveLength(api.CHESSDB_MAX_MULTIPV);
 });
 
 test("counter-independent positions share both move-list and child-PV cache entries", async () => {
