@@ -48,6 +48,8 @@
 
 .title,
 .description {
+  /* Keep fractional text positions on the same layer during and after the slide. */
+  will-change: transform;
   color: var(--cf-foreground);
 }
 
