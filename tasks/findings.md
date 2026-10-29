@@ -18923,6 +18923,9 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Repair commit:** 18e21b50 contains the test baseline correction and preserves all refusal assertions. Author remains Felix Beck, committer Codex with this drain session's email. The product source is unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c808be38e79416f66eb8699053f101fe7424688d49e1f0b12c20b09a7099e839","input_sha256":"87526ae48d1e2586505da7653b5a47855ad661f09d43127210a9c56598a8015b","kind":"mutation-receipt","operation":"1a9bd4c1c025507b719322a0653176569554d9ac6f33e8254072cff51c3fc374","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-03"],"target":"f-20261029-03","v":1} -->
 
+* **Publication mapping (2026-10-29):** The pre-gate rebase onto published upstream 291d7fb2 maps source correction 18e21b50 to f4c39e09. Git range-diff marks the test patch identical. The original fault and scoped proofs remain historical at their named revisions. Rebase closure and full final gates on the rebased tree precede delivery.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bf6052d4b67b3b90b6081f9ef7331f6e833b7201abc664789d6da9b10708d202","input_sha256":"912bcc32d6ed03e16426762fe759661d1c45b5fac538eae7c9f34db107e3b44b","kind":"mutation-receipt","operation":"0fae2a33cc7397275f662d9748d263d88d710b77045a03a98f45f779381e7c89","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-03"],"target":"f-20261029-03","v":1} -->
+
 ---
 
 ## 2026-10-29 — filed through the inbox spool
