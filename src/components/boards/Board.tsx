@@ -14,7 +14,7 @@ import {
 import { chessgroundDests, chessgroundMove } from "chessops/compat";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { useAtom, useAtomValue } from "jotai";
+import { atom, useAtom, useAtomValue } from "jotai";
 import { memo, type MouseEvent, useCallback, useContext, useMemo, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
@@ -26,6 +26,8 @@ import { useNodeDrawables } from "@/chessground/useNodeDrawables";
 import {
   autoPromoteAtom,
   createBestMovesAtom,
+  enginesAtom,
+  tabEngineSettingsFamily,
   evalOpenFamily,
   showCommentsFamily,
   enableBoardScrollAtom,
@@ -136,6 +138,27 @@ function Board({
   const arrows = useAtomValue(
     useMemo(() => createBestMovesAtom(tabId, rootFen, moves), [tabId, rootFen, moves]),
   );
+  const enabledEngines = useAtomValue(
+    useMemo(
+      () =>
+        atom((get) =>
+          (get(enginesAtom) ?? [])
+            .filter((engine) => engine.loaded)
+            .map(
+              (engine) =>
+                get(
+                  tabEngineSettingsFamily({
+                    tab: tabId,
+                    engineId: engine.id,
+                    defaultSettings: engine.settings ?? undefined,
+                    defaultGo: engine.go ?? undefined,
+                  }),
+                ).enabled,
+            ),
+        ),
+      [tabId],
+    ),
+  );
 
   const goToNext = useStore(store, (s) => s.goToNext);
   const goToPrevious = useStore(store, (s) => s.goToPrevious);
@@ -211,7 +234,7 @@ function Board({
   if (showArrows && evalOpen && arrows.size > 0 && pos) {
     const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
     for (const [i, moves] of entries) {
-      if (i < 4) {
+      if (i < 4 && enabledEngines[i]) {
         const bestWinChance = moves[0].winChance;
         for (const [j, { pv, winChance }] of moves.entries()) {
           const posClone = pos.clone();

@@ -16,6 +16,8 @@ import {
   activeTabAtom,
   tabsAtom,
   evalOpenFamily,
+  enginesAtom,
+  tabEngineSettingsFamily,
   showArrowsAtom,
   showVariationArrowsAtom,
 } from "@/state/atoms";
@@ -31,25 +33,29 @@ import { childMoveArrow, continuationBrushes } from "@/components/boards/continu
 import { defaults } from "@lichess-org/chessground/state";
 import { splitPgnComment } from "@/utils/pgnComment";
 import { toDrawShape } from "@/utils/drawings";
+import type { Engine } from "@/utils/engines";
 
-const engine = vi.hoisted(() => ({ enabled: false }));
+const engine = vi.hoisted(() => ({ enabled: false, indices: [0] }));
 vi.mock("@/state/atoms", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/atoms")>();
   const { atom } = await import("jotai");
-  const bestMoves = atom(() =>
-    engine.enabled
-      ? new Map([
-          [
-            0,
-            [
-              { pv: ["e2e4"], winChance: 50 },
-              { pv: ["g1f3"], winChance: 50 },
-            ],
-          ],
-        ])
-      : new Map(),
-  );
-  return { ...original, createBestMovesAtom: () => bestMoves };
+  const bestMoves = (tab: string) =>
+    atom((get) => {
+      // Re-read the hoisted cache flag when the test toggles this tab's engine.
+      get(original.tabEngineSettingsFamily({ tab, engineId: loadedEngine.id }));
+      return engine.enabled
+        ? new Map(
+            engine.indices.map((index) => [
+              index,
+              [
+                { pv: ["e2e4"], winChance: 50 },
+                { pv: ["g1f3"], winChance: 50 },
+              ],
+            ]),
+          )
+        : new Map();
+    });
+  return { ...original, enginesAtom: atom<Engine[]>([]), createBestMovesAtom: bestMoves };
 });
 let boardConfig: Config;
 vi.mock("@/chessground/Chessground", () => ({
@@ -69,7 +75,11 @@ vi.mock("@/components/boards/BoardBar", () => ({
 vi.mock("@/components/boards/EvalBar", () => ({ default: () => null }));
 vi.mock("@/components/boards/MoveInput", () => ({ default: () => null }));
 vi.mock("@/components/panels/analysis/BestMoves", () => ({
-  arrowColors: [{ strong: "blue", pale: "paleBlue" }],
+  arrowColors: [
+    { strong: "blue", pale: "paleBlue" },
+    { strong: "green", pale: "paleGreen" },
+    { strong: "red", pale: "paleRed" },
+  ],
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -79,6 +89,15 @@ let host: HTMLDivElement;
 let root: Root;
 let tree: TreeStore;
 let chooser: VariationChooserStore;
+const loadedEngine: Engine = {
+  type: "lichess",
+  id: "board-engine",
+  name: "Board engine",
+  url: "https://lichess.org",
+  loaded: true,
+};
+const engineSettings = (engineId = loadedEngine.id, tab = "chooser-test") =>
+  tabEngineSettingsFamily({ tab, engineId });
 
 function Capture() {
   tree = useContext(TreeStateContext)!;
@@ -102,6 +121,8 @@ function render(initial: TreeState = initialTree(), puzzle = false) {
   atoms.set(showVariationArrowsAtom, true);
   atoms.set(showArrowsAtom, true);
   atoms.set(evalOpenFamily("chooser-test"), true);
+  atoms.set(enginesAtom, [loadedEngine]);
+  atoms.set(engineSettings(), (settings) => ({ ...settings, enabled: engine.enabled }));
   act(() =>
     root.render(
       <Provider store={atoms}>
@@ -127,9 +148,11 @@ function render(initial: TreeState = initialTree(), puzzle = false) {
       </Provider>,
     ),
   );
+  return atoms;
 }
 beforeEach(() => {
   engine.enabled = false;
+  engine.indices = [0];
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -137,6 +160,69 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+});
+
+test("disabling an engine removes cached autoShapes and preserves the user's stored arrow", () => {
+  engine.enabled = false;
+  const atoms = render(defaultTree());
+  expect(atoms.get(engineSettings()).enabled).toBe(false);
+  const stored = { orig: "a1", dest: "a3", brush: "green" } as const;
+  act(() => boardConfig.drawable!.onChange!([stored]));
+  const storedShapes = tree.getState().currentNode().shapes;
+  expect(storedShapes).toEqual([stored]);
+  expect(boardConfig.drawable!.shapes).toBe(storedShapes);
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
+
+  act(() => {
+    engine.enabled = true;
+    atoms.set(engineSettings(), (settings) => ({ ...settings, enabled: true }));
+  });
+
+  expect(tree.getState().currentNode().shapes).toBe(storedShapes);
+  expect(tree.getState().currentNode().shapes).toEqual([stored]);
+  expect(boardConfig.drawable!.shapes).toBe(storedShapes);
+  expect(boardConfig.drawable!.autoShapes!.map((shape) => shape.brush)).toEqual([
+    "blue",
+    "paleBlue",
+  ]);
+
+  act(() => atoms.set(engineSettings(), (settings) => ({ ...settings, enabled: false })));
+
+  expect(engine.enabled).toBe(true);
+  expect(tree.getState().currentNode().shapes).toBe(storedShapes);
+  expect(tree.getState().currentNode().shapes).toEqual([stored]);
+  expect(boardConfig.drawable!.shapes).toBe(storedShapes);
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
+});
+
+test("engine arrows require this tab's enabled loaded engine at the cached index, including engines without lines", () => {
+  engine.enabled = true;
+  engine.indices = [1, 2];
+  const atoms = render(defaultTree());
+  const empty = { ...loadedEngine, id: "empty" };
+  const first = { ...loadedEngine, id: "first" };
+  const second = { ...loadedEngine, id: "second" };
+  act(() => {
+    atoms.set(enginesAtom, [{ ...loadedEngine, loaded: false }, empty, first, second]);
+    atoms.set(engineSettings(empty.id), (settings) => ({ ...settings, enabled: true }));
+    atoms.set(engineSettings(second.id, "other-tab"), (settings) => ({
+      ...settings,
+      enabled: true,
+    }));
+  });
+  expect(boardConfig.drawable!.autoShapes).toEqual([]);
+
+  act(() => atoms.set(engineSettings(first.id), (settings) => ({ ...settings, enabled: true })));
+  expect(boardConfig.drawable!.autoShapes!.map((shape) => shape.brush)).toEqual([
+    "green",
+    "paleGreen",
+  ]);
+
+  act(() => {
+    atoms.set(engineSettings(first.id), (settings) => ({ ...settings, enabled: false }));
+    atoms.set(engineSettings(second.id), (settings) => ({ ...settings, enabled: true }));
+  });
+  expect(boardConfig.drawable!.autoShapes!.map((shape) => shape.brush)).toEqual(["red", "paleRed"]);
 });
 
 test("rendered arrows give chooser candidates priority over engines and suppress ordinary variations only while open", () => {
