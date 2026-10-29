@@ -284,18 +284,58 @@ test.each([
   },
 );
 
-test("replacing the root closes the list without moving the cursor", () => {
+test.each([
+  { input: "comment", write: (tree: TreeStore) => tree.getState().setComment("x") },
+  {
+    input: "score",
+    write: (tree: TreeStore) =>
+      tree.getState().setScore({ value: { type: "cp", value: 42 }, wdl: null }),
+  },
+])("writing a $input keeps the list and cursor in place", ({ write }) => {
   store = middleGameStore();
   render();
   press("ArrowRight");
-  expect(options()).toHaveLength(2);
+  press("ArrowDown");
+  const expectedOptions = [
+    { text: "1... e5", selected: false },
+    { text: "1... c5", selected: true },
+  ];
+  expect(options()).toEqual(expectedOptions);
   const previous = store.getState();
 
-  act(() => store.getState().setComment("x"));
+  act(() => write(store));
 
   expect(store.getState().root).not.toBe(previous.root);
   expect(store.getState().position).toBe(previous.position);
   expect(store.getState().position).toEqual([0]);
+  expect(options()).toEqual(expectedOptions);
+});
+
+test("adding a legal variation closes the list without moving the cursor", () => {
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(3);
+  const previous = store.getState();
+
+  act(() =>
+    store.getState().makeMove({
+      payload: "Nf3",
+      changePosition: false,
+      changeHeaders: false,
+    }),
+  );
+
+  expect(store.getState().root).not.toBe(previous.root);
+  expect(store.getState().root.children).not.toBe(previous.root.children);
+  expect(store.getState().root.children.map((child) => child.san)).toEqual([
+    "e4",
+    "d4",
+    "c4",
+    "Nf3",
+  ]);
+  expect(store.getState().headers).toBe(previous.headers);
+  expect(store.getState().position).toBe(previous.position);
+  expect(store.getState().position).toEqual([]);
   expect(options()).toEqual([]);
 });
 
