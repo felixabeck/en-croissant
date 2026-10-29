@@ -19012,3 +19012,20 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Open question:** none; name each section (win/draw/loss, translated) and pass percentages (per-mille / 10) or set an explicit value text.
 * **Proof:** give one line of the two-engine e2e scenario in e2e/engine-gap.spec.ts a WDL payload, click the chip, and let the existing `assertAccessible` pass; record its snapshot through `pnpm test:e2e:update` after inspecting the diff. Unit coverage already exists in src/components/panels/analysis/ScoreBubble.test.tsx.
 * **Found by:** Codex fix leaf during the ChessRiddle design build review, 2026-10-29.
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### native_r2_coordination_live_publishers test fails with SendError under the push-gate coverage lane
+
+* **ID:** f-20261029-15 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** src-tauri/src/db/linked_collections/tests.rs:4270, test `db::linked_collections::tests::native_tests::native_r2_coordination_live_publishers_preserve_source_and_complete_discovery`.
+* **Defect:** The test unwraps a channel send (`called Result::unwrap() on an Err value: SendError`) and panicked once inside the instrumented backend-coverage run of `pnpm gates:push -- --rust --frontend --bindings`, while the same test passed in the uninstrumented rust-test lane of the same run and in an immediate sequential `pnpm gate:ensure backend-coverage` rerun. A receiver dropping before the send under slower instrumented timing would explain it; not yet traced.
+* **Spotted outside diff:** final gates of the ChessRiddle design build on 2026-10-29; that branch changes no file under src-tauri.
+* **Failure scenario:** Run the full push gates with all blocks on a loaded machine (another drain held a heavy-gate slot). backend-coverage exits 101 with 2818 passed, 1 failed.
+* **Evidence:** transcript /home/felixb/Projekte/chessfable.worktrees/chessriddle-design/artifacts/gates/20261029T154857345Z-621891/receipt-backend-coverage.log ("test result: FAILED. 2818 passed; 1 failed"); rerun passed (gate passed: backend-coverage).
+* **Open question:** none; trace which side of the channel can drop first and make the test wait on the receiver or assert the send outcome without unwrap.
+* **Proof:** repeat the single test under `cargo llvm-cov` instrumentation (or with an injected delay on the receiver side) until it fails before the fix and never after.
+* **Found by:** Claude Code, ChessRiddle design build final gates, 2026-10-29.
