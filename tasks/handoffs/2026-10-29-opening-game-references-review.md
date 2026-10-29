@@ -2285,6 +2285,275 @@ All15 root controls independently read and retained their actual failure witness
 
 Meanwhile origin/master advanced to ca3ea13dd187e258d4cd1dc7adecf098899c9fdc with the separately authorized ChessRiddle visual refresh. Root inspected the overlap, the published DESIGN.md and actual decision allocations. Existing current feature17/budget18 and native/ownership31/32/33 do not collide with the published design identities21–30. No new alias or source-feature decision is necessary. The next integration must preserve both the new design and all citation behavior, refresh only the three owned citation screenshots after inspected container differences and remeasure the actual combined production build. This paragraph does not claim that rebase, final code closure, UI/native acceptance, push or installation is complete.
 
+## Published design and later tablebase integration
+
+The first design rebase onto ca3ea13dd187e258d4cd1dc7adecf098899c9fdc preserved all source commits. Grok resolved exactly bundle-budgets.json, docs/bundle-budgets.md and Comment.tsx by preserving both complete measurement histories and the union of citation decoration with published typography. The canonical leaf completed1/1 and profile check reported LEAF commands=7. Root read the entire report and exact three-file resolution before staging and continuing. Other overlaps auto-merged, including Lucide mocks/icons, provider placement, catalogues and existing tab-seed extraction. The matching module remained SHA256615df424789c4f4cdcd162e32a0caf38289042d3874ded4b300a467fb41124ff. pnpm install --frozen-lockfile adopted only the published icon swap.
+
+The subsequent published source e14a8547 added the independently authorized mover-perspective tablebase fix and its tests. It also published its different tablebase decision as d-20261029-31. Root preserved that published record and source. Canonical writer-created native adoptions are now d-20261029-34 for protocol progress and completed cleanup, and d-20261029-35 for the already-proven actual extra-readiness control. Native34 is superseded by35 only for that corrected control. Historical continuation33 remains byte-preserved and is canonically superseded by35. Feature17, budget18, owner32 and findings10–14 remain unchanged. These current operative aliases supersede earlier current-identity statements31/33 in this chronological handoff. Old private19/20 and the earlier publication31/33 are preserved in the raw history and protected backup branches, without changing a published ID or forging a receipt.
+
+During that private rebase, the first attempt also dropped historical33. The append-only driver correctly refused the new34 replay because its merge base lost33. Root aborted that attempt, retained historical33 in the next retry, and the complete rebase succeeded. Only the old unpublished native31 record and its supersession mutation were omitted from the new publication range, with their immutable originals retained. No source payload was skipped. The existing three owned Grok changes were stashed by explicit path and restored after rebase. No foreign stash, published tablebase record or unrelated checkout was changed. Canonical set-trailer then linked historical33 to35. This is identity recovery, not a changed native mechanism or a new plan adoption.
+
+The initial design-pixels.xouCZS run returned1 at its first notation screenshot, with the other unique-auto-open test passing. To inspect every intended difference before updating any baseline, the bounded Grok proof changed exactly three screenshot expectations to Playwright soft expectations temporarily. All three screenshot assertions still failed, with no behavioral assertion failure. The original spec was then restored byte-identically, SHA256158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b. This exit1 is a capture, never acceptance. Canonical completion and LEAF commands=7 were inspected, together with the full report and restored source. Root opened all six actual/diff PNGs and found the intended published fonts, surfaces, gold controls, icons and maple default. Narrow choices and missing-game guidance retained their behavior and no horizontal overflow. Exactly citations-notation-game-references.png, citations-choice-320-game-references.png and citations-missing-320-game-references.png are approved to refresh. Actual/diff copies remain in design-initial-diffs and the leaf's actual-diff directory. Original hard screenshot assertions remain unchanged for the acceptance rerun.
+
+Grok remains the selected writer, with no actual quota observed. Its reproducibly failing read-only sandbox still uses the disclosed native-review fallback. The original source and earlier detection share the OpenAI family, and the later Grok literal integration uses xAI. Plan authorship and arbitration shared one root context. Fresh root pre-review, code r3, ordinary UI/native acceptance, final gates, push, exact-SHA hosted confirmation and installation remain pending.
+
+### Raw Grok design conflict resolution report
+
+``````text
+Resolved the three current unmerged paths for replayed commit `da1e206c` (`feat(notation): open local games from preparation citations`) onto `ca3ea13d`. Working-tree resolutions are unstaged. No `git add`, continue, tests, or build.
+
+## Changes
+
+**`bundle-budgets.json`**
+- Limits remain 565000 / 550000 / 1670000 (citation stage `:3`; `:2` still had total 1660000).
+- Measurement is the citation commit’s historical figures: source `pnpm build-vite`, entry 556146, largestLazy 486067, total 1660313.
+- File is byte-identical to `:3`. Design figures 550971 / 496862 / 1658119 stay in the docs paragraph only. No combined measurement.
+
+**`docs/bundle-budgets.md`**
+- Citation paragraph from `:3` kept byte-identical, still under `d-20261029-03` (later `f7a368e0` owns the pointer to `d-20261029-18`).
+- Published design paragraph from `:2` kept byte-identical (`d-20261029-26`, `d-20261029-28`, `d-20261029-29`).
+- Shared history from ChessDB `d-20261029-13` onward matches both stages.
+- Order: citation (this commit) → design (onto) → existing history. Decision IDs 31/32/33 and findings 10–14 were not touched.
+
+**`src/components/common/Comment.tsx`**
+- Union of `:3` citation work and `:2` typography class.
+- Imports: `recognizeGameReferences` / `GameReference`, `useGameReference`, and `classes` from `GameNotation.module.css`.
+- Body: decoration, safe rich formatting, `activate` guard, and `className={classes.comment}`.
+- Resolved file equals `:3` plus the CSS import and `className`.
+
+## Already auto-merged (not edited)
+
+Git had already staged these without markers:
+- `GameNotation.tsx`: lucide toolbar icons and `GameReferenceProvider` wrap.
+- `GameNotation.test.tsx`: lucide mocks and `GameReferenceProvider` mock.
+- `GameTable.tsx`: `databaseGameSeed(record, file)` original-game seed.
+- 16 catalogues: `GameReferences.*` entries present.
+
+## Proof run
+
+- No conflict markers in the three resolved files.
+- `python3` parsed `bundle-budgets.json`; limits and citation measurement asserted.
+- `git diff --check -- bundle-budgets.json docs/bundle-budgets.md src/components/common/Comment.tsx` exited 0.
+- Stage comparison: JSON `== :3`; citation paragraph `== :3`; design paragraph `== :2`; remaining markdown `==` both stages; Comment `== :3` plus published class.
+
+## Limitations
+
+- Index still has the three paths unmerged until root stages them.
+- No tests, build, or green-gate claim.
+- JSON still records the citation-only candidate, not a later integrated design+citation build (`1946b59b` is still ahead).
+- Later `f7a368e0` may conflict: it expected the ChessDB paragraph immediately after the citation paragraph; the design paragraph now sits between them.
+
+``````
+
+
+### Raw Grok first combined design measurement report
+
+``````text
+The incomplete-lookup Alert now uses the semantic warning palette, and the integrated production build is recorded under the unchanged `d-20261029-18` ceilings.
+
+## Changed paths (unstaged)
+
+- `src/components/common/GameReference.tsx:143` — `Alert color="yellow"` → `color="warning"`. Contents, role, conditions and actions unchanged.
+- `bundle-budgets.json` — measurement object only (`source`, `date`, `entry`, `largestLazy`, `total`).
+- `docs/bundle-budgets.md` — one new opening paragraph. Every earlier paragraph is byte-identical to `HEAD`.
+
+## Source freeze
+
+- Measured source HEAD: `c2e244918a04898684a6e5ec8e46f12ed208698b`
+- `src/utils/gameReferences.ts` SHA256: `615df424789c4f4cdcd162e32a0caf38289042d3874ded4b300a467fb41124ff`
+- Design/ChessDB/citation combination: published ChessRiddle visual design `ca3ea13dd187e258d4cd1dc7adecf098899c9fdc` with ChessDB and this cited-game lookup under `d-20261029-18`
+- `package.json`, `pnpm-lock.yaml`, `vite.config.ts` equal `origin/master` (0-byte diff)
+- Proof: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-integrated-measurement-proof/`
+
+The historical `f5f71e4f` paragraph remains historical evidence. It is not this source revision.
+
+## Exact gzip metrics (`buildBundleReport`)
+
+| metric | actual | limit | remaining |
+| --- | ---: | ---: | ---: |
+| entry | 551364 | 565000 | 13636 |
+| largestLazy (`src/routes/index.lazy.tsx`) | 501597 | 550000 | 48403 |
+| total | 1668660 | 1670000 | 1340 |
+
+Limits stay `565000 / 550000 / 1670000`. Parsed `limits` equal `HEAD`. No ceiling was raised.
+
+## Commands / exits
+
+- `pnpm gate:run frontend-build` — exit **0**. `gate passed: frontend-build`. Wrapper command: `agent-gate node scripts/gate-receipt.mjs run frontend-build` → `pnpm build-vite`. Receipt not recorded because the working tree is dirty. Transcript: `artifacts/gates/20261029T215413658Z-479398/receipt-frontend-build.log`
+- Dist measured with the existing `buildBundleReport` export on `dist/.vite/manifest.json`
+- `pnpm bundle:check` — exit **0** (`entry: 538.4 KiB / 551.8 KiB`, `largestLazy: 489.8 KiB / 537.1 KiB`, `total: 1629.6 KiB / 1630.9 KiB`)
+- `pnpm exec oxfmt --check bundle-budgets.json src/components/common/GameReference.tsx` — exit **0**
+- `pnpm exec oxlint --deny-warnings src/components/common/GameReference.tsx` — exit **0** (0 warnings, 0 errors)
+- `pnpm exec tsgo --noEmit` — exit **0**
+- `git diff --check -- src/components/common/GameReference.tsx bundle-budgets.json docs/bundle-budgets.md` — exit **0**
+
+## Preservation
+
+- Later `docs/bundle-budgets.md` prose from the `f5f71e4f` paragraph through EOF is byte-equal to `HEAD`
+- `bundle-budgets.json` `version`/`unit`/`limits` unchanged
+- No other source, snapshots, package/lockfiles, thresholds or prior prose were edited
+- Nothing staged or committed
+
+Unstaged status:
+
+```
+ M bundle-budgets.json
+ M docs/bundle-budgets.md
+ M src/components/common/GameReference.tsx
+```
+
+``````
+
+
+### Raw Grok complete visual-difference capture report
+
+``````text
+## Capture result (not acceptance)
+
+Canonical `agent-gate pnpm test:e2e:container --project=game-references` **exited 1**. Three screenshot mismatches were captured. Soft assertions were removed. Spec bytes match the saved original. **This is not green proof.**
+
+### Hashes
+
+- original SHA256: `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- restored SHA256: `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- live spec SHA256: `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- `cmp` original vs live: equal (`cmp-exit=0`)
+- restore status: `restore-sha256-equal`
+- `expect.soft` remaining: 0
+- hard `await expect(page).toHaveScreenshot`: 3
+- snapshot git status for `e2e/game-references.spec.ts` and its snapshot dir: empty (no baseline update)
+
+Saved original: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/game-references.spec.ts.original`
+
+### Command / exit / log
+
+- command: `agent-gate pnpm test:e2e:container --project=game-references`
+- recorded in: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/e2e-soft.command`
+- exit file: `1` (`.../design-all-diffs/e2e-soft.exit`)
+- attempt completion: `1 design-all-diffs 492dce5c26a5bd1976e1c818a514487acdb5cfd3`
+- attempt dir: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-design-all-diffs.E4pq5D`
+- full log: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/e2e-soft.log`
+- poll: `headless_gate_poll` exit 1 / RED GATE because the gate status was 1 (expected)
+
+### Three screenshot differences
+
+Pixel ratios from the log:
+
+| snapshot | pixels different | ratio |
+| --- | ---: | ---: |
+| `citations-notation.png` | 52373 | 0.10 |
+| `citations-choice-320.png` | 18445 | 0.09 |
+| `citations-missing-320.png` | 12473 | 0.06 |
+
+Artifact paths:
+
+- actual: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-notation-actual.png`
+- diff: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-notation-diff.png`
+- actual: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-choice-320-actual.png`
+- diff: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-choice-320-diff.png`
+- actual: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-missing-320-actual.png`
+- diff: `artifacts/frontend-audit/test-results/game-references-citations--f1fee-and-narrow-missing-guidance-game-references/citations-missing-320-diff.png`
+
+Owned copies (same bytes):
+
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-notation-actual.png`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-notation-diff.png`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-choice-320-actual.png`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-choice-320-diff.png`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-missing-320-actual.png`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-all-diffs/actual-diff/citations-missing-320-diff.png`
+
+### Behavioral result
+
+- `citations: only a complete unique occurrence opens automatically` **passed** (973ms).
+- `citations: formatted notation, keyboard choice and narrow missing guidance` **failed only** the three soft screenshot matchers. The test continued through choice, open, missing, and the later screenshot captures, so the intervening behavioral expects ran. No behavioral assertion failure is in the log.
+- Summary: **1 failed, 1 passed** (12.4s). `ELIFECYCLE` exit 1.
+
+### Proof limitations
+
+- Exit 1 with three screenshot failures is the intended capture, not acceptance.
+- Soft assertions were temporary and are gone. Baselines were not updated.
+- Root still owns PNG inspection and any later three-file baseline update.
+- `pnpm build` and `pnpm verify:app` remain pending per the UI contract.
+- No other source files were changed. Dirty bundle/docs/`GameReference.tsx` work was left untouched. No process cleanup.
+
+``````
+
+
+
+### Completed design acceptance and final candidate measurements
+
+Grok's final bounded writer completed1/1, with LEAF commands=7 and its entire report inspected. Fresh production build and original unchanged container suite both exited0. Only the three predicted citation PNGs changed. Root independently measured actual dist through production buildBundleReport and obtained551356 entry,501577 largest lazy and1668615 total gzip bytes,1385 below unchanged1670000. Root compared each new baseline byte-for-byte with its already inspected actual PNG, all three equal. The spec remains exact SHA256158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b and the matcher remains615df424. The measured source is492dce5c plus the explicitly named existing warning-palette change, including published tablebase basee14a8547. Both earlier integrated measurements remain historical. The two-slot machine-capacity wait delayed this writer's build, with both holders independently confirmed as correction-app sessions. Root did not interfere. Complete root pre-review, code closure and ordinary native acceptance remain pending.
+
+### Raw Grok final measurement and three-baseline report
+
+``````text
+The integrated production build at HEAD `492dce5c26a5bd1976e1c818a514487acdb5cfd3` plus the existing uncommitted warning-palette change is under the unchanged `d-20261029-18` ceilings, and the three permitted citation screenshots were refreshed in the pinned container.
+
+## Source identity
+
+- Measured HEAD: `492dce5c26a5bd1976e1c818a514487acdb5cfd3`
+- Published tablebase base: `e14a8547968a6ac24ec3604c94a9b7ee0e0e0120` (ancestor of HEAD)
+- Matcher `src/utils/gameReferences.ts` SHA256: `615df424789c4f4cdcd162e32a0caf38289042d3874ded4b300a467fb41124ff`
+- Spec `e2e/game-references.spec.ts` SHA256: `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- Dirty source delta included in the measured dist: existing uncommitted `src/components/common/GameReference.tsx` Alert `color="yellow"` → `color="warning"` (SHA256 `f13c3dffd7692c8c5a62ad6164691fd1c6fea7e1d0ded744e166508f64afb186`, byte-identical to freeze)
+- The earlier `c2e244918a04898684a6e5ec8e46f12ed208698b` measurement remains historical. It does not include this later tablebase fix.
+
+Freeze: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/design-final-proof/`
+
+## Exact gzip metrics (`buildBundleReport` on `dist/.vite/manifest.json`)
+
+| metric | actual | limit | remaining |
+| --- | ---: | ---: | ---: |
+| entry | 551356 | 565000 | 13644 |
+| largestLazy (`src/routes/index.lazy.tsx`) | 501577 | 550000 | 48423 |
+| total | 1668615 | 1670000 | 1385 |
+
+Limits stay `565000 / 550000 / 1670000`. Parsed `limits` equal the freeze. No ceiling was raised.
+
+## Commands / exits / canonical completions
+
+- `pnpm gate:run frontend-build` — exit **0**. `gate passed: frontend-build`. Command is `agent-gate node scripts/gate-receipt.mjs run frontend-build` → `pnpm build-vite`. Receipt not recorded because the working tree is dirty. Transcript: `artifacts/gates/20261029T222626235Z-924621/receipt-frontend-build.log`. Attempt `gate-design-final-frontend-build.Lv2I1N` completion `0 design-final-frontend-build 492dce5c26a5bd1976e1c818a514487acdb5cfd3`.
+- Dist measured with the existing `buildBundleReport` export.
+- `pnpm bundle:check` — exit **0** (`entry: 538.4 KiB / 551.8 KiB`, `largestLazy: 489.8 KiB / 537.1 KiB`, `total: 1629.5 KiB / 1630.9 KiB`)
+- `pnpm exec oxfmt --check bundle-budgets.json` — exit **0**
+- `git diff --check -- bundle-budgets.json docs/bundle-budgets.md e2e/game-references.spec.ts-snapshots` — exit **0**
+- later `docs/bundle-budgets.md` prose from the `c2e24491` paragraph through EOF is byte-equal to the freeze (`later-prose-equal`, 15730 bytes)
+- `pnpm test:e2e:update --project=game-references` — exit **0**. 2 passed (12.6s). Regenerated exactly the three permitted PNGs. Attempt `gate-design-final-e2e-update.g4lyrD` completion `0`.
+- `pnpm test:e2e:container --project=game-references` — exit **0**. 2 passed (17.9s), both tests and all screenshots. Attempt `gate-design-final-e2e-container.mgcgbu` completion `0`. Spec unmodified.
+
+## Modified files (unstaged)
+
+- `bundle-budgets.json` — measurement object only: `551356 / 501577 / 1668615`, source `pnpm gate:run frontend-build`, date `2026-10-29`
+- `docs/bundle-budgets.md` — one new opening paragraph naming HEAD `492dce5c`, the existing warning-palette change, matcher SHA256, published base `e14a8547`, and 551,356 / 501,577 / 1,668,615 with 1,385 B total remaining
+- `e2e/game-references.spec.ts-snapshots/citations-notation-game-references.png` `a680b07e…` → `f6d73bc70f85ec3349db7dc9e67231546887eb307be2087fd9c7752e8a23252f`
+- `e2e/game-references.spec.ts-snapshots/citations-choice-320-game-references.png` `8ffe05d4…` → `a8d800421bbe96dabfd8d257a3f15500865b4966cee4576e511127fed970064d`
+- `e2e/game-references.spec.ts-snapshots/citations-missing-320-game-references.png` `4c10124d…` → `72f9b3af24bc646490068b414529f45a2062ec03ecfc30632ca56e8e07c3a517`
+
+No other snapshot moved. All-e2e PNG inventory: only those three hashes changed.
+
+## Preservation
+
+- `GameReference.tsx` warning palette remains byte-identical
+- Spec hash remains `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- Matcher hash remains `615df424789c4f4cdcd162e32a0caf38289042d3874ded4b300a467fb41124ff`
+- Nothing staged or committed
+
+Foreign dirt that appeared during this run and was left untouched: `tasks/handoffs/2026-10-29-opening-game-references-review.md` (+195 lines of root integration notes). It is outside this leaf’s scope.
+
+No full pre-review or native journey. Root owns those next. Plan authorship and arbitration shared one context. Earlier detection shared the OpenAI family with the original code. This Grok leaf is xAI. No actual quota. Executor was not switched.
+
+``````
+
+
+### Fresh final-candidate root proof
+
+Canonical gate-design-root-proof.86J0o2 completed0 at492dce5c plus the named owned UI, snapshot, measurement and handoff edits. All24 related files/1274 tests passed, together with types, verifier syntax, UI boundary, mapping, diff and the complete contract. Complete pre-review artifacts/gates/20261029T223419251Z-3015621 passed every selected lane, including1451.5s of mutation. Annotate-comment killed77. Workspace-storage killed1317 with2 timeouts and6 existing ignored. Tree-path killed193 with7 timeouts and13 existing ignored. No survivors or errors, unchanged100% floors. No individual timeout cause is asserted.
+
+Raw before/after snapshots in pre-review-memory.40i9F4 show actual memory.max19327352832, peak8324558848 and zero oom, oom_kill and oom_group_kill throughout. Root inspected the files before accepting the result and retained each package's complete stryker.log/mutation.json separately under design-root-proof-retained, so later full gates cannot overwrite this evidence. The15 earlier negative controls remain source-carried, with byte-identical615df424 parser/query logic and only the nonlogical warning palette change in the owner component. Current related tests pass on the integrated design and tablebase source. This supersedes the latest pre-review-pending status, without claiming code closure or ordinary native acceptance.
+
+Canonical technical decision d-20261030-01 records the final resource invocation. On the clean reviewed final tree, the mutation guard precedes full coverage at the existing3GiB budget and full mutation at the existing6GiB budget. Each actual proof and exact-tree receipt check must pass, then the unchanged complete Rust/frontend scheduler runs with normal detected memory. Production sizing resolved six coverage workers, one mutation slot/four runners and two Rust jobs at17GiB usable. Existing receipts bind complete clean tree, command, platform, toolchain and12-hour validity and recheck the tree. No source or HEAD change is allowed between priming and the full scheduler. This extends the existing C1 isolation and documented mutation mitigation through existing capabilities, preserving every selected gate, test, file, mutant, floor and timeout. This is a reviewed technical choice awaiting actual execution, never preclaimed final proof. General f-20261022-05 remains open. Plan authorship and arbitration shared one context. Earlier detection and original code shared the OpenAI family.
+
 ### Preserved opening provenance before the explicit executor change
 
 ``````text
