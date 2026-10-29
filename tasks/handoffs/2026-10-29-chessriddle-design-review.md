@@ -11,7 +11,7 @@ Commits: `aeb0f134` foundation (tokens, fonts, fixed gold, component styles, boa
 finding record commits.
 
 Findings filed: `f-20261029-07` (tablebase move ranking, pre-existing), `f-20261029-08` (WDL bar
-unnamed progressbars, pre-existing). Decisions: `d-20261029-21`..`-29`.
+unnamed progressbars, pre-existing). Decisions: `d-20261029-21`..`-30` (`-30` corrects the heading of `-27`).
 
 ## MANDATE (verbatim from the plan)
 
