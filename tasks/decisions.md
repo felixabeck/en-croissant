@@ -10769,3 +10769,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Evidence:** /tmp/next-finding-f-20261010-08/resource-sequencing-plan.md C1, canonical lens-plan-sequencing-r1 report APPROVED, scripts/gate-receipt.mjs receiptStatus and executeAction, and scripts/run-push-gates.mjs frontend-coverage lane. Full current-tree proof remains required before release.
 * **Decided by:** Codex, technical arbitration during the f-20261010-08 push workflow, 2026-10-29 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"edccdb40b43fe8477f7af94d6981396b4c40681322e7588dba6510024aac03bb","input_sha256":"0c785017b72bbc7182f80b264dd898412105c3ce99bb67efc83058fc24d2bb13","kind":"mutation-receipt","operation":"5742c765c651b7be1c8a2da6235148a72905dd2d6867c873034964e24b3566d0","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-16"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-21 — Which icon library carries ChessRiddle's icon identities in ChessFable?
+
+* **Question:** Felix asked for every symbol to match ChessRiddle. Keep Tabler with look-alike names, add Lucide beside Tabler, or replace Tabler with Lucide?
+* **Governs:** -
+* **Chosen:** Replace `@tabler/icons-react` with `lucide-react` pinned to ChessRiddle's exact version 1.61.0, and use the same Lucide icon ChessRiddle uses for each meaning (catalogue `ui` identities plus ChessRiddle's direct component icons). Slots without a ChessRiddle counterpart take the closest Lucide icon by meaning. The mapping table lives in `DESIGN.md`.
+* **Rejected:** Tabler look-alikes (different artwork, so the symbols still would not match ChessRiddle); shipping both libraries (two icon systems and bundle growth against a 4,207 B total headroom).
+* **Reason:** Only the same library reproduces the same artwork. Reversal path: reinstall Tabler and revert the icon phase commit. Recorded on the build branch as entry 07 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
+* **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2d00a86acb552b763d39b696d1d5dece98e68dc3d93c01191cb877726c69ddd5","input_sha256":"e9343dcf69241f8db41995955245ae367a0059c4f633fb734ad92c92b7fe6758","kind":"mutation-receipt","operation":"b6a1952bb327aa1c4e1d625eb3d0e252582f8b2d0461e474d9d02d6f6c78692d","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-21"],"target":"decisions-ledger","v":1} -->
