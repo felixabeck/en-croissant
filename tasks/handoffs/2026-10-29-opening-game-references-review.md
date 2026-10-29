@@ -4,7 +4,7 @@ Current status additions are appended chronologically below the raw plan reports
 
 Run: opening-game-references-20261029-064642-82fa88e8. User requested clickable ChessBase preparation citations and full-auto Codex execution in a separate worktree. This record owns that feature, its proof, task records and the bounded required-CI native-test repair described below. It does not claim to review published upstream changes.
 
-Plan authorship and arbitration shared one context. Earlier implementation and detection ran in separate Codex sessions on the same OpenAI model family, with no family separation. Main writer and substantive corrections used gpt-6.1-sol high, with bounded presentation and proof-entry work on gpt-6-luna max. Felix subsequently selected Grok, with return to Executor Codex after an actual Grok quota limit. Grok4.6 medium validated the integrated measurement and wording. Two reproduced Grok read-only sandbox startup failures permit the disclosed native read-only review fallback, which shares the OpenAI family with the original code. No Grok quota has been observed. Round5 routing and original provenance are preserved below. Root owns proof, arbitration and release.
+Plan authorship and arbitration shared one context. Earlier implementation and detection ran in separate Codex sessions on the same OpenAI model family, with no family separation. Main writer and substantive corrections used gpt-6.1-sol high, with bounded presentation and proof-entry work on gpt-6-luna max. Felix subsequently selected Grok, with return to Executor Codex after an actual Grok quota limit. Grok4.6 medium validated the integrated measurement and wrote the R3 code/test repairs. Two reproduced Grok read-only sandbox failures required the disclosed native OpenAI review fallback for R3. Published kit49bd7587 subsequently fixed that cause, so R4 returns to canonical Executor Grok. R4 detection shares xAI family with the R3 repairs, while the original feature and root are OpenAI. No Grok quota has been observed. Round5 routing and original provenance are preserved below. Root owns proof, arbitration and release.
 
 ## Plan review disposition
 
@@ -2553,6 +2553,180 @@ Canonical gate-design-root-proof.86J0o2 completed0 at492dce5c plus the named own
 Raw before/after snapshots in pre-review-memory.40i9F4 show actual memory.max19327352832, peak8324558848 and zero oom, oom_kill and oom_group_kill throughout. Root inspected the files before accepting the result and retained each package's complete stryker.log/mutation.json separately under design-root-proof-retained, so later full gates cannot overwrite this evidence. The15 earlier negative controls remain source-carried, with byte-identical615df424 parser/query logic and only the nonlogical warning palette change in the owner component. Current related tests pass on the integrated design and tablebase source. This supersedes the latest pre-review-pending status, without claiming code closure or ordinary native acceptance.
 
 Canonical technical decision d-20261030-01 records the final resource invocation. On the clean reviewed final tree, the mutation guard precedes full coverage at the existing3GiB budget and full mutation at the existing6GiB budget. Each actual proof and exact-tree receipt check must pass, then the unchanged complete Rust/frontend scheduler runs with normal detected memory. Production sizing resolved six coverage workers, one mutation slot/four runners and two Rust jobs at17GiB usable. Existing receipts bind complete clean tree, command, platform, toolchain and12-hour validity and recheck the tree. No source or HEAD change is allowed between priming and the full scheduler. This extends the existing C1 isolation and documented mutation mitigation through existing capabilities, preserving every selected gate, test, file, mutant, floor and timeout. This is a reviewed technical choice awaiting actual execution, never preclaimed final proof. General f-20261022-05 remains open. Plan authorship and arbitration shared one context. Earlier detection and original code shared the OpenAI family.
+
+
+## Code closure round3 and adopted repair
+
+All seven read-only native fallback lenses completed over9aa9bd2fd25e93b89ce2159bcc9b2069a424ab82, after accepted complete root pre-review. Quality approved. Correctness, root cause, tests and chess semantics independently kept existing DR1 NOT CLOSED because later year-round prose bypasses anchored original constraints. This is further supplied DR1 rework, not a new independent adoption. Root read every report and traced the early return before referenceFieldsVerification. No code closure or publication is claimed.
+
+DR10 is a new adopted minimalism Fix. TournamentCard duplicated the database-game seed and omitted its linked locator. Root traced native query qualification, createTab's null argument, and actual CollectionService.resolve_game rejection of an absent locator with StaleGame. This is recorded as f-20261030-01, claimed for this build's persistent owner3169465, and included in the same game-opening repair batch. The existing pagination finding f-20261010-03 is unrelated and remains preserved. The fix must route this fourth caller through the existing shared helper and retain a meaningful row-activation regression.
+
+DR11 is a new adopted records Fix. The old broad sentence saying the task changes no engine or Rust source belonged to its feature-only checkpoint. The final range includes the already-proven cfg(test) warm-transition witness repair. Canonical annotation39f9c671 on f-20261011-03 explicitly withdraws that broad scope assertion while preserving historical evidence, unchanged production engine behavior and unchanged production deadlines. That record correction awaits reviewer closure. Canonical annotationc04e20cd on f-20261029-13 records the still-open DR1 implementation gap. No ledger body or receipt was hand-edited.
+
+New adoptions are r1=9 r2=0 r3=2, eleven unique code/record issues overall. DR2–9 are closed, DR1 andDR10 require source repair, DR11 is corrected pending closure. No Skip or Defer. Plan rounds remain ten, the code gap violates an existing obligation rather than introducing a new plan premise. Root assigned the bounded code repair to Grok, with retained regressions required to fail on the old producer before repair and pass after, plus independent root reversals and complete pre-review before round4. Source SHA615df424 belongs to the pre-repair candidate and must not be represented as a future fixed revision. Plan authorship and arbitration shared one context. Earlier detection and original code shared OpenAI, and the new repair writer is xAI. No actual quota rollover has occurred.
+
+# Code closure round3 raw reports
+
+Reviewed HEAD9aa9bd2fd25e93b89ce2159bcc9b2069a424ab82. All7 native read-only fallback reports completed and read. Quality approved, other6 revised. DR1 remains NOT CLOSED, repeated supplied rework. New adoptions2, DR10 minimalism and DR11 records, both Fix. No Skip or Defer. Root traced metadataVerification's early return and the tournament linked-locator requirement in tabs.ts572 and linked_collections.rs3291. Current producer drops the required locator, and the real native resolver refuses None with StaleGame. This is a live linked-game opening failure, not merely a duplicate seed. Planning/arbitration shared one context, detection shared original code's OpenAI family. No quota rollover. This is not code closure.
+
+## correctness
+
+``````text
+DR1 NOT CLOSED — with the exact event/site prefix `Tata Steel (A) Wijk aan Zee`, `metadataVerification` returns `unverified` when prose between `2022 (3)` and a later dated round prevents an immediate continuation. It skips checking the anchored `2022 (3)` against the game. The competing-reading tests cover adjacent tuples, not this intervening-prose case.
+
+[blocker] src/utils/gameReferences.ts:212 — For `Tata Steel (A) Wijk aan Zee 2022 (3) Better was Bd3 2024 (A)`, a game with matching players and result but date `2021.01.01` and round `9` is retained as an unverified choice, though it conflicts with both readings. The resolved header makes `2022 (3)` identifiable, so this candidate should be rejected. (confidence: 96)
+
+No additional blocker found in the reviewed matcher, lookup, or admission path. No tests were run by this read-only review.
+
+Plan authorship and arbitration shared one root context. Detection ran on the same OpenAI model family as the code, so family separation was absent.
+
+VERDICT: REVISE
+``````
+
+## root-cause
+
+``````text
+DR1 NOT CLOSED. The adjacent competing tuples in the new tests are covered, but a later tuple separated by prose bypasses the comparison that rejects conflicting metadata.
+
+[blocker] src/utils/gameReferences.ts:212 — With the exact event and site followed by `2022 (3) Better was Bd3 in 2024 (A).`, a candidate dated `2021.01.01` with round `9` conflicts with the original tuple and any later-field reading. The intervening prose means `continuation` is absent, so this early return marks the candidate unverified before `referenceFieldsVerification` checks the anchored `2022 (3)`. `lookupGameReference` therefore retains and offers the contradictory game for manual opening. The pre-repair base rejected its conflicting anchored fields, so this repair reopens that contradiction-filter failure. The added tests cover only the adjacent form at `src/utils/gameReferences.test.ts:918`. (confidence: 99)
+
+I found no duplicate implementation of this matcher. Plan authorship and arbitration shared one root context. Detection ran in the disclosed orchestrator-native read-only fallback after reproducible Grok launcher startup failures, with no quota rollover, and shares the OpenAI model family that authored the code.
+
+VERDICT: REVISE
+``````
+
+## minimalism
+
+``````text
+Plan authorship and arbitration shared one root context. Detection ran on the same OpenAI model family as the code.
+
+The r3 field-verification helper is justified by its reuse across competing readings. It adds no new module or parser framework.
+
+[should-fix] src/components/databases/TournamentCard.tsx:165 — This database-game opening path still builds the tab seed inline, while the new `databaseGameSeed` serves `GameTable`, `GamesTable`, and `GameReferenceProvider`. It also omits `game.linked`. Route it through `databaseGameSeed(game, file)` so all four paths share the same seed and preserve linked occurrence identity (confidence: 98).
+
+VERDICT: REVISE
+``````
+
+## code-quality
+
+``````text
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code, so family separation was absent.
+
+No readability or local-consistency findings at 80+ confidence. The change uses clear names and comments for competing metadata readings, extracts shared normalization and field comparison logic, and keeps the earlier single-reading and known-site examples visible in the tests. I found no dead paths, stale comments, undocumented suppressions, or new unlabeled behavior literals. No tests were run.
+
+VERDICT: APPROVED
+``````
+
+## chess-semantics
+
+``````text
+[blocker] src/utils/gameReferences.ts:212 — DR1 NOT CLOSED. For `Tata Steel (A) Wijk aan Zee 2022 (3) Better was Bd3 in 2024 (A).`, the matching event/site prefix anchors `2022 (3)`, but the later year-round text returns `unverified` before those fields are checked. A game dated `2021.01.01`, round `9` is therefore offered despite conflicting with both readings, and can be opened as the wrong game. The resulting tree is internally consistent. I found no separate FEN, path or parity defect. This is supplied DR1 rework, not a new independent adoption. (confidence: 100)
+
+Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+
+VERDICT: REVISE
+``````
+
+## records
+
+``````text
+[should-fix] tasks/findings.md:16811 — The full range changes Rust source in `src-tauri/src/chess.rs` for the warm-transition test repair (commit `7237a6c2`). The change is test-only, but “The citation task changes no engine or Rust source” is too broad. Clarify that production engine behavior is unchanged and identify the Rust test change. (confidence: 99)
+
+The recorded mutation, snapshot and memory figures match their retained artifacts. The d-20261030-01 sequence is accurately described as planned and unexecuted. No tests were run.
+
+Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code.
+
+VERDICT: REVISE
+``````
+
+## tests
+
+``````text
+DR1 NOT CLOSED — In [gameReferences.ts](/home/felixb/Projekte/chessfable.worktrees/opening-game-references-opening-game-references-20261029-064642-82fa88e8/src/utils/gameReferences.ts:206), a year-round match anywhere after the anchored tuple returns `unverified` before the original tuple is checked. If `2024 (A)` follows prose, a game dated 2021 with round 9 is still offered despite contradicting the applicable `2022 (3)` citation. This is supplied DR1 rework, not a new adoption.
+
+[blocker] [gameReferences.test.ts](/home/felixb/Projekte/chessfable.worktrees/opening-game-references-opening-game-references-20261029-064642-82fa88e8/src/utils/gameReferences.test.ts:918) — The new competing-reading tests cover adjacent tuples only. They do not catch a full year-round tuple after intervening prose, so the contradictory game remains available in the choice dialog. (confidence: 99)
+
+The file is included by Vitest’s `src/**/*.{test,spec}.{ts,tsx}` selector, and the planned frontend coverage lane runs `pnpm test:coverage`. I read the 24-file, 1,274-test related-proof log and the prior reversal logs without rerunning tests. Those reversal logs show the adjacent-reading tests fail on the earlier source and pass after restoration. The final unchanged scheduler and exact-tree receipt sequence are source-supported by `d-20261030-01`, but final-gate execution is still pending.
+
+Plan authorship and arbitration shared one context. Detection ran in the same OpenAI model family as the code.
+
+VERDICT: REVISE
+``````
+
+
+
+
+## R3 repair proof and return to canonical Grok review
+
+Current R4 candidate is c04e20cd plus5 bounded Grok-owned source/test/doc changes, subsequently committed without changing their bytes. Matching module SHA25671e915f5539b9994d9430e33d3e80ad91d5a90e548d98527c1e079a37b7899fb. TournamentCard SHA2568ec6e4f5a35e9141fdee5a704b7c19ec448a0084dfddc26270defa69ac637840. Original hard E2E spec SHA256158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b remains unchanged. Prior615 candidate failed R3 and is never final acceptance.
+Grok repair completed1/1, profile LEAF commands7 and full report inspected. Tests-first assertions failed1 for both metadata prose forms and the linked TournamentCard action on original producers. Focused gameReferences109 and TournamentCard10 passed0, types and scoped oxfmt/oxlint/diff0. Separate production-only patches preserve retained tests. Root independently reversed each exact producer patch, observed substantive assertion red1, restored every source/test/doc hash exactly and observed targeted green0. The metadata failure retained incompatible2021/9 as unverified, the tournament failure omitted its required locator. Artifacts TMP/root-code-r3-controls contain complete commands/logs/exits/hash comparisons. No temporary reversal remains.
+Root canonical gate-code-r3-root-proof.oWbbXT completed0 at c04e20cd with the explicit6 owned dirty paths. Related26 files/1300 tests, tsgo, verifier syntax, UI boundary, frontend mapping, diff and full contract all passed. Complete pre-review artifacts/gates/20261029T232648182Z-3313515 passed frontend-build7.6s, format/lint/types3.1s, frontend mapping0.5s, backend mapping1.4s, Windows clippy10.8s, bundle0.8s and changed-file mutation822.7s. All actual exit codes0.
+Raw mutation reports: annotate-comment77 Killed. Workspace-storage1317 Killed,2 Timeout,6 Ignored. Tree-path193 Killed,7 Timeout,13 Ignored. No Survived or errors and unchanged100% floors. No individual timeout cause inferred. All3 raw stryker.log/mutation.json retained under TMP/root-code-r3-proof-retained before later gates overwrite ordinary artifacts.
+Before/after kernel snapshots TMP/pre-review-memory.dIRvM2 were captured inside the exact root gate before its exit. memory.max19327352832, final peak7781748736 bytes, before/after oom/oom_kill/oom_group_kill all0. Four-core taskset uses the existing17GiB usable budget, two mutation slots/two runners each and Cargo jobs2. This temporary delivery mitigation does not close broad f-20261022-05.
+Earlier15 root controls in TMP/root-publication-proof were real historical reverse0/red1/restore0/green0 on615. Their old exact-module claim is historical, not a claim that current71 bytes equal615. This candidate changes only the identified DR1 branch and fourth seed caller, and independently reruns all related dependencies plus the new2 controls.
+Published design/tablebase integration, equality range diffs, current native decisions34/35 (historical33 superseded35), owner32, feature17 and budget18 remain preserved. Already published31 is the independent tablebase decision. Source archive62159f00 remains protected, published finding aliases10–14 preserve original receipts. No source payload was skipped.
+Previous original-hard-spec pinned container suite passed2 tests on R3, root inspected3 intended published-design baseline updates and all6 original actual/diff images. No new baseline update is requested by this repair. Previous actual bundle point551356/501577/1668615 is retained as measured history, current pre-review bundle passes unchanged caps565000/550000/1670000. Fresh final container, pnpm build and ordinary pnpm verify:app remain pending on this repaired candidate. No staged native positive is accepted.
+Plan10 rounds, adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0,3 unique closed. Code adoptions r1=9 r2=0 r3=2,11 unique. DR2–9 closed, DR1 andDR10 implemented pending R4 reviewer closure, DR11 canonically corrected pending records closure. No Skip/Defer. DR1 is repeated supplied rework, never a new adoption.
+R3 detection used the disclosed native OpenAI fallback after two reproduced Grok read-only startup failures at kit400072b4. During this proof published kit advanced toe759a67b including49bd7587, which fixes that actual bundled symlink cause. R4 returns to canonical Executor Grok. No quota observed, no Codex rollover. Source/test repair author and R4 detection share xAI family, original code/root share OpenAI. Planning and arbitration shared one root context. Do not claim whole-range family separation.
+Full clean Rust/frontend final scheduler, exact pushed-SHA required hosted jobs and reviewed installation still pending. Broad f-20261011-03 and f-20261022-05 remain open.
+
+### Raw Grok R3 repair report
+
+````text
+Both repairs are in place, unstaged, with old-producer red and restored-producer green recorded.
+
+## Changed paths
+- `src/utils/gameReferences.ts`
+- `src/utils/gameReferences.test.ts`
+- `src/components/databases/TournamentCard.tsx`
+- `src/components/databases/TournamentCard.test.tsx`
+- `docs/game-references.md` (same-contract clarification only)
+
+Outside-scope `tasks/handoffs/2026-10-29-opening-game-references-review.md` appeared during the session from root; it was left untouched.
+
+## Mechanism
+**FIX1 / DR1.** After a complete event+site prefix, a later year-round tuple separated by ordinary prose no longer early-returns `unverified`. The anchored original fields go through existing `referenceFieldsVerification`. A candidate dated `2021.01.01` / round `9` against `Tata Steel (A) Wijk aan Zee 2022 (3) Better was Bd3 in 2024 (A).` (and the form without `in`) is rejected. A compatible original match stays verified. Unknown actual date/round stays an explicit choice. A candidate that fits only the later prose tuple is rejected. Unresolved headers, `siteFollows` header extensions, adjacent competing readings, and bare-year prose keep their previous paths.
+
+**FIX2 / DR10.** `TournamentCard` opens through `databaseGameSeed(game, file)`. The IconAction / `runTabCreation` / navigate / error path is unchanged. Linked locators now reach `createTab`. Standalone origins still have no locator.
+
+## Proof
+Directory: `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/code-r3-repair-proof`
+
+**Original hashes**
+- `gameReferences.ts` `615df424789c4f4cdcd162e32a0caf38289042d3874ded4b300a467fb41124ff`
+- `TournamentCard.tsx` `52c8e4d5c1a56839c654245c068660e787becf20c2f8c5e268e48d4b8dd33549`
+
+**Final hashes**
+- `gameReferences.ts` `71e915f5539b9994d9430e33d3e80ad91d5a90e548d98527c1e079a37b7899fb`
+- `TournamentCard.tsx` `8ec6e4f5a35e9141fdee5a704b7c19ec448a0084dfddc26270defa69ac637840`
+
+**Production patches** (reverse independently; tests stay)
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/code-r3-repair-proof/metadata-production.patch`
+- `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/code-r3-repair-proof/tournamentcard-production.patch`
+
+**Red then green**
+
+| step | command | exit | evidence |
+|---|---|---|---|
+| FIX1 old producer | `vitest run src/utils/gameReferences.test.ts -t "intervening prose keeps the anchored year and round"` | **1** | `2021.01.01` / round `9` retained as `unverified` |
+| FIX1 after repair | same | **0** | 2 passed |
+| FIX1 reverse production only | same | **1** | same contradiction retained; reversed hash = original `615df424…`; restored hash = final `71e915f5…` |
+| FIX2 old producer | `vitest run …/TournamentCard.test.tsx -t "opening a linked tournament game carries the qualified locator"` | **1** | `createTab` called without `linked` |
+| FIX2 after repair | same | **0** | 1 passed |
+| FIX2 reverse production only | same | **1** | locator omitted again; reversed hash = original `52c8e4d5…`; restored hash = final `8ec6e4f5…` |
+| focused `gameReferences` | `vitest run src/utils/gameReferences.test.ts` | **0** | 109 passed |
+| focused `TournamentCard` | `vitest run src/components/databases/TournamentCard.test.tsx` | **0** | 10 passed |
+| types | `pnpm exec tsgo --noEmit` | **0** | |
+| oxfmt | scoped `--check` | **0** | |
+| oxlint | scoped `--deny-warnings` | **0** | |
+| diff check | `git diff --check` on scoped files | **0** | |
+
+No source or test reversal remains. Production files match the restored final hashes.
+
+## Limits
+No full pre-review, browser snapshots, or native journey in this leaf. Pagination/ownership TournamentCard tests still pass. Shared original-game admission coverage was not duplicated. Confidence: 92.
+
+````
 
 ### Preserved opening provenance before the explicit executor change
 
