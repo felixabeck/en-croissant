@@ -18985,7 +18985,7 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 
 ### Tablebase panel ranks moves from the opponent's perspective, so drawing moves sort above winning moves
 
-* **ID:** f-20261029-07 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261029-07 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Impact class:** behaviour
 * **Where:** src/components/panels/analysis/TablebaseInfo.tsx:22 sorts `data.moves` with `compareTablebaseMoves` (lines 98-103) using `tablebaseRank` (lines 86-95), which ranks `win` first and `loss` last.
 * **Defect:** Each tablebase move's `category` describes the position after the move, from the opponent's side; the same file acknowledges this by passing the inverted `turn` to `OutcomeBadge` (line 72). Ranking `win` first therefore lists moves that let the opponent win first and the mover's winning moves (child `loss`) last.
@@ -18995,6 +18995,14 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Open question:** none beyond confirming the response semantics; the fix is to rank child categories from the mover's perspective (child `loss` first, then `blessed-loss`, `draw`, `cursed-win`, `win`), keeping the SAN tie-break.
 * **Proof:** A unit test of `compareTablebaseMoves` (or of the rendered order) with child categories `loss`, `draw` and `win` asserting the `loss` move first, red before the fix.
 * **Found by:** Codex review-correctness lens, ChessRiddle design build, 2026-10-29.
+* **Handled:** Corrected the known child-category ranks in commit `69ab4044` under d-20261029-31. Child loss now sorts first, then blessed-loss, draw, cursed-win and win. The existing SAN tie-break, uncertain-category fallback, cached-data copy, badge perspective and move interactions are preserved.
+* **Verified:** Eighteen TablebaseInfo unit tests pass. With only the production fix stashed and the new tests retained, seven regression tests fail, then all eighteen pass after restoration. The pinned container browser journey displays all nine move cards in the corrected order and plays the winning queen promotion through the renderer. No committed screenshot baseline changed. Screenshot: /tmp/chessfable-f-20261029-07/tablebase-browser.png.
+* **Pre-review proof:** `pnpm checks:pre-review` exited 0 on the final source and test changes. Both selected mutation packages scored 100. The corrected run's completion record is /home/felixb/.claude/drain-state/drain-90a2aa88.d/gates-b91e801f-c97a-4308-823b-d8d1bc2de01a/gate-pre-review-corrected.fyYsec/completion.record. The earlier interrupted attempt is not passing proof.
+* **Response semantics confirmed:** A recorded response from the actual product endpoint, tablebase.lichess.org/standard, has parent win, h8=Q+ child loss, Kg8 draw and Kf6 child win. The Rust command preserves the response body. Evidence: /tmp/chessfable-f-20261029-07/product-endpoint-response.json.
+* **Rejected alternative:** Dropping the comparator and using provider order would also change the existing SAN tie-break, beyond the perspective correction.
+* **Separate observation:** Promotion DTM badges truncate at desktop width. Filed successfully to the drain inbox for its own responsive-layout design run under push-review-policy section 4's open-design-question exception. This pre-existing layout mechanism is independent of the corrected ranks.
+* **Review provenance:** Plan authorship and arbitration shared one root context. Implementation and detection use the same OpenAI model family, with separate leaf contexts. Push review and final gates follow this closure.
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"f167074b709fb9c136ee34fa02f5e91bff2413ad71f6d08203925accdcfaceb4","header_sha256":"0b31342e2b6df15159411ca2489fbe116960d8d86102699b711c99a140a08882","header_status":"handled","input_sha256":"f1a6af2fd15e61a03b2b42e6d18b17d0c9444848702f5a645f12971a44047b4c","kind":"mutation-receipt","operation":"65e5add4fe78a4d6bc8e389d11e894a271376a8323c93fb5e97df2a55cf5a6f2","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-07"],"target":"f-20261029-07","v":1} -->
 
 ---
 
