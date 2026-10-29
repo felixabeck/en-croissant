@@ -18890,6 +18890,10 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 * **Commit and pre-review:** Source correction 9736068a. Root `pnpm checks:pre-review` exited 0, selecting format-lint for the three changed paths. All other pre-review lanes were correctly unselected for the test and records scope.
 <!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"2a1631a0514dcc15efb4bd85fdc1e90635ce325105617e2ab86958cc8e347378","header_sha256":"6cced623daf5750f6f3234e454230a461137ed9d0b0441ab8af1adb6c034aa37","header_status":"handled","input_sha256":"3dfe1f7ec59381936ed3d6f6f70fa89511f04c59bc25278f60e812d92bf1dda2","kind":"mutation-receipt","operation":"64c3a3ed3297bde9498509760e2ba08bf30dba631961ca272e173c89920da32e","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-02"],"target":"f-20261029-02","v":1} -->
 
+* **Follow-up of:** f-20261019-08
+* **Origin clarification (2026-10-29):** git blame attributes setupNotationMenu's original Open game click without a destination-render wait to 001221f08, the notation pointer-menu repair. This follow-up repairs that fix's new test setup. It does not establish a repeated pointer-menu production defect or a common Root with the menu event mechanism. The wait correction is 9736068a, governed by d-20261029-07.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"d845c6f124946361180c76009023b3bc6370ed40909a61b617c6073c50a93d91","input_sha256":"9d59d334a8bc2d38c1e889f4873a6fe628eae8ea5e3e75cb96687914f81a7fee","kind":"mutation-receipt","operation":"9ac7d1512c688686924188eaf9926cfb9ebc4097c31fae6d9b638ac029cdad52","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-02"],"target":"f-20261029-02","v":1} -->
+
 ---
 
 ## 2026-10-29 — filed through the inbox spool
