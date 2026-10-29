@@ -18868,3 +18868,19 @@ The fresh genuinely cold all-block gate-cold-all-repaired.wEQngj completed 0 at 
 
 This closure supersedes earlier open-review and open-cold-acceptance checkpoints. The complete inherited and local raw history and proof limitations are in tasks/handoffs/2026-10-29-f-20261023-04-review.md before final gates. Final clean-tree release gates, required hosted CI and reviewed installation remain delivery obligations until their actual completion in the final build-ledger record. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as code in separate sessions.
 <!-- ledger-meta {"command":"close","effect_lines":9,"effect_sha256":"4eb574062a07ec5fa16cf366341d8db65bca3f8d888df0217573ce3dfd3ee0ff","header_sha256":"7548937c2e7e31f92f1a0b30c10015ef279e125116baa53a498043de23ef464d","header_status":"handled","input_sha256":"ca15baaf7c054e426e4e835c7d5c233263166502bb7f31f3c70274bc2e426170","kind":"mutation-receipt","operation":"5410d50fd6451a42f1f136c1d7a66d016a1b5eb2ccfd4945784eb76b8d62ca5f","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-01"],"target":"f-20261029-01","v":1} -->
+
+---
+
+## 2026-10-29 — filed through the inbox spool
+
+### Hosted notation-delete setup fails to select Nc6 before its deletion assertion
+
+* **ID:** f-20261029-02 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 4ddaefcf-0026-46de-b526-ddaac572ef8a · output /home/felixb/.claude/drain-state/drain-90a2aa88.d/attempt-4ddaefcf-0026-46de-b526-ddaac572ef8a-1.jsonl
+* **Impact class:** tooling
+* **Where:** e2e/engine-gap.spec.ts:67-78, Test workflow browser contract step.
+* **Defect:** Hosted Test run 40870417020 at 9b76350b fails `notation-delete: workspace inline pointer action removes the targeted subtree` while waiting for `[data-notation-current="true"] button` to show Nc6 after clicking Nc6. The locator has no matching element at the eight-second deadline. The run reports 246 passed and one failed. All five native platform jobs passed. This blocks completion of the otherwise records-only f-20261010-08 release. No source cause or production regression is established by this one observation.
+* **Proof:** Reproduce with the repository container e2e launcher against the engine-gap project and the exact workspace inline pointer scenario. Read the retained hosted trace before choosing a correction. Distinguish a repeatable selection/test synchronization defect from a single timing event. Preserve real selection and deletion assertions, then prove the failing scenario and any adopted correction locally before one hosted rerun.
+* **Related:** f-20261019-08 repaired notation context-menu pointer actions in this same spec, but the new failure is before any context-menu action. No common cause is asserted.
+* **Found by:** Root post-push CI inspection in the f-20261010-08 drain run. Source unchanged by that closure. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code.
+* **Hosted run:** https://github.com/felixabeck/en-croissant/actions/runs/40870417020, SHA 9b76350b66518a2cfbf1ff2739370dc24ad38ffb.
