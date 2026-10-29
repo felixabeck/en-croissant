@@ -9,6 +9,7 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 import { EngineCatalogVerificationError, type Engine, type LocalEngine } from "@/utils/engines";
 import EnginesPage from "./EnginesPage";
+import { cleanupPortraitTest, settlePortraitCatalog } from "./tests/portraitCatalog";
 
 const mocks = vi.hoisted(() => ({
   verify: vi.fn(),
@@ -99,15 +100,15 @@ async function render(surface: "page" | "picker" = "page") {
       </MantineProvider>,
     );
   });
+  await settlePortraitCatalog();
 }
 const selectImage = () =>
   host.querySelector<HTMLButtonElement>('[aria-label="Engines.Settings.SelectImage"]')!;
 const card = () => host.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')!;
 async function expectPortraits(src: string) {
-  await vi.waitFor(() => {
-    expect(card().querySelector("img")?.getAttribute("src")).toBe(src);
-    expect(selectImage().querySelector("img")?.getAttribute("src")).toBe(src);
-  });
+  await settlePortraitCatalog();
+  expect(card().querySelector("img")?.getAttribute("src")).toBe(src);
+  expect(selectImage().querySelector("img")?.getAttribute("src")).toBe(src);
 }
 function expectFallbacks() {
   expect(card().querySelector("img")).toBeNull();
@@ -130,8 +131,7 @@ beforeEach(() => {
   root = createRoot(host);
 });
 afterEach(async () => {
-  await act(async () => root.unmount());
-  host.remove();
+  await cleanupPortraitTest(root, host);
 });
 
 test("an installed record resolves its exact URL in both card and editor through one authenticated catalog", async () => {
@@ -170,12 +170,9 @@ test.each(["bundled", "custom"])(
       installed({ id: "same-name-and-path", loaded, downloadLink: null }),
     ];
     await render("picker");
-    await vi.waitFor(async () => {
-      await act(async () => {});
-      expect(host.querySelector("img")?.getAttribute("src")).toBe(
-        source === "bundled" ? first.image : "data:image/png;base64,AQID",
-      );
-    });
+    expect(host.querySelector("img")?.getAttribute("src")).toBe(
+      source === "bundled" ? first.image : "data:image/png;base64,AQID",
+    );
     const image = host.querySelector("img")!;
     expect(image.alt).toBe(records[0].name);
     const checkboxes = () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
@@ -205,7 +202,7 @@ test.each([
   async (downloadLink) => {
     records = [installed({ downloadLink })];
     await render();
-    await vi.waitFor(() => expect(mocks.verify).toHaveBeenCalledTimes(downloadLink ? 1 : 0));
+    expect(mocks.verify).toHaveBeenCalledTimes(downloadLink ? 1 : 0);
     expectFallbacks();
     await act(async () => selectImage().click());
     expect(mocks.image).toHaveBeenCalledTimes(1);
@@ -219,7 +216,7 @@ test("a matching catalog entry without an image keeps the fallback usable", asyn
   const load = vi.spyOn(engines, "loadDefaultEngineCatalog").mockResolvedValue(loaded);
   try {
     await render();
-    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(load).toHaveBeenCalledTimes(1);
     expectFallbacks();
     await act(async () => selectImage().click());
     expect(mocks.image).toHaveBeenCalledTimes(1);
@@ -233,7 +230,7 @@ test("catalog verification rejection is handled once and leaves selection usable
   try {
     mocks.verify.mockRejectedValue(new EngineCatalogVerificationError("invalid signature"));
     await render();
-    await vi.waitFor(() => expect(mocks.verify).toHaveBeenCalledTimes(1));
+    expect(mocks.verify).toHaveBeenCalledTimes(1);
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     records = [installed({ id: "after-verification-failure" })];
     await render();
@@ -250,30 +247,42 @@ test.each(["selection", "link"])(
   "a current-engine %s change during verification cannot reuse the previous portrait",
   async (change) => {
     let resolve!: () => void;
-    mocks.verify.mockImplementation(() => new Promise<void>((done) => (resolve = done)));
-    await render();
-    await vi.waitFor(() => expect(mocks.verify).toHaveBeenCalledTimes(1));
-    expectFallbacks();
-    await act(async () => selectImage().click());
-    expect(mocks.image).toHaveBeenCalledTimes(1);
-    const next = installed({
-      id: change === "selection" ? "second" : "installed",
-      downloadLink: second.downloadLink,
-    });
-    if (change === "selection") {
-      records = [records[0], next];
-      mocks.selected = 1;
-    } else {
-      records = [next];
+    const verification = new Promise<void>((done) => (resolve = done));
+    mocks.verify.mockReturnValue(verification);
+    try {
+      await render();
+      expect(mocks.verify).toHaveBeenCalledTimes(1);
+      expectFallbacks();
+      await act(async () => selectImage().click());
+      expect(mocks.image).toHaveBeenCalledTimes(1);
+      const next = installed({
+        id: change === "selection" ? "second" : "installed",
+        downloadLink: second.downloadLink,
+      });
+      if (change === "selection") {
+        records = [records[0], next];
+        mocks.selected = 1;
+      } else {
+        records = [next];
+      }
+      await render();
+      await act(async () => {
+        resolve();
+        await verification;
+      });
+      await expectPortraits(second.image);
+      expect(mocks.verify).toHaveBeenCalledTimes(1);
+      records = [installed({ downloadLink: "https://unknown.invalid/engine.zip" })];
+      mocks.selected = 0;
+      await render();
+      expectFallbacks();
+    } finally {
+      await act(async () => {
+        resolve();
+        await verification;
+      });
+      await settlePortraitCatalog();
     }
-    await render();
-    await act(async () => resolve());
-    await expectPortraits(second.image);
-    expect(mocks.verify).toHaveBeenCalledTimes(1);
-    records = [installed({ downloadLink: "https://unknown.invalid/engine.zip" })];
-    mocks.selected = 0;
-    await render();
-    expectFallbacks();
   },
 );
 

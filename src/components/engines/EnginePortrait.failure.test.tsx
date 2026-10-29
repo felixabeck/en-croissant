@@ -8,6 +8,7 @@ import bundledCatalog from "@/catalogs/engines.json";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import type { LocalEngine } from "@/utils/engines";
 import EnginePortrait from "./EnginePortrait";
+import { cleanupPortraitTest, settlePortraitCatalog } from "./tests/portraitCatalog";
 
 const mocks = vi.hoisted(() => ({ verify: vi.fn(), readImage: vi.fn() }));
 vi.mock("@/platform/tauri", () => ({
@@ -67,6 +68,7 @@ async function render(engine = installed(), imageProps?: ImageProps) {
       </MantineProvider>,
     );
   });
+  await settlePortraitCatalog();
 }
 
 function surface(name: "card" | "editor") {
@@ -78,13 +80,12 @@ function images() {
 }
 
 async function expectPortraits(src: string) {
-  await vi.waitFor(() => {
-    expect(images()).toHaveLength(2);
-    for (const image of images()) {
-      expect(image.getAttribute("src")).toBe(src);
-      expect(image.alt).toBe("Same engine name");
-    }
-  });
+  await settlePortraitCatalog();
+  expect(images()).toHaveLength(2);
+  for (const image of images()) {
+    expect(image.getAttribute("src")).toBe(src);
+    expect(image.alt).toBe("Same engine name");
+  }
 }
 
 async function fail(failedImages = images()) {
@@ -114,8 +115,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => root.unmount());
-  host.remove();
+  await cleanupPortraitTest(root, host);
 });
 
 test("bundled image errors restore the CPU card fallback and clickable editor fallback", async () => {
