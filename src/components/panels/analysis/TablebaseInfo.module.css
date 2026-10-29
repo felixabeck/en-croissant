@@ -1,5 +1,33 @@
+.grid.grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  min-width: 0;
+}
+
 .info {
+  min-width: 0;
   transition: background-color 0.1s ease-in-out;
+}
+
+.moveContent > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.san {
+  overflow-wrap: anywhere;
+}
+
+.info :global(.mantine-Badge-root) {
+  flex-shrink: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: var(--badge-height);
+}
+
+.info :global(.mantine-Badge-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
 }
 
 .info:hover {

@@ -50,7 +50,7 @@ function TablebaseInfo({ fen, turn }: { fen: string; turn: "white" | "black" }) 
           <Accordion.Panel>
             {data && (
               <Stack gap="xs">
-                <SimpleGrid cols={3}>
+                <SimpleGrid className={classes.grid}>
                   {sortedMoves!.map((m) => (
                     <Paper
                       withBorder
@@ -61,8 +61,8 @@ function TablebaseInfo({ fen, turn }: { fen: string; turn: "white" | "black" }) 
                       }}
                       className={classes.info}
                     >
-                      <Group gap="xs" justify="space-between" wrap="nowrap">
-                        <Text fz="0.9rem" fw={600} ta="center">
+                      <Group gap="xs" justify="space-between" className={classes.moveContent}>
+                        <Text fz="0.9rem" fw={600} ta="center" className={classes.san}>
                           {m.san}
                         </Text>
                         <OutcomeBadge

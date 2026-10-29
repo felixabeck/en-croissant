@@ -2,6 +2,7 @@ import {
     activeWorkspaceTab,
     assertChooserInsideBoard,
     dragBoard,
+    dragMosaicDivider,
     drawMark,
     expect,
     filesWorkspaceCommands,
@@ -14,14 +15,14 @@ import {
 } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
 import { deserializeStorageValue } from "../src/state/store/debouncedStorage";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import type { TreeState } from "../src/utils/treeReducer";
 
 async function importAnalysisFen(page: Page, initialFen: string) {
     await page.goto("/");
     await page.getByRole("button", { name: /^import$/i }).click();
     const modal = page.getByRole("dialog", { name: /import game/i });
-    await modal.getByText("FEN", { exact: true }).click();
+    await modal.getByRole("button", { name: "FEN", exact: true }).click();
     await modal.getByRole("textbox", { name: "FEN" }).fill(initialFen);
     await modal.getByRole("button", { name: /^import$/i }).click();
     const grid = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
@@ -54,79 +55,243 @@ async function expectEditorRoot(page: Page, expectedFen: string) {
         });
 }
 
-test("board-keyboard: tablebase ranks winning promotions before draws and losses and plays the winner", async ({
-    page,
-    mockScenario,
-    capture,
-}) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const fen = "4k3/6KP/8/8/8/8/7p/8 w - - 0 1";
-    // Fields consumed by the panel from the recorded Lichess /standard response for this FEN.
-    // The parent wins, while winning moves have a child category of loss.
-    await mockScenario({
-        commands: {
-            get_public_lichess_json: {
-                result: JSON.stringify({
-                    category: "win",
-                    dtz: 1,
-                    dtm: 17,
-                    moves: [
-                        { uci: "h7h8q", san: "h8=Q+", category: "loss", dtz: -2, dtm: -16 },
-                        { uci: "h7h8r", san: "h8=R+", category: "loss", dtz: -2, dtm: -26 },
-                        { uci: "g7g8", san: "Kg8", category: "draw", dtz: 0, dtm: 0 },
-                        { uci: "g7f6", san: "Kf6", category: "win", dtz: 1, dtm: 19 },
-                        { uci: "g7g6", san: "Kg6", category: "win", dtz: 1, dtm: 19 },
-                        { uci: "g7h6", san: "Kh6", category: "win", dtz: 1, dtm: 19 },
-                        { uci: "g7h8", san: "Kh8", category: "win", dtz: 1, dtm: 19 },
-                        { uci: "h7h8n", san: "h8=N", category: "win", dtz: 1, dtm: 19 },
-                        { uci: "h7h8b", san: "h8=B", category: "win", dtz: 1, dtm: 15 },
-                    ],
-                }),
-            },
-        },
+async function tablebaseGeometry(tablebase: Locator) {
+    return tablebase.evaluate((element) => {
+        const viewport = element.closest<HTMLElement>(".mantine-ScrollArea-viewport")!;
+        const contentBounds = (node: Element) => {
+            const box = node.getBoundingClientRect();
+            const style = getComputedStyle(node);
+            return {
+                left: box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+                right:
+                    box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+            };
+        };
+        // The viewport is assigned by AnalysisPanel, independently of the grid's intrinsic size.
+        const bounds = contentBounds(viewport);
+        const grid = element.querySelector<HTMLElement>(".mantine-SimpleGrid-root")!;
+        const offenders: string[] = [];
+        const contains = (
+            name: string,
+            box: { left: number; right: number },
+            parent: typeof bounds,
+        ) => {
+            if (box.left < parent.left - 1 || box.right > parent.right + 1)
+                offenders.push(
+                    `${name}: [${box.left.toFixed(2)}, ${box.right.toFixed(2)}] outside [${parent.left.toFixed(2)}, ${parent.right.toFixed(2)}]`,
+                );
+        };
+        contains("grid in ScrollArea", grid.getBoundingClientRect(), bounds);
+        const cards = Array.from(grid.children, (card) => {
+            const san = card.querySelector<HTMLElement>(".mantine-Text-root")!;
+            const badge = card.querySelector<HTMLElement>(".mantine-Badge-root")!;
+            const label = badge.querySelector<HTMLElement>(".mantine-Badge-label")!;
+            const cardBounds = contentBounds(card);
+            contains(`${san.textContent} card in ScrollArea`, card.getBoundingClientRect(), bounds);
+            contains(`${san.textContent} badge in card`, badge.getBoundingClientRect(), cardBounds);
+            const textWidths: Record<string, number> = {};
+            for (const [name, node] of [
+                ["SAN", san],
+                ["badge label", label],
+            ] as const) {
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                const textBox = range.getBoundingClientRect();
+                textWidths[name] = textBox.width;
+                for (const rect of range.getClientRects()) {
+                    contains(
+                        `${san.textContent} ${name} ${node.textContent} content fit`,
+                        rect,
+                        contentBounds(node),
+                    );
+                    contains(`${san.textContent} ${name} in card`, rect, cardBounds);
+                    if (name === "badge label")
+                        contains(`${san.textContent} label in badge`, rect, contentBounds(badge));
+                }
+            }
+            const sanBox = san.getBoundingClientRect();
+            const badgeBox = badge.getBoundingClientRect();
+            if (
+                Math.min(sanBox.right, badgeBox.right) - Math.max(sanBox.left, badgeBox.left) > 1 &&
+                Math.min(sanBox.bottom, badgeBox.bottom) - Math.max(sanBox.top, badgeBox.top) > 1
+            )
+                offenders.push(`${san.textContent} SAN overlaps badge`);
+            return {
+                san: san.textContent,
+                label: label.textContent,
+                width: card.getBoundingClientRect().width,
+                textWidths,
+                labelWidth: label.clientWidth,
+            };
+        });
+        return {
+            fontSize: getComputedStyle(document.documentElement).fontSize,
+            tileWidth: element.closest(".mosaic-tile")!.getBoundingClientRect().width,
+            assignedWidth: bounds.right - bounds.left,
+            gridWidth: grid.getBoundingClientRect().width,
+            columns: getComputedStyle(grid).gridTemplateColumns,
+            cards,
+            offenders,
+        };
     });
-    const grid = await importAnalysisFen(page, fen);
-    await page.getByRole("tab", { name: "Analysis", exact: true }).click();
-    const tablebase = page.locator(".mantine-Accordion-item").filter({
-        has: page.getByRole("button", { name: /^Tablebase/ }),
-    });
-    await tablebase.getByRole("button", { name: /^Tablebase/ }).click();
-    const moveLabels = tablebase.locator(
-        ".mantine-SimpleGrid-root > .mantine-Paper-root > .mantine-Group-root > .mantine-Text-root",
-    );
-    await expect(moveLabels).toHaveText([
-        "h8=Q+",
-        "h8=R+",
-        "Kg8",
-        "h8=B",
-        "h8=N",
-        "Kf6",
-        "Kg6",
-        "Kh6",
-        "Kh8",
-    ]);
-    // Mantine removes overflow clipping when the accordion expansion finishes.
-    const panel = tablebase.getByRole("region");
-    await expect(panel).toHaveCSS("overflow", "visible");
-    await expect(panel).toHaveCSS("opacity", "1");
-    for (const card of await tablebase
-        .locator(".mantine-SimpleGrid-root > .mantine-Paper-root")
-        .all()) {
-        await expect(card).toBeVisible();
-        await expect(card).toBeInViewport({ ratio: 1 });
-    }
-    await capture("board-tablebase-winning-moves");
-    await tablebase.getByText("h8=Q+", { exact: true }).click();
-    for (const name of [
-        "h8, White Queen",
-        "h7, empty",
-        "g7, White King",
-        "e8, Black King",
-        "h2, Black Pawn",
+}
+
+for (const scale of [100, 200]) {
+    for (const viewport of [
+        { name: "desktop", width: 1440, height: 900 },
+        { name: "compact", width: 800, height: 720 },
+        { name: "narrow", width: 320, height: 720 },
     ]) {
-        await expect(grid.getByRole("gridcell", { name, exact: true })).toHaveCount(1);
+        test(`board-keyboard: tablebase ranks winning promotions before draws and losses and plays the winner ${viewport.name} ${scale}%`, async ({
+            page,
+            mockScenario,
+            capture,
+        }, testInfo) => {
+            await page.setViewportSize({ width: viewport.width, height: viewport.height });
+            await page.addInitScript(
+                (fontScale) => localStorage.setItem("font-size", String(fontScale)),
+                scale,
+            );
+            const fen = "4k3/6KP/8/8/8/8/7p/8 w - - 0 1";
+            // Fields consumed by the panel from the recorded Lichess /standard response for this FEN.
+            // The parent wins, while winning moves have a child category of loss.
+            await mockScenario({
+                commands: {
+                    get_public_lichess_json: {
+                        result: JSON.stringify({
+                            category: "win",
+                            dtz: 1,
+                            dtm: 17,
+                            moves: [
+                                { uci: "h7h8q", san: "h8=Q+", category: "loss", dtz: -2, dtm: -16 },
+                                { uci: "h7h8r", san: "h8=R+", category: "loss", dtz: -2, dtm: -26 },
+                                { uci: "g7g8", san: "Kg8", category: "draw", dtz: 0, dtm: 0 },
+                                { uci: "g7f6", san: "Kf6", category: "win", dtz: 1, dtm: 19 },
+                                { uci: "g7g6", san: "Kg6", category: "win", dtz: 1, dtm: 19 },
+                                { uci: "g7h6", san: "Kh6", category: "win", dtz: 1, dtm: 19 },
+                                // Exercise the provider's absent-DTM fallback alongside the recorded promotions.
+                                { uci: "g7h8", san: "Kh8", category: "win", dtz: 1, dtm: null },
+                                { uci: "h7h8n", san: "h8=N", category: "win", dtz: 1, dtm: 19 },
+                                { uci: "h7h8b", san: "h8=B", category: "win", dtz: 1, dtm: 15 },
+                            ],
+                        }),
+                    },
+                },
+            });
+            const grid = await importAnalysisFen(page, fen);
+            await page.getByRole("tab", { name: "Analysis", exact: true }).click();
+            const tablebase = page.locator(".mantine-Accordion-item").filter({
+                has: page.getByRole("button", { name: /^Tablebase/ }),
+            });
+            await tablebase.getByRole("button", { name: /^Tablebase/ }).click();
+            const moveLabels = tablebase.locator(
+                ".mantine-SimpleGrid-root > .mantine-Paper-root > .mantine-Group-root > .mantine-Text-root",
+            );
+            await expect(moveLabels).toHaveText([
+                "h8=Q+",
+                "h8=R+",
+                "Kg8",
+                "h8=B",
+                "h8=N",
+                "Kf6",
+                "Kg6",
+                "Kh6",
+                "Kh8",
+            ]);
+            // Mantine removes overflow clipping when the accordion expansion finishes.
+            const panel = tablebase.getByRole("region");
+            await expect(panel).toHaveCSS("overflow", "visible");
+            await expect(panel).toHaveCSS("opacity", "1");
+            const cards = tablebase.locator(".mantine-SimpleGrid-root > .mantine-Paper-root");
+            await expect(cards).toHaveCount(9);
+            await expect(cards.locator(".mantine-Badge-label")).toHaveText([
+                "DTM 16",
+                "DTM 26",
+                "Draw",
+                "DTM 15",
+                "DTM 19",
+                "DTM 19",
+                "DTM 19",
+                "DTM 19",
+                "DTZ 1",
+            ]);
+            await expect(page.locator("html")).toHaveCSS("font-size", `${(16 * scale) / 100}px`);
+            async function assertFit(stage: string) {
+                for (const card of await cards.all()) {
+                    await card.scrollIntoViewIfNeeded();
+                    await expect(card).toBeVisible();
+                    // Vertical reflow uses the existing ScrollArea rather than requiring every row at once.
+                    expect(
+                        await card.evaluate((element) => {
+                            const cardBox = element.getBoundingClientRect();
+                            const scrollBox = element
+                                .closest(".mantine-ScrollArea-viewport")!
+                                .getBoundingClientRect();
+                            return (
+                                cardBox.top >= scrollBox.top - 1 &&
+                                cardBox.bottom <= scrollBox.bottom + 1
+                            );
+                        }),
+                    ).toBe(true);
+                }
+                await cards.first().scrollIntoViewIfNeeded();
+                await capture(`board-tablebase-winning-moves-${stage}`);
+                const geometry = await tablebaseGeometry(tablebase);
+                console.log(
+                    `TABLEBASE_GEOMETRY ${viewport.name} ${scale}% ${stage} ${JSON.stringify(geometry)}`,
+                );
+                await testInfo.attach(`geometry-${stage}`, {
+                    body: JSON.stringify(geometry, null, 2),
+                    contentType: "application/json",
+                });
+                expect(
+                    geometry.offenders,
+                    `tablebase content fit ${viewport.name} ${scale}% ${stage}`,
+                ).toEqual([]);
+                return geometry;
+            }
+            const initial = await assertFit("initial");
+            if (viewport.name === "desktop") {
+                // Widen first so 200% clears the panel minimum, then narrow at the same viewport size.
+                const root = page.locator(".mosaic-root");
+                const split = root.locator(".mosaic-split.-row");
+                await dragMosaicDivider(page, {
+                    root,
+                    split,
+                    direction: "row",
+                    percentage: 15,
+                    crossAxisRatio: 0.25,
+                });
+                const wide = await assertFit("wide-pane");
+                await dragMosaicDivider(page, {
+                    root,
+                    split,
+                    direction: "row",
+                    percentage: 35,
+                    crossAxisRatio: 0.25,
+                });
+                await expect
+                    .poll(async () => (await tablebaseGeometry(tablebase)).assignedWidth)
+                    .toBeLessThan(wide.assignedWidth - 50);
+                const narrow = await assertFit("narrow-pane");
+                expect(narrow.tileWidth).toBeLessThan(wide.tileWidth - 50);
+                expect(wide.assignedWidth).toBeGreaterThan(initial.assignedWidth + 50);
+                expect(wide.cards[0].width).not.toBe(narrow.cards[0].width);
+                expect(page.viewportSize()).toEqual({ width: 1440, height: 900 });
+            }
+            await tablebase.getByText("h8=Q+", { exact: true }).click();
+            for (const name of [
+                "h8, White Queen",
+                "h7, empty",
+                "g7, White King",
+                "e8, Black King",
+                "h2, Black Pawn",
+            ]) {
+                await expect(grid.getByRole("gridcell", { name, exact: true })).toHaveCount(1);
+            }
+        });
     }
-});
+}
 
 test("board-keyboard: imported EP root reaches threefold through real moves and survives reload", async ({
     page,
