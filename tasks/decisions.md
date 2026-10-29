@@ -10789,3 +10789,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Familiarity means matching what ChessRiddle users actually see. Reversal path: copy the prose values into `src/styles/theme.ts`. Recorded on the build branch as entry 08 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
 * **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e7aaf530bf60d778f56da274fbcce35b0accbf4bda011e9284f2d5d8b0b8887a","input_sha256":"843feef8dc9653bf1e802a24cf0634716eac7c360a922e4ca39edc1a5b212b9f","kind":"mutation-receipt","operation":"c755be75038301abb1e003b1f6fed0e8854dfd565072a0073b6186b2d3885f41","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-22"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-23 — What does "offer ChessRiddle's board as the default" change?
+
+* **Question:** ChessRiddle's default board is maple (`#e8ceab`/`#bc7944`) with a wood texture overlay and cburnett pieces. What becomes ChessFable's default?
+* **Governs:** -
+* **Chosen:** A new flat maple SVG board becomes the `board-image` default for users without a stored board. Stored boards are kept. The piece-set default stays `staunty`. The wood texture is not reproduced.
+* **Rejected:** Changing the piece default (outside the scope Felix accepted, raised by review-minimalism); a composited texture asset (one-off generation machinery for a subtle effect); a fallback for unavailable stored names (no board is removed, so nothing new can become unavailable).
+* **Reason:** Smallest change that makes the default board match ChessRiddle. Reversal path: restore the `gray.svg` default in `src/state/atoms.ts`. Recorded on the build branch as entry 09 of 2026-10-29 and renumbered before publication because a parallel worktree published that number first.
+* **Decided by:** Claude Code, autonomously under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"259670cc365020395adf4ebf705e4c60756eb73ed58ad4666daa48fe689334d6","input_sha256":"65666f92929b569e3aa651b987759f407432b3d07ab5e6057fa7c3e6638c0d4e","kind":"mutation-receipt","operation":"0707d4ed705dbce3be870132670b607c18eb765ab57c538f85626cebae18b4c4","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-23"],"target":"decisions-ledger","v":1} -->
