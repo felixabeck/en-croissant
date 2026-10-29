@@ -10869,3 +10869,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Headings are citation targets too. Reversal path: none needed; this corrects wording only and d-20261029-27 stays byte-identical as history.
 * **Decided by:** Claude Code, autonomously during push review under Felix's full-auto build request of 2026-10-29. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c407b3d624a6e4e6d6b806cba181fe1c629694f2ec5b339e7a62870dbe6a4702","input_sha256":"8409b406272c3e3b7e5cd6d00007e386115c3c4fa1e6b89b3a8ce7de368f9d10","kind":"mutation-receipt","operation":"7bba121cd309a83e088e0a865a9482838d513c1ac1c0ebae72b67c9cc17c8e39","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-30"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-31 — Tablebase move ranking uses the resulting position's perspective
+
+* **Date:** 2026-10-29
+* **Governs:** f-20261029-07
+* **Question:** How should TablebaseInfo.tsx order the known tablebase move categories?
+* **Chosen:** Rank child loss, blessed-loss, draw, cursed-win, win in that order, preserving the existing SAN tie-break and uncertain-category fallback ordering.
+* **Rejected:** Ranking child win first, which puts the opponent's win above the mover's win. Also rejected replacing the comparator with API order, which would remove the existing SAN tie-break beyond this correction.
+* **Reason:** The recorded Lichess response for `4k3/6KP/8/8/8/8/7p/8 w - - 0 1` has parent win, winning promotion h8=Q+ with child loss, Kg8 with child draw, and losing Kf6 with child win. The official lila-tablebase HTTP API example uses the same parent/child perspective. The current badges already invert the turn for child outcomes.
+* **Reversal path:** Change the comparator and its regression expectations only if the provider changes its documented response perspective or a separate authorized ordering requirement replaces the SAN tie-break.
+* **Attribution:** Codex technical decision. Plan authorship and arbitration shared one context. Detection and implementation use the same OpenAI model family.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":11,"effect_sha256":"86e9b1fd3d500abf76b07211357a3b5e1fae5e4ac8665acbc7340bf671a40959","input_sha256":"255f5e758bef63d1d9f58f295cfe7c86822caf594728fe847470557480d3968a","kind":"mutation-receipt","operation":"b2db4b375812d7fe5afe0c6df1cd9174045a946acd58ca51911628be87e97591","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-31"],"target":"decisions-ledger","v":1} -->
