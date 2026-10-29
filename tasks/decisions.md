@@ -11035,3 +11035,14 @@ Former private decision identifier: d-20261029-14
 * **Reversal path:** Replace this local scrollport with another mechanism that still gives pointer, wheel, and focus reachability at 800×647, keeps the Build ScrollArea and the shared board-tab clip, and keeps both clipping assertions. No practice-rule or storage change rides along.
 * **Decided by:** Grok autonomously under full auto, drain session a63fe414-f662-43e6-a729-d3f1cb0336fd, run 5d2cb8aa-26a1-4a5c-a0ae-0d00071fe90d. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"86ab7aa64d8430e1b1eb50e6c44197926640511a5adb142fbf8ac3d979104a02","input_sha256":"dd5635431042900da04a10e2c875462cb32760380fdc118d779d2ebb39f035ed","kind":"mutation-receipt","operation":"eb55326f35257cf8471f7e21a46841ed6ba4929481886107cc867c10fe87b41a","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-12 — Remove the inherited Anarchy settings section
+
+* **Question:** Should ChessFable retain the upstream Anarchy section and forced en passant option?
+* **Governs:** -
+* **Chosen:** Remove the entire Anarchy section, its search entry and translations, the persisted forced-en-passant atom, and the board move filter. Normal en passant remains legal and optional. A legacy `forced-ep` value is no longer read and cannot restrict moves.
+* **Rejected:** Hiding only the toggle while an old enabled preference continues restricting board moves.
+* **Reason:** Felix said the inherited setting does not fit his product, then authorized: "Yes, remove this whole section. Do this on a separate work tree." This supersedes only the chess-joke settings preservation clause of d-20260903-09. Its other branding and identity decisions remain historical records.
+* **Reversal path:** Restore the removed feature through a separately authorized product change.
+* **Decided by:** Felix in chat, 2026-10-29 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b82a657ce7d67caba1530884b3ccf3127b1a6739120b9262e5bfab3f222c8273","input_sha256":"98af811c63936c655fc80f3735c9ab1d71698708e3a8e4d1bdbe3676364300e2","kind":"mutation-receipt","operation":"f3416cbeb33e8b48dae1e1755296767e5b5ebfa732be22c06df92041aa219c3a","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-12"],"target":"decisions-ledger","v":1} -->
