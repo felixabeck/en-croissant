@@ -3,7 +3,7 @@ import { act, startTransition } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Token, NormalizedGame } from "@/bindings";
-import { tabsAtom, closeWorkspaceTabAtom } from "@/state/atoms";
+import { tabsAtom, closingTabsAtom, closeWorkspaceTabAtom } from "@/state/atoms";
 import { tabStorage } from "@/state/store/tabStorage";
 import {
   closeTreeStore,
@@ -527,6 +527,32 @@ test("real same-file replacement changes the physical owner and cancels late loo
   await act(async () => settle(found()));
   expect(workspace.get(tabsAtom)).toHaveLength(1);
   expect(mocks.lex).not.toHaveBeenCalled();
+});
+
+test("real notation suppresses publication and automatic admission during pending close with its owner intact", async () => {
+  const { source, sourceStore, settle, signal } = await pendingNotation();
+  const liveOwner = workspace.get(tabsAtom)[0];
+  await act(async () => {
+    workspace.set(closingTabsAtom, (previous) => new Set(previous).add(source.value));
+    expect(workspace.get(tabsAtom)).toEqual([liveOwner]);
+    expect(getCachedTreeStore(source.value)).toBe(sourceStore);
+    expect(signal.aborted).toBe(false);
+    settle(found());
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+    // The pending-close marker must suppress admission before any React cleanup.
+    expect(signal.aborted).toBe(false);
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.lex).not.toHaveBeenCalled();
+  });
+  expect(workspace.get(closingTabsAtom).has(source.value)).toBe(true);
+  expect(workspace.get(tabsAtom)).toEqual([liveOwner]);
+  expect(workspace.get(tabsAtom)[0]).toBe(liveOwner);
+  expect(getCachedTreeStore(source.value)).toBe(sourceStore);
+  expect(signal.aborted).toBe(false);
+  expect(host.textContent).toContain("GameReferences.Searching");
+  expect(host.textContent).not.toContain("GameReferences.Choose");
+  expect(host.textContent).not.toContain(game.white);
+  expect(mocks.navigate).not.toHaveBeenCalled();
 });
 
 test.each(["replace", "close", "retire-cache"])(
