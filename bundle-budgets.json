@@ -9,8 +9,8 @@
   "measurement": {
     "source": "pnpm gate:run frontend-build",
     "date": "2026-10-29",
-    "entry": 556213,
-    "largestLazy": 487189,
-    "total": 1661867
+    "entry": 551356,
+    "largestLazy": 501577,
+    "total": 1668615
   }
 }
