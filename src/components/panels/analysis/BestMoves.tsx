@@ -241,6 +241,15 @@ function BestMovesComponent({
             <GripVertical size="1rem" />
           </IconAction>
         </Group>
+        <Progress
+          aria-label={engine.name}
+          className={classes.progress}
+          color="var(--cf-engine-status)"
+          value={isGameOver || failure ? 0 : progress}
+          animated={available && progress < 100 && settings.enabled && !isGameOver && !failure}
+          size={3}
+          striped={available && progress < 100 && !settings.enabled && !failure}
+        />
       </Box>
       <Collapse in={settingsOn} px={30} pb={15}>
         <EngineSettingsForm
@@ -251,14 +260,6 @@ function BestMovesComponent({
         />
       </Collapse>
 
-      <Progress
-        aria-label={engine.name}
-        className={classes.progress}
-        value={isGameOver || failure ? 0 : progress}
-        animated={available && progress < 100 && settings.enabled && !isGameOver && !failure}
-        size="xs"
-        striped={available && progress < 100 && !settings.enabled && !failure}
-      />
       <Accordion.Panel pos="relative">
         <Table>
           <Table.Tbody>

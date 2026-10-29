@@ -9,11 +9,6 @@
   box-shadow: none;
 }
 
-[data-mantine-color-scheme] .card {
-  background-color: var(--cf-card);
-  border-color: var(--cf-border);
-}
-
 .card:hover {
   box-shadow: var(--mantine-shadow-md);
 }
