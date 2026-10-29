@@ -10907,3 +10907,20 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Attribution:** Adopted Codex plan decision. Plan authorship and arbitration share one context. Detection runs on the same OpenAI model family as the code.
 * **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":23,"effect_sha256":"47d621700874766b6936d8e9d2cbe7c480e60a0f4ee240abca48c7cb6a9a7613","input_sha256":"93ff6493d62ffce5218ca66058324bb7489cb79e16b80a30cd4d98f82c97108a","kind":"mutation-receipt","operation":"8d6450f1a60be93606836b4b40bb71510051bbd8cc01056fe15364a3366c7438","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-32","d-20261029-33"],"target":"decisions-ledger","v":1} -->
+
+### d-20261029-17 — How should imported ChessBase citations open their referenced games?
+
+* **Question:** How should the requested clickable ChessBase game references resolve imported text and open the correct complete game without modifying the preparation?
+* **Governs:** -
+* **Chosen:** Derive citations during comment rendering and search existing local Library databases and supported linked game collections through paginated cancellable APIs. Open only a uniquely verified complete result automatically. Offer source-qualified candidates for ambiguity or incomplete search, retain safe actionable source failure reasons and explain the PGN import prerequisite when games are absent. Preserve the shared comment dialect, original user files and the existing source-qualified tab admission path. Extract the repeated database-game tab seed for the two existing lists and new opener. Agent owns browser and real-product acceptance.
+* **Rejected:** Persist proprietary links or mutate imported PGNs, download or reconstruct licensed games from citation text, select the first matching row, treat a failed or capped search as no match, add a native resolver or another database/tab persistence mechanism, ask Felix for routine visual acceptance under full auto.
+* **Reason:** Felix explicitly requested clickable opening-preparation game references and full-auto Codex execution in a separate worktree. Read-only inspection of Schw_Caro Kann.pgn found the two exact screenshot citations and 332 result-prefixed citations across the registered repertoire workspace. Existing Library discovery and game APIs expose the required metadata, and createTab already validates original linked PGN identity and preserves annotations. This follows the Library product decision and d-20261010-03 without changing list gestures governed by d-20261010-02. Plan reviews r1 and r2 closed the safe failure-reporting correction.
+* **Reversal path:** Remove citation decoration and local lookup interaction. Retain the shared database-game opener while its existing two callers remain. No migration or preparation rewrite needs reversal.
+* **Allocation correction:** The unpublished feature-worktree allocation shown below collided with a different already-published decision during rebase. This entry preserves the same feature decision under a fresh writer-allocated identity. Published decisions remain intact. Historical feature reports retain the former identifier and are interpreted through this mapping.
+
+```text
+Former unpublished feature identifier: d-20261029-01
+```
+
+* **Decided by:** Codex, full auto requested 2026-10-29. Plan authorship and arbitration share one context. Detection runs on the same OpenAI model family as the code. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":15,"effect_sha256":"c9824c492002423d1be0dc743bfe9a7a6fbfaed851422a74e36d3391e970c1ec","input_sha256":"64ef8212cbfa81ff63710a7e244f09ed0fc370579ce1005191dec41221fb391f","kind":"mutation-receipt","operation":"c9406614a97cec36e5bfea1416df947fdd105a3e8428a2e72097cbbd245b9c6f","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-17"],"target":"decisions-ledger","v":1} -->
