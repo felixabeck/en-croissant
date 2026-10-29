@@ -46,6 +46,7 @@
           "src/components/common/EvalChart.tsx",
           "src/components/common/GameInfo.tsx",
           "src/components/common/GameNotation.tsx",
+          "src/components/common/GameReference.tsx",
           "src/components/common/MoveCell.tsx",
           "src/components/common/MoveControls.tsx",
           "src/components/common/OpeningName.tsx",
@@ -82,9 +83,11 @@
           "src/components/files/**",
           "src/components/library/**",
           "src/components/panels/database/**",
+          "src/utils/databaseGame.ts",
           "src/utils/db.ts",
           "src/utils/directories.ts",
-          "src/utils/files.ts"
+          "src/utils/files.ts",
+          "src/utils/gameReferences.ts"
         ]
       },
       {

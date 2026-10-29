@@ -32,6 +32,11 @@ export default defineConfig({
     snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}{ext}",
     projects: [
         {
+            name: "game-references",
+            testMatch: /game-references\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
+        },
+        {
             name: "game-interruption",
             testMatch: /game-interruption\.spec\.ts/,
             use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },

@@ -28,6 +28,7 @@ import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { tabsAtom } from "@/state/atoms";
 import { ELO_FILTER_MAX, query_games } from "@/utils/db";
 import { createTab, runTabCreation } from "@/utils/tabs";
+import { databaseGameSeed } from "@/utils/databaseGame";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameCard from "./GameCard";
 import GridLayout from "./GridLayout";
@@ -70,16 +71,8 @@ function GameTable() {
       runTabCreation({
         create: () =>
           createTab({
-            tab: { name: `${record.white} - ${record.black}`, type: "analysis" },
+            ...databaseGameSeed(record, file),
             setTabs,
-            pgn: record.moves,
-            headers: record,
-            gameOrigin: {
-              kind: "database",
-              database: file,
-              gameId: record.id,
-              linked: record.linked ?? undefined,
-            },
           }),
         onSuccess: () => navigate({ to: "/" }),
         onError: reportOpenError,

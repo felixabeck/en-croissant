@@ -7,6 +7,7 @@ import type { DatabaseHandle, NormalizedGame } from "@/bindings";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { tabsAtom } from "@/state/atoms";
 import { createTab, runTabCreation } from "@/utils/tabs";
+import { databaseGameSeed } from "@/utils/databaseGame";
 import { useTranslation } from "react-i18next";
 
 function GamesTable({
@@ -43,18 +44,8 @@ function GamesTable({
         void runTabCreation({
           create: () =>
             createTab({
-              tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
+              ...databaseGameSeed(game, databasePath),
               setTabs,
-              pgn: game.moves,
-              headers: game,
-              gameOrigin: databasePath
-                ? {
-                    kind: "database",
-                    database: databasePath,
-                    gameId: game.id,
-                    linked: game.linked ?? undefined,
-                  }
-                : undefined,
             }),
           onSuccess: () => navigate({ to: "/" }),
           onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),

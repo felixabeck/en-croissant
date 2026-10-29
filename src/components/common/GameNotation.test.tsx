@@ -60,6 +60,9 @@ vi.mock("lucide-react", () => {
   };
 });
 vi.mock("@/components/common/Comment", () => ({ default: () => null }));
+vi.mock("./GameReference", () => ({
+  GameReferenceProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 vi.mock("@/components/common/IconAction", () => ({
   default: ({ children, label, ...props }: any) => (
     <button type="button" aria-label={label} {...props}>

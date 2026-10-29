@@ -1,4 +1,5 @@
 import { beforeEach, expect, test, vi } from "vitest";
+import { recognizeGameReferences } from "../gameReferences";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import type { Token } from "@/bindings";
@@ -1040,6 +1041,25 @@ test("multiple prose comments and annotations retain their placement through sav
     expect(reparsed.root).toEqual(parsed.root);
     expect(reparsed.headers).toEqual(parsed.headers);
     expect(reparsed.position).toEqual(parsed.position);
+});
+
+test("citation text and opaque commands survive parse, save and reparse unchanged", async () => {
+    mockCommentLexer();
+    const citation =
+        "0-1 Beerdsen,T (2520)-Bluebaum,M (2651) Elllobregat op 3rd Sant Boi de Llobregat 2022 (3)";
+    const comment = `Before **${citation}** ordinary prose. 0-1 Srinath,R (2255)-Deac,B (2690) Titled Tuesday intern op 19th Dec Late Chess.com INT blitz 2023 (6)`;
+    const source = `[Event "Citation fixture"]\n[Site "Local"]\n[Date "2022.12.01"]\n\n1. e4 {[%evp 0,34,61] ${comment} [%timestamp 12]} e5 *`;
+    const parsed = await parsePGN(source);
+    const node = parsed.root.children[0];
+    expect(node.comment).toBe(comment);
+    expect(node.commands).toBe("[%evp 0,34,61]  [%timestamp 12]");
+    expect(recognizeGameReferences(node.comment)).toHaveLength(2);
+    const written = getPGN(parsed.root, { ...ALL_MARKUPS, headers: parsed.headers });
+    expect(written).toContain(comment);
+    expect(written).toContain(node.commands);
+    const reparsed = await parsePGN(written);
+    expect(reparsed.root).toEqual(parsed.root);
+    expect(reparsed.headers).toEqual(parsed.headers);
 });
 
 test("an unmodeled command is hidden from the comment and written back on save", async () => {

@@ -1,4 +1,42 @@
 // Historical evidence: docs/context/RULE-HISTORY.md → scripts/verify-app.mjs.
+// Citation staging receipt, root-owned, 2026-10-29.
+// Root ran the unchanged full verifier with external debugger input-only staging against the real
+// disposable WebDriver session. /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/
+// gate-citation-assertions-negative.zVQCAj/log and its completion.record record actual exit 1,
+// the documented failure status 1.
+// CR1 printed FAIL  CR1 imported formatted citations preserve prose and expose accessible notation actions.
+// CR2 printed FAIL  CR2 citation native database lookup admits the exact full game and starting FEN.
+// CR3 printed FAIL  CR3 citation native linked lookup admits original annotations, variations and file occurrence.
+// CR4 printed FAIL  CR4 absent citation explains the ChessBase PGN Library prerequisite without admitting a tab.
+// /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-citation-input-stager.185bA5/
+// completion.record records completed 0. /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/
+// citation-staging-inputs-2.json records all four exact before/restored SHA256 equalities.
+// CR1 withheld the actual first citation DOM children.
+// CR2 changed only the admitted tree Round to 99. CR3 removed only the linked tree Custom header.
+// CR4 withheld the actual PGN Library guidance text. DOM nodes/text and compressed storage bytes
+// were restored immediately after each actual observation and before its existing comparison.
+// The verifier, libraries, fixtures and comparisons remained unchanged. Module SHA256 at staging:
+// 3915ce99453249561009967b1c483d167deebaeafd53234d79b9988914e3692d.
+// This is detection/restoration evidence, not an isolated-exit-causality claim. Inherited DS2 and
+// missing screenshot-output-directory failures also occurred. Root created that directory afterward.
+// This staging did not provide ordinary positive acceptance. Later acceptance is recorded in the
+// durable handoff below.
+// Durable handoff: tasks/handoffs/2026-10-29-opening-game-references-review.md.
+// DS2 supplemental staging receipt, root-owned, 2026-10-29.
+// /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-database-storage-negative.m0Cqvd/log
+// printed exactly one failure: FAIL  DS2 database explorer persists the successful selection with its exact decimal storage_size
+// Its completion.record records actual 1, the documented failure status 1. All CR1–CR4 passed
+// without injected faults, as did all other checks and shutdown.
+// /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-database-storage-stager.qaqmmK/
+// completion.record records completed 0. /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/
+// ds2-staging-inputs.json records actual database-view session storage encoded with the production
+// codec. At the observation boundary only, storage_size changed from its correct decimal string to
+// the same numeric value. Exact original compressed bytes were restored before the existing
+// comparison. The verifier, fixtures, libraries and comparison predicates remained unchanged.
+// Root inspected raw output and equal before/restored hashes. Module SHA256 at staging:
+// de0a3d39390d2d4581dde43e49b4711af4ffa7f31c6e945317c6817dbad0710c.
+// This intentionally negative run does not establish isolated green DS2. Full ordinary positive
+// verification remains required and is owned by root.
 // Native engine publication staging: 2026-10-15, producer 8e3f1852 (fixed release).
 // Run evidence: /tmp/build-4056308d/native-engine-matrix-root-hide.log.
 // Exit evidence: /tmp/build-4056308d/native-engine-matrix-root-hide.actual-exit records status 1.
@@ -2265,7 +2303,7 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
   await showLibraryOverview(session);
 }
 
-async function verifyGameOpening(session, ownedRoot) {
+async function verifyGameOpening(session, ownedRoot, filesWorkspace) {
   const assertion = async (message, action) => {
     try {
       await action();
@@ -2960,6 +2998,234 @@ async function verifyGameOpening(session, ownedRoot) {
       console.log(
         `  .. GO14 owner ${owner.value}, admitted IDs ${JSON.stringify(admittedIds)}, Event ${initialTree.headers.event} -> ${dirtyTree.headers.event} -> ${replacement.tree.headers.event}, dirty ${initialTree.dirty} -> ${dirtyTree.dirty} -> ${replacement.tree.dirty}, file gameNumber 1 -> 0, confirmation gone`,
       );
+    },
+  );
+
+  // Native lookup and full-game admission cannot be proved by mocked browser IPC.
+  // Removal path: remove this block and CR1–CR4's header when citation lookup is retired.
+  const citationLabels = [
+    "0-1 Beerdsen,T (2520)-Bluebaum,M (2651) Elllobregat op 3rd Sant Boi de Llobregat 2022 (3)",
+    "0-1 Srinath,R (2255)-Deac,B (2690) Titled Tuesday intern op 19th Dec Late Chess.com INT blitz 2023 (6)",
+    "0-1 Unlisted,Z-Unknown,Q 2021 (99)",
+  ];
+  const citationWorkspace = { id: { id: filesWorkspaceId }, kind: "fileWorkspace" };
+  const citationPrefix = `verify-citations-${randomUUID()}`;
+  const createCitationFile = (name, pgn, type = "other") =>
+    invoke("create_workspace_file", {
+      workspace: citationWorkspace,
+      parent: citationWorkspace,
+      name,
+      metadata: { type, tags: [] },
+      content: { kind: "text", pgn },
+    });
+  let citationPreparation;
+  let citationDatabase;
+  let linkedCitationSource;
+  const setupCitations = async () => {
+    citationPreparation = await createCitationFile(
+      `${citationPrefix}-preparation`,
+      `[Event "Citation preparation"]\n[White "Preparation"]\n[Black "Citations"]\n[Result "*"]\n\n{Before **${citationLabels[0]}** ordinary prose. ${citationLabels[1]} Missing: ${citationLabels[2]}} 1. e4 *\n`,
+    );
+    const citationDatabaseInput = await createCitationFile(
+      `${citationPrefix}-database-input`,
+      '[Event "Elllobregat op 3rd"]\n[Site "Sant Boi de Llobregat"]\n[Date "2022.12.01"]\n[Round "3"]\n[White "Beerdsen, Thomas"]\n[Black "Bluebaum, Matthias"]\n[WhiteElo "2520"]\n[BlackElo "2651"]\n[Result "0-1"]\n[FEN "8/8/8/8/8/8/6k1/K7 b - - 12 23"]\n[SetUp "1"]\n\n23... Kf3 0-1\n',
+    );
+    const citationRoot = await invoke("get_database_workspace", {});
+    citationDatabase = await invoke("create_workspace_database", {
+      root: citationRoot,
+      filename: `${citationPrefix}.db3`,
+    });
+    await invoke("convert_pgn", {
+      progressId: `${citationPrefix}:import`,
+      files: [citationDatabaseInput.handle],
+      database: citationDatabase,
+      timestamp: null,
+      title: citationPrefix,
+      description: "Native citation acceptance",
+    });
+    linkedCitationSource = await createCitationFile(
+      `${citationPrefix}-linked`,
+      '[Event "Titled Tuesday intern op 19th Dec Late"]\n[Site "Chess.com INT blitz"]\n[Date "2023.12.19"]\n[Round "6"]\n[White "Srinath, Rao"]\n[Black "Deac, Bogdan"]\n[WhiteElo "2255"]\n[BlackElo "2690"]\n[Result "0-1"]\n[Custom "citation original"]\n\n1. d4 $1 {citation source annotation} (1. e4 e5) d5 0-1\n',
+      "game",
+    );
+    console.log(
+      `  .. citation disposable inputs: ${JSON.stringify({ preparation: join(filesWorkspace, `${citationPreparation.name}.pgn`), database: join(ownedRoot, `${citationPrefix}.db3`), linked: join(filesWorkspace, `${linkedCitationSource.name}.pgn`) })}`,
+    );
+  };
+  const citationSurface = async () => {
+    if (!citationPreparation || !citationDatabase || !linkedCitationSource)
+      throw new Error("citation fixture setup did not finish");
+    await showLibraryOverview(session);
+    await wait(
+      "citation preparation listed",
+      `window.dispatchEvent(new Event('focus')); return document.querySelector('[role="treeitem"][aria-label="' + arguments[0] + '"]');`,
+      [citationPreparation.name],
+    );
+    const row = await filesRowCoordinates(session, citationPreparation.name);
+    await clickAt(session, row.x, row.y);
+    await wait(
+      "citation preparation Open game action enabled",
+      "return [...document.querySelectorAll('button')].some(node => node.textContent.trim() === 'Open game' && !node.disabled)",
+    );
+    const open = await button("Open game");
+    if (open.disabled) throw new Error("citation preparation Open game action is disabled");
+    await clickAt(session, open.x, open.y);
+    await wait(
+      "citation preparation full notation",
+      "return location.pathname === '/' && document.querySelector('[data-game-reference]')",
+    );
+  };
+  const activateCitation = async (label) => {
+    const target = await coordinates(
+      `[...document.querySelectorAll('[data-game-reference]')].find(node => node.textContent === arguments[0])`,
+      [label],
+    );
+    const before = await snapshot();
+    await clickAt(session, target.x, target.y);
+    await waitFor(
+      "citation lookup terminal",
+      async () => {
+        const workspace = await snapshot();
+        const terminalDialog = await session.execute(
+          `const dialog = document.querySelector('[role="dialog"]'); return Boolean(dialog && !dialog.querySelector('[role="status"]'));`,
+        );
+        return (
+          terminalDialog ||
+          (workspace.activeTab !== before.activeTab &&
+            workspace.tabs.some((entry) => entry.value === workspace.activeTab))
+        );
+      },
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+  };
+  const completeCitationAdmission = async (white) => {
+    const choice = await session.execute(
+      `return [...document.querySelectorAll('[role="dialog"] button')].find(node => node.textContent.trim() === 'Open game') != null`,
+    );
+    if (choice) {
+      const target = await coordinates(
+        `[...document.querySelectorAll('[role="dialog"] .mantine-Paper-root')].find(node => node.textContent.includes(arguments[0]))?.querySelector('button')`,
+        [white],
+      );
+      await clickAt(session, target.x, target.y);
+    }
+  };
+  const readCitationTree = async () => {
+    const current = await snapshot();
+    const tab = current.tabs.find((entry) => entry.value === current.activeTab);
+    const raw = await session.execute("return sessionStorage.getItem(arguments[0])", [
+      tab.treeKey ?? tab.value,
+    ]);
+    return { tab, tree: raw && deserializeStorageValue(raw)?.state };
+  };
+  await assertion(
+    "CR1 imported formatted citations preserve prose and expose accessible notation actions",
+    async () => {
+      await setupCitations();
+      await citationSurface();
+      const visible = await session.execute(
+        `const buttons = [...document.querySelectorAll('[data-game-reference]')]; return { labels: buttons.map(node => node.textContent), bold: buttons[0]?.querySelector('strong')?.textContent, prose: document.body.innerText.includes('ordinary prose.') };`,
+      );
+      if (
+        JSON.stringify(visible.labels) !== JSON.stringify(citationLabels) ||
+        visible.bold !== citationLabels[0] ||
+        !visible.prose
+      )
+        throw new Error(`citation notation mismatch: ${JSON.stringify(visible)}`);
+    },
+  );
+  await assertion(
+    "CR2 citation native database lookup admits the exact full game and starting FEN",
+    async () => {
+      await citationSurface();
+      const before = await snapshot();
+      await activateCitation(citationLabels[0]);
+      await completeCitationAdmission("Beerdsen, Thomas");
+      await waitFor(
+        "citation database active tab after selection",
+        async () => {
+          const workspace = await snapshot();
+          return (
+            workspace.activeTab !== before.activeTab &&
+            workspace.tabs.some((entry) => entry.value === workspace.activeTab)
+          );
+        },
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      );
+      await wait(
+        "citation database tab",
+        "return location.pathname === '/' && document.body.innerText.includes('Beerdsen')",
+      );
+      const { tab, tree } = await readCitationTree();
+      if (
+        before.tabs.some((entry) => entry.value === tab.value) ||
+        tab.gameOrigin.kind !== "database" ||
+        tab.gameOrigin.database.id.id !== citationDatabase.id.id ||
+        tree?.headers.white !== "Beerdsen, Thomas" ||
+        tree.headers.black !== "Bluebaum, Matthias" ||
+        tree.headers.round !== "3" ||
+        tree.root.fen !== "8/8/8/8/8/8/6k1/K7 b - - 12 23" ||
+        tree.root.children[0]?.san !== "Kf3"
+      )
+        throw new Error(`citation database admission mismatch: ${JSON.stringify({ tab, tree })}`);
+    },
+  );
+  await assertion(
+    "CR3 citation native linked lookup admits original annotations, variations and file occurrence",
+    async () => {
+      await citationSurface();
+      const priorActiveTab = (await snapshot()).activeTab;
+      await activateCitation(citationLabels[1]);
+      await completeCitationAdmission("Srinath, Rao");
+      await waitFor(
+        "citation linked active tab after selection",
+        async () => {
+          const workspace = await snapshot();
+          return (
+            workspace.activeTab !== priorActiveTab &&
+            workspace.tabs.some((entry) => entry.value === workspace.activeTab)
+          );
+        },
+        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+      );
+      await wait(
+        "citation linked tab",
+        "return location.pathname === '/' && document.body.innerText.includes('Srinath')",
+      );
+      const { tab, tree } = await readCitationTree();
+      if (
+        tab.gameOrigin.kind !== "file" ||
+        tab.gameOrigin.file.handle.id.id !== linkedCitationSource.handle.id.id ||
+        tab.gameOrigin.gameNumber !== 0 ||
+        tree?.headers.other.Custom !== "citation original" ||
+        !tree.linkedSource ||
+        tree.root.children[0]?.comment !== "citation source annotation" ||
+        !tree.root.children[0]?.nags.includes(1) ||
+        tree.root.children[1]?.children[0]?.san !== "e5"
+      )
+        throw new Error(`citation linked admission mismatch: ${JSON.stringify({ tab, tree })}`);
+    },
+  );
+  await assertion(
+    "CR4 absent citation explains the ChessBase PGN Library prerequisite without admitting a tab",
+    async () => {
+      await citationSurface();
+      const before = await snapshot();
+      await activateCitation(citationLabels[2]);
+      const missing = await session.execute(
+        `const dialog = document.querySelector('[role="dialog"]'); return dialog?.textContent.includes('ChessBase as PGN') && dialog.textContent.includes('Library') && ![...dialog.querySelectorAll('button')].some(node => node.textContent.trim() === 'Open game');`,
+      );
+      const after = await snapshot();
+      if (
+        !missing ||
+        JSON.stringify(before.tabs) !== JSON.stringify(after.tabs) ||
+        before.activeTab !== after.activeTab
+      )
+        throw new Error("missing citation guidance or source-tab preservation mismatch");
+      const close = await coordinates(
+        `document.querySelector('[role="dialog"] .mantine-Modal-close')`,
+      );
+      await clickAt(session, close.x, close.y);
     },
   );
 }
@@ -4479,7 +4745,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     check(notation === true, filesNotationCheck, notation.error);
   }
 
-  await verifyGameOpening(session, ownedRoot);
+  await verifyGameOpening(session, ownedRoot, filesWorkspace);
   await verifyLinkedCollections(session, filesWorkspace, profileDirectory);
   await verifyConversionCancellation(session, ownedRoot);
 

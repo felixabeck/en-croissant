@@ -14,6 +14,7 @@ import {
   forbiddenCommentElements,
 } from "./tests/commentDialectCases";
 import { assertCommentFormatting } from "./tests/assertCommentFormatting";
+import { GameReferenceContext } from "./GameReference";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -91,6 +92,79 @@ test("keeps the move-like prefix as text before strong formatting", async () => 
   expect(container.querySelector("span")?.firstChild?.textContent).toBe("59. ");
   expect(container.querySelector("strong")?.textContent).toBe("x");
   expect(container.querySelector(forbiddenCommentElements)).toBeNull();
+});
+
+test("decorates across rich formatting, retains every character and activates the correct citation", async () => {
+  const activate = vi.fn();
+  const first =
+    "0-1 Beerdsen,T (2520)-Bluebaum,M (2651) Elllobregat op 3rd Sant Boi de Llobregat 2022 (3)";
+  const second =
+    "0-1 Srinath,R (2255)-Deac,B (2690) Titled Tuesday intern op 19th Dec Late Chess.com INT blitz 2023 (6)";
+  await act(async () =>
+    root.render(
+      <GameReferenceContext.Provider value={activate}>
+        <Comment
+          comment={`Before ${first.replace("Beerdsen,T", "**Beerdsen,T**")} then ${second.replace("Deac,B", "++Deac,B++")} after.`}
+        />
+      </GameReferenceContext.Provider>,
+    ),
+  );
+  expect(container.textContent).toBe(`Before ${first} then ${second} after.`);
+  const buttons = container.querySelectorAll("button");
+  expect(buttons).toHaveLength(2);
+  expect(buttons[0].querySelector("strong")?.textContent).toBe("Beerdsen,T");
+  expect(buttons[1].querySelector("u")?.textContent).toBe("Deac,B");
+  await act(async () => buttons[1].click());
+  expect(activate).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      label: second,
+      year: "2023",
+      round: "6",
+      black: expect.objectContaining({ surname: "Deac" }),
+    }),
+  );
+});
+
+test("leaves an unterminated citation tail outside the action and preserves its text", async () => {
+  const activate = vi.fn();
+  const label = "0-1 Beerdsen,T (2520)-Bluebaum,M (2651)";
+  const context = "BEL-NED 2017 ICCF and this is ordinary preparation prose.";
+  const comment = `Before ${label} ${context}`;
+  await act(async () =>
+    root.render(
+      <GameReferenceContext.Provider value={activate}>
+        <Comment comment={comment} />
+      </GameReferenceContext.Provider>,
+    ),
+  );
+
+  const button = container.querySelector("button");
+  expect(button?.textContent).toBe(label);
+  expect(button?.previousSibling?.textContent).toBe("Before ");
+  expect(button?.nextSibling?.textContent).toBe(` ${context}`);
+  expect(container.textContent).toBe(comment);
+
+  await act(async () => button?.click());
+  expect(activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ label, context }));
+});
+
+test("an external link anywhere across a citation keeps its behavior without nested actions", async () => {
+  const activate = vi.fn();
+  for (const comment of [
+    "[0-1 Beerdsen,T-Bluebaum,M](https://example.com/game)",
+    "0-1 **[Beerdsen,T](https://example.com/player)**-Bluebaum,M",
+  ]) {
+    await act(async () =>
+      root.render(
+        <GameReferenceContext.Provider value={activate}>
+          <Comment comment={comment} />
+        </GameReferenceContext.Provider>,
+      ),
+    );
+    expect(container.querySelector("a")?.target).toBe("_blank");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.textContent).toBe("0-1 Beerdsen,T-Bluebaum,M");
+  }
 });
 
 test.each(["\n\n", "\n\n\n\n"])(

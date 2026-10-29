@@ -41,6 +41,7 @@ import {
 } from "./notationRows";
 import styles from "./GameNotation.module.css";
 import OpeningName from "./OpeningName";
+import { GameReferenceProvider } from "./GameReference";
 
 // Bound the frames spent waiting for React to mount a row after its offset scroll.
 const NOTATION_REVEAL_MAX_ATTEMPTS = 10;
@@ -203,7 +204,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
   useHotkeys(keyMap.TOGGLE_BLUR.keys, () => setInvisible((value) => !value));
   useHotkeys(keyMap.COPY_PGN.keys, () => copyPgn());
 
-  return (
+  const content = (
     <Paper withBorder flex={1} style={{ position: "relative", overflow: "hidden" }}>
       <Group h="100%" wrap="nowrap" align="stretch" gap={0}>
         {controls && (
@@ -280,6 +281,7 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
       </Group>
     </Paper>
   );
+  return <GameReferenceProvider>{content}</GameReferenceProvider>;
 }
 
 function NotationHeader() {
