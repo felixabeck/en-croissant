@@ -19579,6 +19579,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
 * **Fix:** Use an existing accessible danger control presentation locally for the file-detail Trash action, preserving the same localized label, action, focus and confirmation. No global palette or checker change.
 * **Proof:** Keep the dark mixed journey. Remove only the correction through Git and reproduce the precise contrast failure, then restore green. Retain focused, related, bundle and full pre-review proof.
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"488b3250a2d4fd8790553e19db4c865788e9799b570baa7c6df38eb32fd5e5ed","options":{"section":null},"request_id_sha256":"2558e6a307536d59e2c03fb1ea6035eb98661f67960871207012f72e07ed44fc","results":["f-20261030-14"],"target":"f-20261030-14","v":1} -->
 
 ### Selected unavailable Library row has insufficient dark description contrast
 
