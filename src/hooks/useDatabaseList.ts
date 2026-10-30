@@ -2,12 +2,35 @@ import useSWR, { type ScopedMutator, type SWRConfiguration } from "swr";
 import { listingFailure } from "@/components/files/listingFailure";
 import { type NativeRequestOwner, useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
+import { getDefaultStore } from "jotai";
+import {
+    fileWorkspaceAtom,
+    referenceDbAtom,
+    reconcileReferenceCollectionAtom,
+} from "@/state/atoms";
 
 export const DATABASE_LIST_KEY = "databases" as const;
 export const DATABASE_LIST_MAX_RETRIES = 3;
 
+let latestReferenceListing: object | undefined;
+
 export function fetchDatabaseList(owner: NativeRequestOwner) {
-    return owner.run((signal) => getDatabases({ signal }));
+    return owner.run(async (signal) => {
+        const listing = {};
+        latestReferenceListing = listing;
+        const store = getDefaultStore();
+        const workspace = store.get(fileWorkspaceAtom);
+        const reference = store.get(referenceDbAtom);
+        const result = await getDatabases({ signal });
+        if (!signal.aborted && latestReferenceListing === listing && result.collections) {
+            store.set(reconcileReferenceCollectionAtom, {
+                workspace,
+                reference,
+                collections: result.collections,
+            });
+        }
+        return result;
+    });
 }
 
 export async function refreshDatabaseList(owner: NativeRequestOwner, mutate: ScopedMutator) {

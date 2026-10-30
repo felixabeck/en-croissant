@@ -23,11 +23,7 @@ import { loadSignedCatalog } from "@/utils/signedCatalog";
 import { logFailureSafely, normalizeError, safeFailureContext } from "@/platform/errors";
 import i18n from "i18next";
 import { getDefaultStore } from "jotai";
-import {
-    fileWorkspaceAtom,
-    referenceDbAtom,
-    reconcileReferenceCollectionAtom,
-} from "@/state/atoms";
+import { fileWorkspaceAtom } from "@/state/atoms";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }> & {
     collection?: import("@/bindings").CollectionDescriptor;
@@ -40,6 +36,7 @@ export type DatabaseList = {
     databases: ManagedDatabaseInfo[];
     unread: { filename: string; error: string }[];
     root: DatabaseRootHandle;
+    /** Absent when linked collections are unsupported, rather than an empty authoritative listing. */
     collections?: import("@/bindings").CollectionDescriptor[];
 };
 
@@ -262,14 +259,9 @@ function databaseReadErrorMessage(permission: boolean, missing: boolean): string
     return i18n.t("Databases.LoadError.Title");
 }
 
-let latestReferenceListing: object | undefined;
-
 export async function getDatabases(options: { signal?: AbortSignal } = {}): Promise<DatabaseList> {
-    const referenceListing = {};
-    latestReferenceListing = referenceListing;
     const store = getDefaultStore();
     const workspace = store.get(fileWorkspaceAtom);
-    const reference = store.get(referenceDbAtom);
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
     const linkedSupported = await tauri.linkedCollectionsSupported();
@@ -311,16 +303,9 @@ export async function getDatabases(options: { signal?: AbortSignal } = {}): Prom
         );
         values.push({ ...database, collection });
     }
-    if (
-        linkedSupported &&
-        !options.signal?.aborted &&
-        latestReferenceListing === referenceListing
-    ) {
-        store.set(reconcileReferenceCollectionAtom, { workspace, reference, collections });
-    }
     return {
         databases: values,
-        collections,
+        collections: linkedSupported ? collections : undefined,
         root,
         unread: databases.unread.map(({ filename, category }) => ({
             filename,

@@ -5,6 +5,7 @@ import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import i18n from "i18next";
 import { supportedLocales } from "@/i18n";
 import { decodeCompressedOrJson } from "@/state/store/debouncedStorage";
+import { fetchDatabaseList } from "@/hooks/useDatabaseList";
 
 const mocks = vi.hoisted(() => ({
     getDatabaseWorkspace: vi.fn(),
@@ -114,6 +115,12 @@ const database = (id: string, filename = `${id}.db3`): ManagedDatabaseInfo => ({
 
 describe("database capability UI mapping", () => {
     it("hides trashed non-account databases, retains account errors, and reconciles only the removed reference owner", async () => {
+        const controller = new AbortController();
+        const load = () =>
+            fetchDatabaseList({
+                run: (request) => request(controller.signal),
+                supersede: async () => {},
+            });
         const { tauri: native } = await import("@/platform/tauri");
         const { getDefaultStore } = await import("jotai");
         const { fileWorkspaceAtom, referenceDbAtom } = await import("@/state/atoms");
@@ -140,16 +147,16 @@ describe("database capability UI mapping", () => {
             mocks.listWorkspaceDatabases.mockResolvedValue({ entries: [], unread: [] });
             mocks.getDbInfo.mockResolvedValue(database("index"));
             vi.mocked(native.listLinkedCollections).mockResolvedValue([collection]);
-            expect((await getDatabases()).databases).toHaveLength(1);
+            expect((await load()).databases).toHaveLength(1);
             collection.status = "trashed";
-            expect((await getDatabases()).databases).toEqual([]);
+            expect((await load()).databases).toEqual([]);
             expect(store.get(referenceDbAtom)).toEqual(collection.database);
             collection.status = "ready";
-            expect((await getDatabases()).databases).toHaveLength(1);
+            expect((await load()).databases).toHaveLength(1);
             expect(store.get(referenceDbAtom)).toEqual(collection.database);
             collection.status = "trashed";
             collection.account = { provider: "lichess", account: "player" };
-            expect((await getDatabases()).databases).toMatchObject([
+            expect((await load()).databases).toMatchObject([
                 { type: "error", collection: { status: "trashed" } },
             ]);
             let finishOlder!: (value: import("@/bindings").CollectionDescriptor[]) => void;
@@ -158,23 +165,25 @@ describe("database capability UI mapping", () => {
             });
             const calls = vi.mocked(native.listLinkedCollections).mock.calls.length;
             vi.mocked(native.listLinkedCollections).mockReturnValueOnce(older);
-            const olderListing = getDatabases();
+            const olderListing = load();
             await vi.waitFor(() =>
                 expect(native.listLinkedCollections).toHaveBeenCalledTimes(calls + 1),
             );
-            await getDatabases();
+            await load();
             finishOlder([]);
             await olderListing;
             expect(store.get(referenceDbAtom)).toEqual(collection.database);
             vi.mocked(native.listLinkedCollections).mockResolvedValue([]);
             await getDatabases();
+            expect(store.get(referenceDbAtom)).toEqual(collection.database);
+            await load();
             expect(store.get(referenceDbAtom)).toBeNull();
             vi.mocked(native.listLinkedCollections).mockResolvedValue([collection]);
             store.set(referenceDbAtom, collection.database);
-            await getDatabases();
+            await load();
             store.set(referenceDbAtom, handle("other-reference"));
             vi.mocked(native.listLinkedCollections).mockResolvedValue([]);
-            await getDatabases();
+            await load();
             expect(store.get(referenceDbAtom)).toEqual(handle("other-reference"));
         } finally {
             store.set(fileWorkspaceAtom, previousWorkspace);

@@ -6,6 +6,8 @@ import type { StoreApi } from "zustand";
 import AppModal from "@/components/common/AppModal";
 import { wrappingButton } from "@/components/common/wrappingButton";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { listingFailure } from "@/components/files/listingFailure";
+import { databaseLoadFailureMessage } from "@/components/databases/databaseLoadFailure";
 import { useDatabaseList } from "@/hooks/useDatabaseList";
 import type { TreeStoreState } from "@/state/store/tree";
 import { databaseHandleKey } from "@/utils/db";
@@ -24,6 +26,7 @@ export default function SaveToDatabaseModal({
 }) {
   const { t } = useTranslation();
   const { data, error, isLoading, mutate } = useDatabaseList(opened);
+  const failure = listingFailure(error);
   const { getTab, updateTab } = useTabActions();
   const [selected, setSelected] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -67,7 +70,9 @@ export default function SaveToDatabaseModal({
     <AppModal opened={opened} onClose={onClose} pending={pending} title={t("Board.Database.Save")}>
       <Stack>
         {isLoading && <Loader size="sm" />}
-        {error && <Alert color="danger">{t("Databases.LoadError.Title")}</Alert>}
+        {failure !== "silent" && (
+          <Alert color="danger">{databaseLoadFailureMessage(error, t)}</Alert>
+        )}
         <Select
           label={t("Board.Database.Target")}
           value={target ? selected : null}
