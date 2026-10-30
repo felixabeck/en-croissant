@@ -19757,7 +19757,7 @@ The linked-collection Save PGN failure named here is the same hosted failure alr
 
 ### Escaped-header database export test unwraps the Windows atomic-replacement refusal
 
-* **ID:** f-20261030-19 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-19 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** bba03ee4-dfe9-458d-a29c-87e57980831a
 * **Impact class:** tooling
 * **Where:** `src-tauri/src/db/insert_db_game_tests.rs:142` calls `export_to_pgn`, which returns at `src-tauri/src/db/mod.rs:3801` through `off_unix_refusal("PGN atomic replacement", cfg!(unix))`. Both lines are on origin/master `135c580404bfb156b445c195990497f55da83865`.
@@ -19766,3 +19766,6 @@ The linked-collection Save PGN failure named here is the same hosted failure alr
 * **Defect:** The new test treats export as infallible. Windows still refuses PGN atomic replacement before the export does any work, which d-20260918-13 and d-20260914-05 already require. The panic is the test ignoring that refusal, not a new product refusal. It is not f-20261011-03, which is a wall-clock Elapsed miss under I/O pressure. It is also not the separate header-decoder backslash loss already recorded on this master: this panic is raised before any exported-byte assertion.
 * **Proof:** On `windows-latest`, `cargo test --bin chessfable insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn -- --exact` panics at `insert_db_game_tests.rs:142`. After the test expects that Conflict on non-Unix and still checks the escaped header round trip where export exists, this test passes and the rest of the Windows suite stays green.
 * **Found by:** Grok drain session reading the failed `rust-windows-test` job log for run 41056249546. Log `/tmp/build-bba03ee4-dfe9-458d-a29c-87e57980831a/ci-windows.log` at the 12:40:59Z panic.
+
+The Windows export unwrap named here is the same hosted failure already closed on f-20261030-17. The Where line cites insert_db_game_tests.rs:142 and src-tauri/src/db/mod.rs:3801 on ancestor 135c580404bfb156b445c195990497f55da83865. At HEAD the export_to_pgn unwrap sits inside a unix-only block at src-tauri/src/db/insert_db_game_tests.rs:137, so Windows does not run it. Repair commit 73ae3ae4 is in this history. Hosted run 41063715985 succeeded after that repair. This entry was appended by hand without a publication receipt. Closed as the same defect as f-20261030-17.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"caa15323ee9b5848105242f4d81363a5575a008cdcb8de84d383400140fbf550","header_sha256":"863cafdebd31322bab42bdcdbb7c911d13008ef827dda71b2467365cb8e20aa2","header_status":"handled","input_sha256":"ed78477f87f38efedf224a1a6d74861909ed5fa7cb9a9d542214adb840319aa9","kind":"mutation-receipt","operation":"b41ee03d5f0bb4f8b7f5e1acb4e71347befd434308e69da3f512e10bceda76c4","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-19"],"target":"f-20261030-19","v":1} -->
