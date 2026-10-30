@@ -19776,7 +19776,7 @@ The Windows export unwrap named here is the same hosted failure already closed o
 
 ### Mixed Library browser cases exceed the unchanged test deadline in hosted CI
 
-* **ID:** f-20261030-20 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-20 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** tooling
 * **Where:** e2e/database-files.spec.ts, seven mixed Library cases beginning around line 310 and their repeated full-page accessibility audits.
@@ -19796,3 +19796,12 @@ The Windows export unwrap named here is the same hosted failure already closed o
 * **Current disposition:** Test repair implemented and locally verified, independent cumulative closure and clean final gates are next. This finding remains open until hosted Test succeeds on the repair SHA. The existing red Linux job 124197040498 is owned by this finding and the next push must contain its repair. No unrelated red job is licensed. No product decision or behavior change.
 
 * **Reallocation:** This is the Library CI deadline finding previously allocated as unpublished f-20261030-18. Published upstream independently uses f-20261030-18 for linked New game and f-20261030-19 for Windows export, both already handled. Preserve those published entries. This complete input replays the original filing and both canonical annotations through a fresh canonical allocation. Historical raw review IDs refer to the old unpublished Library entry, not to either published finding.
+
+The repair is published as d09f7a42 within verified source 3361b7361bd01483ca9678e2b94d843898597bfe. Complete clean-tree frontend gate-push-gate.5l7QKq passed with canonical completion0, full5847 unit tests and coverage ratchets, four mutation packages at100percent and full295 browser cases. All three unique lens issues are independently closed. No source, audit, fixture, timeout, retry, worker, PNG or ratchet weakening.
+
+Actual hosted Test run41105654154 on that exact SHA completed success for all six jobs. Linux124234643210, Windows native124234642831, macOS native124234643265, Apple x86124234643232, Apple ARM124234643309 and Windows MSVC124234643378 all succeeded. The downloaded browser artifact13001104089 reports295expected,0unexpected,0flaky,0skipped. All28 repaired cases finish8140–24886ms, below the unchanged45000ms deadline. Linux also passed2833 native tests with2 existing ignores and its coverage ratchet. Full actual log is repair-ci-linux-success.log, report JSON is repair-ci-browser-report.json, both under /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48. The old seven hosted failures remain preserved.
+
+Standard reviewed installer gate-install.E0oEdX completed0 on source3361. Actual VERSION records commit3361b7361bd01483ca9678e2b94d843898597bfe, installed2026-10-30T19:32:07+01:00, provenancereviewed. This completion supersedes the earlier pending hosted and installation obligations. It is a post-push record whose actual CI and install evidence did not exist before the final source gates. No production code changed in the CI repair and all138 tracked PNGs, including42 intentional earlier updates, remain unchanged.
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation. CI: https://github.com/felixabeck/en-croissant/actions/runs/41105654154
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"60aa9c796e8abec9029392d6bb99475e042adcf18330342bba9e29dc9233b986","header_sha256":"21085283f64bfa5b6daf61732af22feea80cd29c9213213f038e22a64f61feb4","header_status":"handled","input_sha256":"c9aefcf26b2dc31bd155d6ae3027a6808705d716a4a717d1c06971493b9537eb","kind":"mutation-receipt","operation":"3de7eca0e874a72286192084eafc1f1d8701be0a22b914cd8163d55c0621d3d5","options":{"section":null},"request_id_sha256":"fa668f8d2e1a4243aea9ff62ecb5568246bdbfaaab5dadabbe390879c8893d38","results":["f-20261030-20"],"target":"f-20261030-20","v":1} -->
