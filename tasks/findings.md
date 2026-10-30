@@ -19526,6 +19526,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Related:** f-20261030-05 is the current Library redesign. FileCard was unchanged by 49230bcb, so this is a pre-existing nearby control-sizing defect exposed by the new browser coverage.
 * **Fix:** Fit the existing pencil inside the existing icon action using the project's normal icon sizing. Preserve its localized name, target, focus and metadata action. Do not enlarge or restyle every control, hide the icon, or relax the clipping checker.
 * **Proof:** Preserve the new 100 percent mixed Library cases and observe them green after the source correction, with snapshots temporarily ignored only for diagnostic interaction proof. Remove only the correction through Git and reproduce the exact clipping assertion, then restore green. Final unfiltered snapshots, focused component tests, coverage and bundle gates remain required.
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"5c2a5093f07391dd17b5b3c72309aa878cdc04e92daf62445625ecf613d8f408","options":{"section":null},"request_id_sha256":"fce7dfe8df8485dfaf00625f57b21ce9082eb65557fdf60ffaf46e341f163e57","results":["f-20261030-10"],"target":"f-20261030-10","v":1} -->
 
 ### German Library tree content overflows its narrow container at 200 percent
 
