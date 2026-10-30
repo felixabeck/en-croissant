@@ -66,6 +66,7 @@ function PgnInput() {
   const [editor, setEditor] = useState({ text: pgn, root });
   const tmp = editor.text;
   const setTmp = (text: string) => setEditor({ text, root });
+  const serializedPgn = useRef(pgn);
 
   useEffect(() => {
     mounted.current = true;
@@ -75,7 +76,16 @@ function PgnInput() {
   }, []);
 
   useEffect(() => {
-    setEditor({ text: pgn, root });
+    // Root identity changes when analysis stores a score. The serialized PGN often
+    // does not. Only a new serialization replaces the draft; the editor still follows
+    // the root that produced the text the user is looking at.
+    const serializedChanged = !Object.is(serializedPgn.current, pgn);
+    serializedPgn.current = pgn;
+    setEditor((current) => {
+      const text = serializedChanged ? pgn : current.text;
+      if (current.text === text && current.root === root) return current;
+      return { text, root };
+    });
   }, [pgn, root]);
 
   const controls = (

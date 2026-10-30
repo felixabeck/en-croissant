@@ -6,7 +6,13 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { tabStorage, TabStorageRepository } from "@/state/store/tabStorage";
-import { closeWorkspaceTabAtom, closingTabsAtom, tabsAtom, updateTabById } from "@/state/atoms";
+import {
+  closeWorkspaceTabAtom,
+  closingTabsAtom,
+  pgnOptionsFamily,
+  tabsAtom,
+  updateTabById,
+} from "@/state/atoms";
 import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { getTabTreeKey, replaceFileGame, saveToFile, type FileBackedTab } from "@/utils/tabs";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
@@ -115,7 +121,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function setup({ linked = true, appendAttempted = false } = {}) {
+async function setup({ linked = true, appendAttempted = false, extraMarkups = true } = {}) {
   sessionStorage.clear();
   const id = crypto.randomUUID();
   const physical = crypto.randomUUID();
@@ -146,6 +152,8 @@ async function setup({ linked = true, appendAttempted = false } = {}) {
     appendAttempted,
   });
   expect(workspace.set(tabsAtom, [owner], id)).toBe(true);
+  const options = workspace.get(pgnOptionsFamily(id));
+  workspace.set(pgnOptionsFamily(id), { ...options, extraMarkups });
   const store = createTreeStore(id, undefined, physical);
   const getTab = (tabId: string) => workspace.get(tabsAtom).find((tab) => tab.value === tabId);
   const updateTab: import("@/utils/tabs").UpdateTab = (tabId, update, onAdmitted) =>
@@ -204,6 +212,18 @@ async function update(index = 0) {
 function parseSignal(call = 0): AbortSignal {
   return mocks.parsePGN.mock.calls[call][2].signal;
 }
+
+test("an engine score keeps an unsaved PGN draft when the serialization does not change", async () => {
+  const { store } = await setup({ extraMarkups: false });
+  const draftText = "1. e4 e5 {unsaved} *";
+  await draft(draftText);
+  const rootBefore = store.getState().root;
+  await act(async () => {
+    store.getState().setScore({ value: { type: "cp", value: 30 }, wdl: null });
+  });
+  expect(store.getState().root).not.toBe(rootBefore);
+  expect(editor().querySelector("textarea")!.value).toBe(draftText);
+});
 
 test("PGN editor replacement keeps the same game's source stamp and append marker", async () => {
   const { store } = await setup({ appendAttempted: true });

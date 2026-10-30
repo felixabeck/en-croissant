@@ -24,6 +24,7 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import {
   fileFreshnessTiming,
   fileFreshnessApplicationWithinBudget,
+  fileFreshnessMainThreadWithinBudget,
 } from "../../../scripts/file-freshness-timing.mjs";
 import FileFreshnessGate from "./FileFreshnessGate";
 
@@ -196,8 +197,11 @@ function panels() {
         <WorkspaceTabScope tabId={tabId}>
           <TreeStateContext.Provider value={store}>
             <FileFreshnessGate tab={tab} closeTab={() => undefined}>
-              <BoardProbe />
+              <section data-panel="inner-notation">
+                <GameNotation />
+              </section>
             </FileFreshnessGate>
+            <BoardProbe />
             {/* Keep every heavy consumer mounted across the gate's checking state. */}
             <section data-panel="notation">
               <GameNotation />
@@ -295,9 +299,11 @@ test("the verified commit retains every named view, then rebuilds the replacemen
   let board: string | null | undefined;
   let deferredAtApplied = false;
   let deferredAfterRelease = true;
+  let walksDuringCommit = -1;
   hooks.__verifyAppRecordTreeApplied = () => {
     applied = replacementWalks();
     deferredAtApplied = deferredView.isTreeViewDeferred(store);
+    walksDuringCommit = vi.mocked(notation.buildNotationRows).mock.calls.length;
   };
   const release = deferredView.releaseTreeView;
   vi.spyOn(deferredView, "releaseTreeView").mockImplementation((owner) => {
@@ -306,10 +312,13 @@ test("the verified commit retains every named view, then rebuilds the replacemen
     board = host.querySelector("[data-board-comment]")?.getAttribute("data-board-comment");
     release(owner);
     deferredAfterRelease = deferredView.isTreeViewDeferred(owner);
+    walksDuringCommit = vi.mocked(notation.buildNotationRows).mock.calls.length - walksDuringCommit;
   });
 
   await install();
 
+  expect(walksDuringCommit).toBe(0);
+  expect(host.querySelector('[data-panel="inner-notation"]')).not.toBeNull();
   expect(applied).toEqual({ notation: 0, pgn: 0, eval: 0, stats: 0, map: 0 });
   expect(cleared).toEqual(applied);
   expect(attribute).toBe("verified:1");
@@ -436,10 +445,10 @@ test("real install exceeds the main-thread budget with the synchronous wedge and
         { readFinishedAt, appliedAt, observedAt, lexAwaitMs: 0, readTimeMs: 0 },
         FILE_FRESHNESS_POLL_INTERVAL_MS,
       );
-      const withinMainThreadBudget =
-        Number.isFinite(timing.mainThreadMs) &&
-        timing.mainThreadMs >= 0 &&
-        timing.mainThreadMs <= FILE_FRESHNESS_APPLY_BUDGET_MS;
+      const withinMainThreadBudget = fileFreshnessMainThreadWithinBudget(
+        timing,
+        FILE_FRESHNESS_APPLY_BUDGET_MS,
+      );
       outcomes.push(withinMainThreadBudget);
       expect(fileFreshnessApplicationWithinBudget(timing, FILE_FRESHNESS_APPLY_BUDGET_MS)).toBe(
         true,
