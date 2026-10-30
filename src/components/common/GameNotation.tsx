@@ -18,7 +18,7 @@ import { memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { useTreeView } from "@/state/deferredTreeView";
+import { isTreeViewDeferred, useTreeView } from "@/state/deferredTreeView";
 import Comment from "@/components/common/Comment";
 import IconAction from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -108,16 +108,19 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
   const invisible = topBar && invisibleValue;
   const keyMap = useAtomValue(keyMapAtom);
 
-  const model = useMemo<NotationRows>(
-    () =>
-      buildNotationRows(root, {
-        showVariations,
-        showComments,
-        tableView,
-        collapsedVariations,
-      }),
-    [root, showVariations, showComments, tableView, collapsedVariations],
-  );
+  const model = useMemo<NotationRows>(() => {
+    // A remount while deferred has no previous rows. Skipping avoids walking either tree.
+    // An already mounted notation keeps its cached rows because this root has not changed.
+    if (isTreeViewDeferred(store)) {
+      return { rows: [], index: { root, links: new WeakMap() }, rowForNode: new Map() };
+    }
+    return buildNotationRows(root, {
+      showVariations,
+      showComments,
+      tableView,
+      collapsedVariations,
+    });
+  }, [root, showVariations, showComments, tableView, collapsedVariations, store]);
   const startNode = useMemo(() => getNodeAtPath(root, headers.start || []), [root, headers.start]);
   const rowVirtualizer = useVirtualizer({
     count: model.rows.length,

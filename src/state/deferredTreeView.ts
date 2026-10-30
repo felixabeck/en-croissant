@@ -24,6 +24,24 @@ export function isTreeViewDeferred(store: TreeStore) {
     return views.get(store)?.retained != null;
 }
 
+// Wakes a live-store reader when release clears the flag. useTreeView already does this for
+// retained readers; the deck sync reads the installed root and still has to wait for that turn.
+export function useTreeViewDeferred(store: TreeStore) {
+    return useSyncExternalStore(
+        useCallback(
+            (listener) => {
+                const view = viewFor(store);
+                view.listeners.add(listener);
+                return () => {
+                    view.listeners.delete(listener);
+                };
+            },
+            [store],
+        ),
+        useCallback(() => isTreeViewDeferred(store), [store]),
+    );
+}
+
 export function releaseTreeView(store: TreeStore) {
     const view = viewFor(store);
     view.retained = null;

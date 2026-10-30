@@ -6,7 +6,7 @@ import { useCallback, useContext, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { CategoricalChartFunc } from "recharts/types/chart/types";
 import { useStore } from "zustand";
-import { useTreeView } from "@/state/deferredTreeView";
+import { isTreeViewDeferred, useTreeView } from "@/state/deferredTreeView";
 import { reportTypeAtom } from "@/state/atoms";
 import { ANNOTATION_INFO, formatNagGlyphs, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { positionFromFen } from "@/utils/chessops";
@@ -75,10 +75,11 @@ function EvalChart(props: EvalChartProps) {
   }
 
   const nodes = useMemo(() => {
+    if (isTreeViewDeferred(store)) return [];
     const allNodes = treeIteratorMainLine(root);
     const withoutRoot = skipWhile(allNodes, (node: ListNode) => node.position.length === 0);
     return [...takeWhile(withoutRoot, (node: ListNode) => node.node.move !== undefined)];
-  }, [root]);
+  }, [root, store]);
 
   const data = useMemo<DataPoint[]>(
     () =>

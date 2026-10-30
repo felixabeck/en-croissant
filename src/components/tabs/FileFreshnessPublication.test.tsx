@@ -200,8 +200,9 @@ function panels() {
               <section data-panel="inner-notation">
                 <GameNotation />
               </section>
+              {/* BoardsPage renders the board inside this gate. The probe has to be here too. */}
+              <BoardProbe />
             </FileFreshnessGate>
-            <BoardProbe />
             {/* Keep every heavy consumer mounted across the gate's checking state. */}
             <section data-panel="notation">
               <GameNotation />
@@ -319,6 +320,8 @@ test("the verified commit retains every named view, then rebuilds the replacemen
 
   expect(walksDuringCommit).toBe(0);
   expect(host.querySelector('[data-panel="inner-notation"]')).not.toBeNull();
+  const freshness = host.querySelector("[data-file-freshness]");
+  expect(freshness?.contains(host.querySelector("[data-board-comment]"))).toBe(true);
   expect(applied).toEqual({ notation: 0, pgn: 0, eval: 0, stats: 0, map: 0 });
   expect(cleared).toEqual(applied);
   expect(attribute).toBe("verified:1");

@@ -161,10 +161,6 @@ function FileBackedGate({
   const appendAttempted = useStore(store, (state) => state.appendAttempted);
   const [retryCount, setRetryCount] = useState(0);
   const [reloadCount, setReloadCount] = useState(0);
-  // The verified commit must publish the attribute before gate children mount.
-  // Unverified checking unmounts them, and a same-commit remount would walk the
-  // retained tree inside the freshness budget.
-  const [holdVerifiedChildren, setHoldVerifiedChildren] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<"reload" | "append" | null>(null);
   const freshnessErrorMessageRef = useRef(freshness.errorMessage);
@@ -186,16 +182,15 @@ function FileBackedGate({
         };
         hooks.__verifyAppRecordTreeApplied?.();
         hooks.__verifyAppStallFreshnessApply?.();
+        // Children render in this commit. Deferred readers keep the retained snapshot or skip
+        // a fresh walk, so the board can show the installed position without a tree walk.
+        // Release schedules the replacement walk after this commit.
         flushSync(() => {
           setReloadCount((count) => count + 1);
           setFileFreshness(tabId, "verified", { verifiedRevision: revision });
-          setHoldVerifiedChildren(true);
         });
       } finally {
-        // Notify only after the freshness commit, with the replacement view released.
-        // Children mount on a later turn so their rebuild is outside this commit.
         releaseTreeView(store);
-        queueMicrotask(() => setHoldVerifiedChildren(false));
       }
     },
     [store, tabId],
@@ -459,16 +454,11 @@ function FileBackedGate({
     </div>
   );
 
-  if (state === "verified" && !holdVerifiedChildren)
+  if (state === "verified")
     return wrapper(
       <AddGameContext.Provider value={appendGame}>{children}</AddGameContext.Provider>,
     );
-  if (
-    holdVerifiedChildren ||
-    state === "appending" ||
-    state === "unverified" ||
-    state === "overdue"
-  ) {
+  if (state === "appending" || state === "unverified" || state === "overdue") {
     return wrapper(
       <Stack align="center" justify="center" h="100%" gap="sm">
         {state === "appending" ? (

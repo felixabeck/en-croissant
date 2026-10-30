@@ -20,7 +20,7 @@ import { useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { useTreeView } from "@/state/deferredTreeView";
+import { isTreeViewDeferred, useTreeView } from "@/state/deferredTreeView";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, referenceDbAtom } from "@/state/atoms";
@@ -96,7 +96,7 @@ function RepertoireInfo() {
 
   const orientation = useMemo(() => headers.orientation || "white", [headers.orientation]);
 
-  const stats = getStats(view);
+  const stats = isTreeViewDeferred(store) ? { total: 0, leafs: 0, depth: 0 } : getStats(view);
 
   const [dbMovesMap, setDbMovesMap] = useState<
     Map<
@@ -125,7 +125,10 @@ function RepertoireInfo() {
   );
 
   const startPath = useMemo(() => headers.start || [], [headers.start]);
-  const boardStateMap = useMemo(() => getMemoizedBoardStateMap(root, startPath), [root, startPath]);
+  const boardStateMap = useMemo(() => {
+    if (isTreeViewDeferred(store)) return {};
+    return getMemoizedBoardStateMap(root, startPath);
+  }, [root, startPath, store]);
   const hasStart = headers.start != null && headers.start.length > 0;
   const isBeforeStart =
     hasStart && position.length < startPath.length && isPrefix(position, startPath);
@@ -223,6 +226,8 @@ function RepertoireInfo() {
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
   useEffect(() => {
+    // buildDbCache walks the whole tree before its first await. That stays off this commit.
+    if (isTreeViewDeferred(store)) return;
     if (!coverageInput.referenceDb) return;
     const controller = new AbortController();
     const isCurrent = () =>
@@ -251,7 +256,7 @@ function RepertoireInfo() {
         }
       });
     return () => controller.abort();
-  }, [coverageInput]);
+  }, [coverageInput, store]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();

@@ -16,7 +16,7 @@ import { useAtom } from "jotai";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { useTreeView } from "@/state/deferredTreeView";
+import { isTreeViewDeferred, useTreeView } from "@/state/deferredTreeView";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
 import { closingTabsAtom, pgnOptionsFamily, tabsAtom } from "@/state/atoms";
@@ -39,29 +39,27 @@ function PgnInput() {
   const [options, setOptions] = useAtom(useTabAtom(pgnOptionsFamily));
   const { t } = useTranslation();
 
-  const realPGN = useMemo(
-    () =>
-      getPGN(root, {
-        headers: headers,
-        glyphs: true,
-        comments: true,
-        variations: true,
-        extraMarkups: true,
-      }),
-    [root, headers],
-  );
+  const realPGN = useMemo(() => {
+    if (isTreeViewDeferred(store)) return "";
+    return getPGN(root, {
+      headers: headers,
+      glyphs: true,
+      comments: true,
+      variations: true,
+      extraMarkups: true,
+    });
+  }, [root, headers, store]);
 
-  const pgn = useMemo(
-    () =>
-      getPGN(root, {
-        headers: headers,
-        glyphs: options.glyphs,
-        comments: options.comments,
-        variations: options.variations,
-        extraMarkups: options.extraMarkups,
-      }),
-    [root, headers, options],
-  );
+  const pgn = useMemo(() => {
+    if (isTreeViewDeferred(store)) return "";
+    return getPGN(root, {
+      headers: headers,
+      glyphs: options.glyphs,
+      comments: options.comments,
+      variations: options.variations,
+      extraMarkups: options.extraMarkups,
+    });
+  }, [root, headers, options, store]);
 
   const [editor, setEditor] = useState({ text: pgn, root });
   const tmp = editor.text;

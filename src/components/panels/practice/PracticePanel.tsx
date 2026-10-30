@@ -27,6 +27,7 @@ import { formatDate, type ReviewLog } from "ts-fsrs";
 import { normalizeError, type AppError } from "@/platform/errors";
 import { formatMoveNumber, formatNumber } from "@/utils/format";
 import { useStore } from "zustand";
+import { useTreeViewDeferred } from "@/state/deferredTreeView";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
@@ -107,6 +108,7 @@ function PracticePanel() {
   const makeMove = useStore(store, (s) => s.makeMove);
   const setPracticePath = useStore(store, (s) => s.setPracticePath);
   const currentFen = useStore(store, (s) => s.currentNode().fen);
+  const treeViewDeferred = useTreeViewDeferred(store);
 
   const [currentTab] = useOwnerTab();
   const { getTab } = useTabActions();
@@ -141,6 +143,7 @@ function PracticePanel() {
       lastSyncedRef.current = null;
       return;
     }
+    if (treeViewDeferred) return;
     if (deck.status !== "ready" || deckIdentity.file === "") return;
 
     const orientation = headers.orientation || "white";
@@ -170,7 +173,7 @@ function PracticePanel() {
       }
     }
     lastSyncedRef.current = { root, scope };
-  }, [root, headers, setDeck, deck.status, deckIdentity.file]);
+  }, [root, headers, setDeck, deck.status, deckIdentity.file, treeViewDeferred]);
 
   const stats = getStats(deck.positions);
 

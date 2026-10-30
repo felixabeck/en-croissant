@@ -248,6 +248,7 @@ vi.mock("ts-fsrs", async (importOriginal) => ({
 }));
 
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { deferTreeView, releaseTreeView } from "@/state/deferredTreeView";
 import { createNode, defaultTree, getBoardState, type TreeNode } from "@/utils/treeReducer";
 import PracticePanel from "./PracticePanel";
 
@@ -531,6 +532,25 @@ test("a committed rating does not re-diff an unchanged tree", async () => {
   await rerenderPracticePanel();
 
   expect(fixtures.syncDeck).not.toHaveBeenCalled();
+});
+
+test("defers deck sync until the retained view is released", async () => {
+  const store = fixtures.tree as typeof fixtures.tree & {
+    getState: () => typeof fixtures.tree;
+  };
+  store.getState = () => store;
+  deferTreeView(store);
+  fixtures.syncDeck.mockClear();
+  fixtures.buildFromTree.mockClear();
+  fixtures.tree.root = { children: [] };
+  await rerenderPracticePanel();
+
+  expect(fixtures.syncDeck).not.toHaveBeenCalled();
+  expect(fixtures.buildFromTree).not.toHaveBeenCalled();
+
+  releaseTreeView(store);
+  await act(async () => {});
+  expect(fixtures.syncDeck).toHaveBeenCalledOnce();
 });
 
 test("does not create a native deck when an empty tree yields no positions", async () => {
