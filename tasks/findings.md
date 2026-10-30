@@ -19400,3 +19400,18 @@ Keyboard focus already revealed the button on the unchanged overflow-hidden pane
 * **Failure scenario:** Observed 2026-10-30 in Felix's Library: `Beck-Müller-2026-10-22.pgn` was trashed (file under Repertoire/.en-croissant-trash/e93eb7b1-…), registry record 422bb80e-e75e-45d1-b797-7e3206c80956 remains, and the Library shows the file name followed by "The search index is unavailable. Retry, or select the collection's source file again."
 * **Fix:** Planned in tasks/plans/2026-10-30-new-game-to-database.md Approach E: distinct `trashed` status hidden from Library, database lists, game references and save targets; handle-only matching for trashed records; reconciliation-driven removal once the trashed source is gone; reference preference preserved while trashed; account flows unchanged.
 * **Proof:** Native tests for trash, same-name recreate, restore, permanent delete and injected removal failure; renderer tests for each consumer.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Vendored pgn-reader header decoding drops a literal backslash after an escaped backslash
+
+* **ID:** f-20261030-07 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** data-loss
+* **Where:** src-tauri/vendor/pgn-reader/src/types.rs `RawHeader::decode` (used by `decode_utf8` / `decode_utf8_lossy`, which the database importer uses for White, Black and Round).
+* **Spotted outside diff:** found by a repair leaf of the new-game-to-database build (2026-10-30) while checking PGN header escaping round trips; the decoder itself is unchanged by that build.
+* **Defect:** The loop visits every backslash returned by `memchr_iter`, including a backslash that is itself the escaped character. For the raw tag value `\\\\` (two escaped backslashes) the first escape sets `head` past the first backslash, then the second backslash is treated as a new escape and its literal is skipped, so the decoded value has one backslash instead of two. An executable probe in that run confirmed four PGN backslashes decode to one literal backslash.
+* **Failure scenario:** Importing a PGN whose White, Black or Round tag contains two consecutive escaped backslashes (for example a player name exported from another tool with a literal `\\`) stores the name with one backslash too few; exporting it again writes a different name than the source.
+* **Fix:** Skip the escaped character after handling an escape (advance past `escape + 1` before considering the next backslash), keeping the borrowed fast path when nothing is escaped. Vendored crate: keep the change minimal and note it in the vendor patch notes if the repository keeps them.
+* **Proof:** Unit test in the vendored crate or in src-tauri/src/db for `\\\\`, `\\\"`, `a\\\\b` and a mixed value, asserting the decoded bytes; existing escaped-tag round-trip tests stay green.
