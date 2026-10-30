@@ -3775,23 +3775,13 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
           .catch(() => false),
       { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
     );
-    const startPracticeButton = await waitFor(
+    const startPracticeButton = await reachableStableCoordinates(
+      session,
       "the rendered normal practice button",
-      () =>
-        session
-          .execute(
-            `const button = [...document.querySelectorAll('button')].find((candidate) =>
+      `[...document.querySelectorAll('button')].find((candidate) =>
              candidate.textContent?.includes('Start Practice')
-           );
-           if (!button) return false;
-           const box = button.getBoundingClientRect();
-           return {
-             x: Math.round(box.left + box.width / 2),
-             y: Math.round(box.top + box.height / 2),
-             disabled: button.disabled,
-           };`,
-          )
-          .catch(() => false),
+           )`,
+      [],
       { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
     );
     if (startPracticeButton.disabled) {
