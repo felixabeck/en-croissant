@@ -11057,3 +11057,14 @@ Former private decision identifier: d-20261029-14
 * **Reversal path:** Remove the two entry points and the draft origin variant; existing database/file origins and `write_db_game` are untouched, and drafts are session-only so no stored data migrates.
 * **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"0ab3ffa87d04426baa5f7eb02757cabc5b061b45984f5830d2add37fab319134","input_sha256":"1eea4bcd3de79c842b0bc23f8db036eba054a9e8d5ab486be69f197e3bc17c14","kind":"mutation-receipt","operation":"8314ac9d40f0c7a27795f71b3cef183d071d4ea9aa8397b29020ad493b443711","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261030-07 — What happens to a linked collection whose source PGN is trashed?
+
+* **Question:** Should a trashed source hide, retire or delete its linked collection record, given that restore must keep working and permanent delete must clean up?
+* **Governs:** f-20261030-06
+* **Chosen:** A distinct `trashed` collection status. Trashed records match only by their own handle, so a new file at the old name gets its own record. Library, database lists, game references and save targets treat a trashed non-account record as absent; account flows keep today's non-ready behaviour. The persisted reference preference is preserved while trashed and cleared only when the record is removed. Removal is reconciliation-driven once the trashed source no longer exists, deleting only solely owned cache files; a removal failure is logged and retried, never a user-facing failure after a committed permanent delete.
+* **Rejected:** Deleting the record on trash (restore would lose collection identity and the reference selection). Clearing the reference preference on trash. Changing account sync semantics. A user-facing error for cleanup failure after a committed delete.
+* **Reason:** Observed orphan row for Beck-Müller-2026-10-22.pgn (f-20261030-06); restore already reconciles records back by handle.
+* **Reversal path:** Map `trashed` back to `unavailable` in reconciliation and drop the consumer filters; registry records are unchanged in shape.
+* **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database. · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"83e4b27c864e7d86f539b65c93d764fc462c0db019c31a4f28e10b347a0e38fc","input_sha256":"a294e6294e1ac97eeb752cb5e6e9d7013d94565458bc9eea91480db95db425a2","kind":"mutation-receipt","operation":"78da0378fe0da66f485de8da05709245a3d07a48982b4a5ab2047e00d671d64d","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-07"],"target":"decisions-ledger","v":1} -->
