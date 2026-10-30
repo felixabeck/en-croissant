@@ -11122,3 +11122,13 @@ Former private decision identifier: d-20261029-14
 * **Reason:** `scripts/verify-app.mjs` stamps `observedAt` with `performance.now()` inside the MutationObserver on `[data-file-freshness]`. The driver's `waitFor` poll only notices the terminal flag. Reversal: a trace that shows `observedAt` moving without an attribute mutation.
 * **Decided by:** drain planner 5d2cb8aa, recorded by session bba03ee4 under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"292bd85505e5cd7e73eb4ab584383c5889e17eabd88b156401c6005bcf0b85cf","input_sha256":"0952be28c0f69df5a29b0c8f35ff05df3a2dda85c24116666e0306914b3aa2ce","kind":"mutation-receipt","operation":"ece3c5917c9331f8fccfdffef95d2e4e50f398937fe44a51e701a0924727710f","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261030-12 — Does the 1,000 ms freshness ceiling cover the lexPgn await?
+
+* **Question:** Does the 1,000 ms freshness ceiling cover the `lexPgn` await?
+* **Governs:** f-20261010-41
+* **Chosen:** No. `lexAwaitMs` is subtracted the same way `readGame` already is. `FILE_FRESHNESS_APPLY_BUDGET_MS` stays 1,000 and is the only apply assertion, on `mainThreadMs`. An idle run whose `lexAwaitMs` itself exceeds 1,000 still stops the phase. The one-poll check still includes the measured lex wait.
+* **Rejected:** One wall-clock sum, which fails the gate when the backend lexer waits on a loaded host even if the renderer publish is cheap. Also rejected: a second 1,000 ms ceiling whose sum with main-thread time may reach 2,000 ms.
+* **Reason:** d-20260925-11 names main-thread apply after the read. `lexPgn` is the same kind of native wait as `readGame` and sits inside today's ceiling only because `parsePGN` awaits it after the read hook. Reversal: new evidence that a user-visible freshness stall is dominated by lexer CPU on an idle machine and still passes the idle stop.
+* **Decided by:** drain planner 5d2cb8aa, recorded by session bba03ee4 under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1f0478964b5a1cbdeaf0ce753ef786dc15330ff238c539d61c37645250b3585e","input_sha256":"848d8f6e2d8820f5a8debe84aae76e8b89d4bfb1adee26ad04c3993090091a5d","kind":"mutation-receipt","operation":"b9c6bbbeab4219a6243bdc67d00d2937642c3e548a62c3e173c887c242b700dd","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-12"],"target":"decisions-ledger","v":1} -->
