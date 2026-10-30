@@ -1,5 +1,5 @@
-import { LibraryTypeBadge } from "@/components/library/presentation";
-import { Badge, Box, Group, Text } from "@mantine/core";
+import { LibrarySectionHeading, LibraryTypeBadge } from "@/components/library/presentation";
+import { Box, Group, Text } from "@mantine/core";
 import { FileText, Folder, FolderOpen, FolderSymlink, Trash2 } from "lucide-react";
 import { useAtom } from "jotai";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -13,9 +13,11 @@ import { openFile } from "@/utils/files";
 import { runTabCreation } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { FILE_TYPES, type Entry, type FileMetadata } from "./file";
+import classes from "./DirectoryTree.module.css";
 
 export type CollectionPeer = {
   type: "database";
+  section?: "files";
   key: string;
   name: string;
   selected: boolean;
@@ -81,6 +83,7 @@ export default function DirectoryTree({
   peers = [],
   label,
   onVisibleCount,
+  grouped = false,
 }: {
   files: Entry[];
   selectedFile: Entry | null;
@@ -93,6 +96,7 @@ export default function DirectoryTree({
   peers?: CollectionPeer[];
   label?: string;
   onVisibleCount?: (count: number) => void;
+  grouped?: boolean;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useAtom(expandedDirectoriesAtom);
@@ -113,6 +117,9 @@ export default function DirectoryTree({
     result.push(...peers.map((entry) => ({ entry, depth: 0 })));
     return result;
   }, [expanded, filtered, peers]);
+  const fileCount = visible.filter(
+    ({ entry }) => entry.type !== "database" || entry.section === "files",
+  ).length;
   useEffect(() => {
     onVisibleCount?.(visible.length);
   }, [visible.length, onVisibleCount]);
@@ -144,6 +151,7 @@ export default function DirectoryTree({
       <Box
         key={handleKey}
         role="treeitem"
+        className={classes.item}
         aria-label={node.name}
         aria-level={depth + 1}
         aria-selected={
@@ -174,7 +182,7 @@ export default function DirectoryTree({
             event.target instanceof HTMLElement &&
             event.target.matches("button[aria-pressed]")
           )
-            event.currentTarget.focus();
+            event.currentTarget.focus({ preventScroll: true });
           if (event.currentTarget === event.target) setFocusedHandle(handleKey);
         }}
         onKeyDown={(event) => {
@@ -291,8 +299,8 @@ export default function DirectoryTree({
             </Text>
           </Group>
         ) : (
-          <Group gap="xs" py={4} style={{ cursor: "pointer" }}>
-            <>
+          <div className={classes.row}>
+            <div className={classes.name}>
               {isDirectory ? (
                 open ? (
                   <FolderOpen size={16} />
@@ -302,59 +310,84 @@ export default function DirectoryTree({
               ) : (
                 <FileText size={16} />
               )}
-            </>
-            <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
-              {node.name}
-            </Text>
-            {node.type === "file" && (
-              <>
-                <Badge size="xs" color="gold">
-                  {node.numGames}
-                </Badge>
-                <LibraryTypeBadge>
-                  {t(FILE_TYPES.find((type) => type.value === node.metadata.type)!.translationKey)}
-                </LibraryTypeBadge>
-              </>
-            )}
+              <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
+                {node.name}
+              </Text>
+            </div>
+            <div className={classes.metadata}>
+              {node.type === "file" && (
+                <>
+                  <Text size="xs" c="dimmed" className="wrap-anywhere">
+                    {node.numGames}
+                  </Text>
+                  <LibraryTypeBadge>
+                    {t(
+                      FILE_TYPES.find((type) => type.value === node.metadata.type)!.translationKey,
+                    )}
+                  </LibraryTypeBadge>
+                </>
+              )}
+              {isDirectory && (
+                <>
+                  <span aria-hidden />
+                  <LibraryTypeBadge>
+                    {t("Library.Folder", { defaultValue: "Folder" })}
+                  </LibraryTypeBadge>
+                </>
+              )}
+            </div>
+            <div className={classes.actions}>
+              <IconAction
+                label={t("Common.Delete")}
+                color="danger"
+                className={classes.delete}
+                variant="subtle"
+                size="sm"
+                onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                  event.stopPropagation();
+                  void onRequestDelete(node);
+                }}
+              >
+                <Trash2 size={16} aria-hidden />
+              </IconAction>
+              <IconAction
+                label={t("Files.Move")}
+                variant="subtle"
+                size="sm"
+                onClick={(event: MouseEvent<HTMLButtonElement>) => {
+                  event.stopPropagation();
+                  onRequestMove?.(node);
+                }}
+              >
+                <FolderSymlink size={16} aria-hidden />
+              </IconAction>
+            </div>
             {node.type === "file" && node.readError && (
-              <Text size="sm" c="danger" className="wrap-anywhere">
+              <Text size="sm" c="danger" className={`${classes.readError} wrap-anywhere`}>
                 {childUnreadableMessage(node.readError, t)}
               </Text>
             )}
-            {isDirectory && (
-              <LibraryTypeBadge>{t("Library.Folder", { defaultValue: "Folder" })}</LibraryTypeBadge>
-            )}
-            <IconAction
-              label={t("Common.Delete")}
-              color="danger"
-              variant="subtle"
-              size="sm"
-              onClick={(event: MouseEvent<HTMLButtonElement>) => {
-                event.stopPropagation();
-                void onRequestDelete(node);
-              }}
-            >
-              <Trash2 size={16} aria-hidden />
-            </IconAction>
-            <IconAction
-              label={t("Files.Move")}
-              variant="subtle"
-              size="sm"
-              onClick={(event: MouseEvent<HTMLButtonElement>) => {
-                event.stopPropagation();
-                onRequestMove?.(node);
-              }}
-            >
-              <FolderSymlink size={16} aria-hidden />
-            </IconAction>
-          </Group>
+          </div>
         )}
       </Box>
     );
   };
   return (
-    <Box role="tree" aria-label={label ?? t("Files.Title")}>
-      {visible.map(render)}
+    <Box role="tree" aria-label={label ?? t("Files.Title")} className={classes.tree}>
+      {grouped && visible.length > 0 ? (
+        <>
+          <LibrarySectionHeading count={fileCount}>
+            {t("Files.Title", { defaultValue: "Files" })}
+          </LibrarySectionHeading>
+          {visible.slice(0, fileCount).map(render)}
+          <LibrarySectionHeading count={visible.length - fileCount}>
+            {t("Databases.Title", { defaultValue: "Databases" })}
+          </LibrarySectionHeading>
+          {visible.slice(fileCount).map(render)}
+        </>
+      ) : (
+        visible.map(render)
+      )}
     </Box>
   );
 }

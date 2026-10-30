@@ -752,6 +752,7 @@
     "Import.SaveToCollection": "Lagre i samling",
     "Import.UnsupportedGameUrl": "Bare partilenker fra lichess og chess.com kan importeres.",
     "Library.AddDatabase": "Importer eller last ned database",
+    "Library.AllTypes": "Alle typer",
     "Library.ClearTypeFilter": "Fjern typefilter",
     "Library.Converting": "Denne databasen konverteres. Handlingene blir tilgjengelige når konverteringen er ferdig.",
     "Library.DatabasesLoading": "Laster partidatabaser…",

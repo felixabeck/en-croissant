@@ -122,14 +122,19 @@ vi.mock("../common/GenericCard", () => ({
     id,
     setSelected,
     Header,
+    footer,
   }: {
     id: string;
     setSelected: (id: string) => void;
     Header: React.ReactNode;
+    footer?: React.ReactNode;
   }) => (
-    <button type="button" data-testid={`select-${id}`} onClick={() => setSelected(id)}>
-      {Header}
-    </button>
+    <div>
+      <button type="button" data-testid={`select-${id}`} onClick={() => setSelected(id)}>
+        {Header}
+      </button>
+      {footer}
+    </div>
   ),
 }));
 vi.mock("../common/IconAction", () => ({

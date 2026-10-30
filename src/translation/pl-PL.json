@@ -770,6 +770,7 @@
     "Import.SaveToCollection": "Zapisz w kolekcji",
     "Import.UnsupportedGameUrl": "Można importować tylko linki do partii z lichess i chess.com.",
     "Library.AddDatabase": "Importuj lub pobierz bazę danych",
+    "Library.AllTypes": "Wszystkie typy",
     "Library.ClearTypeFilter": "Wyczyść filtr typu",
     "Library.Converting": "Ta baza jest konwertowana. Jej działania będą dostępne po zakończeniu konwersji.",
     "Library.DatabasesLoading": "Ładowanie baz partii…",

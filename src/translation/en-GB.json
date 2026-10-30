@@ -752,6 +752,7 @@
     "Import.SaveToCollection": "Save to collection",
     "Import.UnsupportedGameUrl": "Only lichess and chess.com game links can be imported.",
     "Library.AddDatabase": "Import or download database",
+    "Library.AllTypes": "All types",
     "Library.ClearTypeFilter": "Clear type filter",
     "Library.Converting": "This database is being converted. Its actions will return when conversion finishes.",
     "Library.DatabasesLoading": "Loading games databases…",

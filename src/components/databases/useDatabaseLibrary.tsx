@@ -219,71 +219,72 @@ export function useDatabaseLibrary(
     },
     add: () => setOpen(true),
     renderRow: (item: NonNullable<typeof databases>[number]) => (
-      <Stack key={databaseHandleKey(item.file)} gap="xs" miw={0}>
-        <GenericCard
-          tabIndex={-1}
-          id={databaseHandleKey(item.file)}
-          key={databaseHandleKey(item.file)}
-          isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
-          setSelected={setSelected}
-          error={item.type === "error" ? item.error : ""}
-          onDoubleClick={() => {
-            if (item.type === "error") return;
-            openDatabase(item);
-          }}
-          Header={
-            // On a narrow card, the icon/title group and Games database type badge
-            // wrap onto separate rows instead of squeezing the title.
-            <Group justify="space-between">
-              <Group miw={0}>
-                <Database size="1.5rem" />
-                <Box miw={0}>
-                  <Text fw={500} fz="sm" className="wrap-anywhere">
-                    {item.type === "success" ? item.title : item.error}
-                  </Text>
-                  <Text size="xs" c="dimmed" className="wrap-anywhere">
-                    {item.type === "error" ? item.filename : item.description}
-                  </Text>
-                </Box>
-              </Group>
-              <LibraryTypeBadge>
-                {t("Library.GamesDatabase", { defaultValue: "Games database" })}
-              </LibraryTypeBadge>
+      <GenericCard
+        tabIndex={-1}
+        id={databaseHandleKey(item.file)}
+        key={databaseHandleKey(item.file)}
+        isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
+        setSelected={setSelected}
+        error={item.type === "error" ? item.error : ""}
+        onDoubleClick={() => {
+          if (item.type === "error") return;
+          openDatabase(item);
+        }}
+        Header={
+          // On a narrow card, the icon/title group and Games database type badge
+          // wrap onto separate rows instead of squeezing the title.
+          <Group justify="space-between">
+            <Group miw={0}>
+              <Database size="1.5rem" />
+              <Box miw={0}>
+                <Text fw={500} fz="sm" className="wrap-anywhere">
+                  {item.type === "success" ? item.title : item.error}
+                </Text>
+                <Text size="xs" c="dimmed" className="wrap-anywhere">
+                  {item.type === "error" ? item.filename : item.description}
+                </Text>
+              </Box>
             </Group>
-          }
-          stats={[
-            {
-              label: t("Databases.Card.Games"),
-              value: item.type === "success" ? formatNumber(item.game_count) : "???",
-            },
-            {
-              label: t("Databases.Card.Storage"),
-              value: item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
-            },
-          ]}
-        />
-        <Group justify="space-between" wrap="wrap">
-          {item.type === "success" && (
-            <Rating
-              value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
-              count={1}
-              onChange={() => {
-                changeReferenceDatabase(item.file);
-              }}
-            />
-          )}
-          {item.type === "success" && (
-            <Button
-              variant="default"
-              miw={0}
-              {...libraryButtonProps}
-              onClick={() => openDatabase(item)}
-            >
-              {t("Databases.OpenDatabase", { defaultValue: "Open database" })}
-            </Button>
-          )}
-        </Group>
-      </Stack>
+            <LibraryTypeBadge>
+              {t("Library.GamesDatabase", { defaultValue: "Games database" })}
+            </LibraryTypeBadge>
+          </Group>
+        }
+        stats={[
+          {
+            label: t("Databases.Card.Games"),
+            value: item.type === "success" ? formatNumber(item.game_count) : "???",
+          },
+          {
+            label: t("Databases.Card.Storage"),
+            value: item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
+          },
+        ]}
+        compactStats
+        footer={
+          item.type === "success" ? (
+            <Group justify="space-between" wrap="wrap">
+              <Rating
+                aria-label={t("Databases.Settings.ReferenceDatabase")}
+                value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
+                count={1}
+                onChange={() => {
+                  changeReferenceDatabase(item.file);
+                }}
+              />
+              <Button
+                variant="default"
+                miw={0}
+                {...libraryButtonProps}
+                px="xs"
+                onClick={() => openDatabase(item)}
+              >
+                {t("Databases.OpenDatabase", { defaultValue: "Open database" })}
+              </Button>
+            </Group>
+          ) : undefined
+        }
+      />
     ),
     status: (
       <Stack

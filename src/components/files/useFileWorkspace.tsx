@@ -446,6 +446,7 @@ export function useFileWorkspace(
           {...libraryButtonProps}
           disabled={!workspace}
           onClick={() => openAction(fileAction.folder)}
+          variant="default"
         >
           {t("Files.CreateFolder", { defaultValue: "Create folder" })}
         </Button>

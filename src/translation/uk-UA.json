@@ -770,6 +770,7 @@
     "Import.SaveToCollection": "Зберегти до колекції",
     "Import.UnsupportedGameUrl": "Можна імпортувати лише посилання на партії lichess і chess.com.",
     "Library.AddDatabase": "Імпортувати або завантажити базу",
+    "Library.AllTypes": "Усі типи",
     "Library.ClearTypeFilter": "Скинути фільтр типу",
     "Library.Converting": "Ця база конвертується. Дії стануть доступними після завершення.",
     "Library.DatabasesLoading": "Завантаження баз партій…",

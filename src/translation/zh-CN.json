@@ -743,6 +743,7 @@
     "Import.SaveToCollection": "保存到合集",
     "Import.UnsupportedGameUrl": "只能导入 lichess 和 chess.com 的对局链接。",
     "Library.AddDatabase": "导入或下载数据库",
+    "Library.AllTypes": "所有类型",
     "Library.ClearTypeFilter": "清除类型筛选",
     "Library.Converting": "此数据库正在转换。转换完成后可继续操作。",
     "Library.DatabasesLoading": "正在加载棋局数据库…",

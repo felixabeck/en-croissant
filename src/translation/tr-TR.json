@@ -752,6 +752,7 @@
     "Import.SaveToCollection": "Koleksiyona kaydet",
     "Import.UnsupportedGameUrl": "Yalnızca lichess ve chess.com oyun bağlantıları içe aktarılabilir.",
     "Library.AddDatabase": "Veritabanı içe aktar veya indir",
+    "Library.AllTypes": "Tüm türler",
     "Library.ClearTypeFilter": "Tür filtresini temizle",
     "Library.Converting": "Bu veritabanı dönüştürülüyor. Dönüştürme tamamlandığında işlemler kullanılabilir olacak.",
     "Library.DatabasesLoading": "Oyun veritabanları yükleniyor…",

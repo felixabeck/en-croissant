@@ -67,10 +67,13 @@ vi.mock("@/state/store/database", () => ({
 }));
 vi.mock("@/components/common/ConfirmModal", () => ({ default: () => null }));
 vi.mock("@/components/common/GenericCard", () => ({
-  default: ({ Header, id, setSelected, onDoubleClick }: any) => (
-    <button type="button" data-card onClick={() => setSelected(id)} onDoubleClick={onDoubleClick}>
-      {Header}
-    </button>
+  default: ({ Header, id, setSelected, onDoubleClick, footer }: any) => (
+    <div>
+      <button type="button" data-card onClick={() => setSelected(id)} onDoubleClick={onDoubleClick}>
+        {Header}
+      </button>
+      {footer}
+    </div>
   ),
 }));
 vi.mock("./AddDatabase", () => ({ default: () => null }));

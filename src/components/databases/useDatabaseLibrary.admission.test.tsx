@@ -88,10 +88,21 @@ vi.mock("@mantine/core", () => {
 });
 vi.mock("@/components/common/ConfirmModal", () => ({ default: () => null }));
 vi.mock("@/components/common/GenericCard", () => ({
-  default: ({ Header, onDoubleClick }: { Header: ReactNode; onDoubleClick: () => void }) => (
-    <button data-card onDoubleClick={onDoubleClick}>
-      {Header}
-    </button>
+  default: ({
+    Header,
+    onDoubleClick,
+    footer,
+  }: {
+    Header: ReactNode;
+    onDoubleClick: () => void;
+    footer?: ReactNode;
+  }) => (
+    <div>
+      <button data-card onDoubleClick={onDoubleClick}>
+        {Header}
+      </button>
+      {footer}
+    </div>
   ),
 }));
 vi.mock("./AddDatabase", () => ({ default: () => null }));

@@ -54,3 +54,31 @@
 .selected:hover {
   border-color: var(--mantine-primary-color-filled);
 }
+
+.selection {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border-radius: var(--cf-radius-sm);
+  cursor: pointer;
+}
+
+.compactInfo {
+  justify-content: flex-start;
+  gap: var(--mantine-spacing-sm) var(--mantine-spacing-xl);
+  margin-top: var(--mantine-spacing-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.compactInfo .label {
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.footer {
+  margin-top: var(--mantine-spacing-sm);
+  padding-top: var(--mantine-spacing-xs);
+  border-top: 1px solid var(--cf-border);
+  cursor: default;
+}

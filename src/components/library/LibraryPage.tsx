@@ -1,20 +1,21 @@
 import { libraryButtonProps } from "./presentation";
 import {
+  Alert,
   Box,
   Button,
   Center,
   Group,
   Input,
   Paper,
-  ScrollArea,
   Select,
   SimpleGrid,
   Stack,
   Text,
   Title,
   useMatches,
+  VisuallyHidden,
 } from "@mantine/core";
-import { Search } from "lucide-react";
+import { TriangleAlert, ChevronRight, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { tauri } from "@/platform/tauri";
@@ -138,20 +139,36 @@ export default function LibraryPage() {
       )
       .map((collection) => ({
         type: "database" as const,
+        section: "files" as const,
         key: `linked:${collection.id}`,
         name: collection.name,
         selected: selection?.kind === "missingCollection" && selection.id === collection.id,
         onSelect: () => setSelection({ kind: "missingCollection", id: collection.id }),
         content: (
-          <Stack gap={0}>
-            <Text>{collection.name}</Text>
-            <Text c="dimmed" className="wrap-anywhere">
+          <Alert
+            color="warning"
+            variant="outline"
+            role="presentation"
+            title={collection.name}
+            styles={{ title: { color: "var(--cf-card-foreground)" } }}
+            icon={<TriangleAlert size="1.125rem" aria-hidden />}
+            className="wrap-anywhere"
+            miw={0}
+            style={{ cursor: "pointer" }}
+          >
+            <Text size="xs" c="dimmed" className="wrap-anywhere">
               {t("Collections.Unavailable", {
                 defaultValue:
                   "The search index is unavailable. Retry, or select the collection's source file again.",
               })}
             </Text>
-          </Stack>
+            <Group justify="space-between" gap="xs" mt={4}>
+              <Text size="xs" fw={500}>
+                {t("Common.Select", { defaultValue: "Select" })}
+              </Text>
+              <ChevronRight size="1rem" aria-hidden />
+            </Group>
+          </Alert>
         ),
       })),
     ...databases.visibleDatabases
@@ -196,6 +213,7 @@ export default function LibraryPage() {
     files.data?.length === 0 &&
     databases.databases?.length === 0 &&
     databases.unread.length === 0 &&
+    missing.length === 0 &&
     files.failure === "silent" &&
     databases.failure === "silent";
   const filteredEmpty = (normalizedSearch || filter) && visibleCount === 0;
@@ -225,6 +243,7 @@ export default function LibraryPage() {
           disabled={databases.conversionInProgress}
           onClick={databases.add}
           {...libraryButtonProps}
+          variant="default"
         >
           {t("Library.AddDatabase", { defaultValue: "Import or download database" })}
         </Button>
@@ -234,7 +253,9 @@ export default function LibraryPage() {
         flex={split ? "1 1 0" : "1 0 auto"}
         miw={0}
         mih={split ? 0 : undefined}
-        style={{ gridTemplateRows: split ? "minmax(0, 1fr)" : undefined }}
+        style={{
+          gridTemplateRows: split ? "minmax(0, 1fr)" : undefined,
+        }}
       >
         <Paper
           withBorder
@@ -244,43 +265,53 @@ export default function LibraryPage() {
           style={{ overflow: split ? "auto" : undefined }}
         >
           <Stack gap="xs" miw={0}>
-            <Input
-              size="sm"
-              miw={0}
-              leftSection={<Search size="1rem" />}
-              placeholder={t("Common.Search")}
-              aria-label={t("Common.Search")}
-              value={search}
-              onChange={(event) => setSearch(event.currentTarget.value)}
-            />
-            <Select
-              size="sm"
-              miw={0}
-              clearable
-              styles={{ option: { overflowWrap: "anywhere", minWidth: 0 } }}
-              clearButtonProps={{
-                "aria-label": t("Library.ClearTypeFilter", { defaultValue: "Clear type filter" }),
-                "aria-hidden": false,
-                tabIndex: 0,
-              }}
-              label={t("Files.FileType")}
-              value={filter || null}
-              onChange={(value) => setFilter(value ?? "")}
-              data={[
-                ...FILE_TYPES.map(({ value, translationKey }) => ({
-                  value,
-                  label: t(translationKey),
-                })),
-                {
-                  value: "database",
-                  label: t("Library.GamesDatabase", { defaultValue: "Games database" }),
-                },
-              ]}
-            />
+            <Group gap="xs" wrap="wrap">
+              <Input
+                flex="2 1 12rem"
+                size="sm"
+                miw={0}
+                leftSection={<Search size="1rem" />}
+                placeholder={t("Common.Search")}
+                aria-label={t("Common.Search")}
+                value={search}
+                onChange={(event) => setSearch(event.currentTarget.value)}
+              />
+              <Select
+                flex="1 1 9rem"
+                size="sm"
+                miw={0}
+                clearable
+                styles={{
+                  option: { overflowWrap: "anywhere", minWidth: 0 },
+                  label: { clip: "rect(0, 0, 0, 0)", width: "max-content" },
+                }}
+                clearButtonProps={{
+                  "aria-label": t("Library.ClearTypeFilter", { defaultValue: "Clear type filter" }),
+                  "aria-hidden": false,
+                  tabIndex: 0,
+                }}
+                label={t("Files.FileType")}
+                // Preserve the associated label for assistive technology and the native verifier.
+                classNames={{ label: VisuallyHidden.classes.root }}
+                placeholder={t("Library.AllTypes", { defaultValue: "All types" })}
+                value={filter || null}
+                onChange={(value) => setFilter(value ?? "")}
+                data={[
+                  ...FILE_TYPES.map(({ value, translationKey }) => ({
+                    value,
+                    label: t(translationKey),
+                  })),
+                  {
+                    value: "database",
+                    label: t("Library.GamesDatabase", { defaultValue: "Games database" }),
+                  },
+                ]}
+              />
+            </Group>
             {files.trash}
             {files.status}
             {databases.status}
-            <ScrollArea.Autosize mah="60vh" mih="8rem">
+            <Box mah="60vh" mih="8rem" style={{ overflow: "auto" }}>
               {databases.progress}
               <DirectoryTree
                 {...files.listProps}
@@ -289,6 +320,7 @@ export default function LibraryPage() {
                 search={search}
                 filter={filter}
                 peers={peers}
+                grouped
                 label={t("Library.Title", { defaultValue: "Library" })}
                 onVisibleCount={setVisibleCount}
               />
@@ -302,7 +334,7 @@ export default function LibraryPage() {
                       })}
                 </Text>
               )}
-            </ScrollArea.Autosize>
+            </Box>
           </Stack>
         </Paper>
         <Paper

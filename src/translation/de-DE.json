@@ -752,6 +752,7 @@
     "Import.SaveToCollection": "Hinzufügen zur Sammlung",
     "Import.UnsupportedGameUrl": "Nur Partie-Links von lichess und chess.com können importiert werden.",
     "Library.AddDatabase": "Datenbank importieren oder herunterladen",
+    "Library.AllTypes": "Alle Typen",
     "Library.ClearTypeFilter": "Typfilter zurücksetzen",
     "Library.Converting": "Diese Datenbank wird konvertiert. Ihre Aktionen sind nach der Konvertierung wieder verfügbar.",
     "Library.DatabasesLoading": "Partiendatenbanken werden geladen…",

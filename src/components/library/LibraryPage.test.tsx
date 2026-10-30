@@ -80,6 +80,7 @@ vi.mock("@/platform/tauri", async () => ({
     createWorkspaceDirectory: mocks.createWorkspaceDirectory,
     moveWorkspaceEntry: mocks.moveWorkspaceEntry,
     editDbInfo: mocks.editDbInfo,
+    clearGames: vi.fn(async () => undefined),
     linkedCollectionsSupported: vi.fn(async () => false),
     collectionForDatabase: vi.fn(
       async (file: import("@/bindings").DatabaseHandle) =>
@@ -146,6 +147,18 @@ const database: ManagedDatabaseInfo = {
 let root: Root;
 let host: HTMLDivElement;
 let store: ReturnType<typeof createStore>;
+const missingCollection: import("@/bindings").CollectionDescriptor = {
+  id: "22222222-2222-4222-8222-222222222222",
+  name: "Missing collection",
+  file: { ...workspace, id: { id: "missing-source" } },
+  database: null,
+  account: null,
+  status: "unavailable",
+  generation: "",
+  omitted: 0,
+  retiredDatabase: null,
+  fetchSinceMs: null,
+};
 async function render() {
   await act(async () =>
     root.render(
@@ -270,6 +283,99 @@ test("one tree distinguishes equal-name and equal-key file/database identities a
   expect(host.querySelector('input[value="Same name"]')).not.toBeNull();
   expect(button("Add Games")).toBeDefined();
   expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+});
+
+test("section counts track displayed entries and filtering without changing the tree or hidden selection", async () => {
+  const count = (name: string) =>
+    [...host.querySelectorAll("h2")].find((heading) => heading.textContent?.startsWith(name))
+      ?.lastElementChild?.textContent;
+  const folder: Entry = {
+    type: "directory",
+    handle: { ...workspace, id: { id: "count-folder" } },
+    name: "Folder",
+    children: [file],
+    lastModified: 0,
+  };
+  mocks.files = [folder];
+  await render();
+  expect(count("Files")).toBe("1");
+  expect(count("Databases")).toBe("1");
+  await click(rows()[0]);
+  expect(count("Files")).toBe("2");
+  expect(rows().map((row) => row.getAttribute("aria-label"))).toEqual([
+    "Folder",
+    "Same name",
+    "Same name",
+  ]);
+  await click(rows()[1]);
+  await input(host.querySelector('input[aria-label="Search"]')!, "Database description");
+  expect(count("Files")).toBe("0");
+  expect(count("Databases")).toBe("1");
+  expect(host.querySelector("[data-file-detail]")).not.toBeNull();
+  expect(host.querySelectorAll('[role="tree"]')).toHaveLength(1);
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0].tabIndex).toBe(0);
+  await input(host.querySelector('input[aria-label="Search"]')!, "no matching entry");
+  expect(count("Databases")).toBeUndefined();
+  expect(host.querySelector('[role="tree"]')?.children.length).toBe(0);
+  expect(host.textContent).toContain("No results");
+});
+
+test("an unavailable collection stays with Files and selects the existing recovery detail", async () => {
+  mocks.collections = [missingCollection];
+  await render();
+  const missingRow = rows()[1];
+  expect(missingRow.textContent).toContain("Select");
+  expect(missingRow.textContent).toContain("The search index is unavailable");
+  expect([...host.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+    "Files2",
+    "Databases1",
+  ]);
+  await click(missingRow);
+  expect(host.querySelector("[data-linked-collection]")).not.toBeNull();
+  expect(button("Rebuild search index")).toBeDefined();
+  expect(missingRow.getAttribute("aria-selected")).toBe("true");
+  await act(async () => {
+    missingRow.focus();
+    missingRow.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  });
+  expect(document.activeElement).toBe(rows()[2]);
+});
+
+test("an unavailable collection prevents a false whole-library empty state", async () => {
+  mocks.files = [];
+  mocks.databases = [];
+  mocks.collections = [missingCollection];
+  await render();
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0].getAttribute("aria-label")).toBe(missingCollection.name);
+  expect(rows()[0].textContent).toContain("The search index is unavailable");
+  expect(host.textContent).not.toContain("Your library is empty");
+  await click(rows()[0]);
+  expect(host.querySelector("[data-linked-collection]")).not.toBeNull();
+  expect(button("Rebuild search index")).toBeDefined();
+});
+
+test("contained database footer actions preserve database selection and never nest in the selection button", async () => {
+  await click(rows()[0]);
+  const databaseRow = rows()[1];
+  const selection = databaseRow.querySelector<HTMLButtonElement>("button[aria-pressed]")!;
+  const open = button("Open database");
+  expect(selection.contains(open)).toBe(false);
+  expect(selection.parentElement?.contains(open)).toBe(true);
+  const favourite = databaseRow.querySelector<HTMLInputElement>('input[type="radio"][value="1"]')!;
+  expect(favourite).not.toBeNull();
+  await click(databaseRow.querySelector<HTMLLabelElement>(`label[for="${favourite.id}"]`)!);
+  expect(store.get(referenceDbAtom)).toEqual(database.file);
+  expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+  await act(async () => favourite.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  expect(mocks.navigate).not.toHaveBeenCalled();
+  await click(open);
+  expect(mocks.navigate).toHaveBeenCalledWith({
+    to: "/databases/$databaseId",
+    params: { databaseId: "same-id" },
+  });
+  expect(rows()[1].getAttribute("aria-selected")).toBe("true");
 });
 
 test("composed file selection refuses a mismatched second target and opens a subsequent matching pair", async () => {
@@ -692,6 +798,10 @@ test("an unavailable listing retains database identity without claiming conversi
 });
 
 test("the clearable type filter hides rows while retaining detail and exposes an accessible reset", async () => {
+  const typeFilter = host.querySelector<HTMLInputElement>(".mantine-Select-input")!;
+  expect(typeFilter.placeholder).toBe("All types");
+  const label = host.querySelector(`label[for="${typeFilter.id}"]`);
+  expect(label?.textContent).toBe("File type");
   await click(rows()[1]);
   await click(host.querySelector<HTMLInputElement>(".mantine-Select-input")!);
   const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(

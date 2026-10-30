@@ -15,6 +15,8 @@ type Props<T> = {
   Header: ReactNode;
   onDoubleClick?: () => void;
   tabIndex?: number;
+  footer?: ReactNode;
+  compactStats?: boolean;
 };
 
 export default function GenericCard<T>({
@@ -26,16 +28,19 @@ export default function GenericCard<T>({
   Header,
   onDoubleClick,
   tabIndex,
+  footer,
+  compactStats = false,
 }: Props<T>) {
-  return (
+  const cardClasses = cx(classes.card, {
+    [classes.selected]: isSelected,
+    [classes.error]: !!error,
+  });
+  const selection = (
     <UnstyledButton
       type="button"
       tabIndex={tabIndex}
       aria-pressed={isSelected}
-      className={cx(classes.card, {
-        [classes.selected]: isSelected,
-        [classes.error]: !!error,
-      })}
+      className={footer ? classes.selection : cardClasses}
       onClick={() => setSelected(id)}
       onDoubleClick={onDoubleClick}
     >
@@ -43,7 +48,7 @@ export default function GenericCard<T>({
         {Header}
 
         {stats && (
-          <div className={classes.info}>
+          <div className={cx(classes.info, { [classes.compactInfo]: compactStats })}>
             {stats.map((stat) => (
               <div key={stat.label}>
                 <Text c="dimmed" fw="bold" className={classes.label}>
@@ -56,5 +61,13 @@ export default function GenericCard<T>({
         )}
       </Stack>
     </UnstyledButton>
+  );
+  return footer ? (
+    <div className={cardClasses}>
+      {selection}
+      <div className={classes.footer}>{footer}</div>
+    </div>
+  ) : (
+    selection
   );
 }

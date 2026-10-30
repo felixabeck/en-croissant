@@ -761,6 +761,7 @@
     "Import.SaveToCollection": "Guardar na coleção",
     "Import.UnsupportedGameUrl": "Só é possível importar ligações de partidas do lichess e do chess.com.",
     "Library.AddDatabase": "Importar ou descarregar base de dados",
+    "Library.AllTypes": "Todos os tipos",
     "Library.ClearTypeFilter": "Limpar filtro de tipo",
     "Library.Converting": "Esta base está a ser convertida. As ações ficarão disponíveis após a conversão.",
     "Library.DatabasesLoading": "A carregar bases de partidas…",
