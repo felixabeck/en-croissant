@@ -111,7 +111,7 @@ async fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_vali
             }
         );
     }
-    let (dir, app, handle, _) = blocking_database_case();
+    let (_dir, app, handle, _) = blocking_database_case();
     let token = CancellationToken::new();
     let id = insert(&app, handle.clone(), source, &token).unwrap();
     let state = app.state::<AppState>();
@@ -134,26 +134,29 @@ async fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_vali
     assert_eq!(games.data[0].black, "Bob \\ \"B\"");
     assert_eq!(games.data[0].moves, "1. e4 e5 *");
 
-    let path = dir.path().join("escaped.pgn");
-    std::fs::write(&path, b"old").unwrap();
-    let destination = grant_pgn_file(&app, &path, "escaped.pgn", vec![PathOperation::WritePgn]);
-    export_to_pgn(handle.clone(), destination, app.state::<AppState>())
-        .await
-        .unwrap();
-    let exported = std::fs::read_to_string(path).unwrap();
-    for line in source.lines().take(4) {
-        assert!(exported.contains(line), "{exported}");
-    }
-    let next_id = insert(&app, handle.clone(), &exported, &token).unwrap();
-    assert_ne!(next_id, id);
-    let roundtrip = read();
-    assert_eq!(roundtrip.count, Some(2));
-    for game in roundtrip.data {
-        assert_eq!(game.event, games.data[0].event);
-        assert_eq!(game.site, games.data[0].site);
-        assert_eq!(game.white, games.data[0].white);
-        assert_eq!(game.black, games.data[0].black);
-        assert_eq!(game.moves, games.data[0].moves);
+    #[cfg(unix)]
+    {
+        let path = _dir.path().join("escaped.pgn");
+        std::fs::write(&path, b"old").unwrap();
+        let destination = grant_pgn_file(&app, &path, "escaped.pgn", vec![PathOperation::WritePgn]);
+        export_to_pgn(handle.clone(), destination, app.state::<AppState>())
+            .await
+            .unwrap();
+        let exported = std::fs::read_to_string(path).unwrap();
+        for line in source.lines().take(4) {
+            assert!(exported.contains(line), "{exported}");
+        }
+        let next_id = insert(&app, handle.clone(), &exported, &token).unwrap();
+        assert_ne!(next_id, id);
+        let roundtrip = read();
+        assert_eq!(roundtrip.count, Some(2));
+        for game in roundtrip.data {
+            assert_eq!(game.event, games.data[0].event);
+            assert_eq!(game.site, games.data[0].site);
+            assert_eq!(game.white, games.data[0].white);
+            assert_eq!(game.black, games.data[0].black);
+            assert_eq!(game.moves, games.data[0].moves);
+        }
     }
 }
 
