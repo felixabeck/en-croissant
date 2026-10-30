@@ -19415,3 +19415,17 @@ Keyboard focus already revealed the button on the unchanged overflow-hidden pane
 * **Failure scenario:** Importing a PGN whose White, Black or Round tag contains two consecutive escaped backslashes (for example a player name exported from another tool with a literal `\\`) stores the name with one backslash too few; exporting it again writes a different name than the source.
 * **Fix:** Skip the escaped character after handling an escape (advance past `escape + 1` before considering the next backslash), keeping the borrowed fast path when nothing is escaped. Vendored crate: keep the change minimal and note it in the vendor patch notes if the repository keeps them.
 * **Proof:** Unit test in the vendored crate or in src-tauri/src/db for `\\\\`, `\\\"`, `a\\\\b` and a mixed value, asserting the decoded bytes; existing escaped-tag round-trip tests stay green.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Hosted Test and rust-windows-test are red on master after the new-game-to-database push
+
+* **ID:** f-20261030-17 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** e2e/new-game-to-database.spec.ts (linked New game journey) and src-tauri/src/db/insert_db_game_tests.rs (escaped-header export test), pushed in 135c5804.
+* **Defect:** Two tests added by the new-game-to-database build failed only in hosted CI on 135c5804 (run 41056249546). Test job: after the linked append, the file-freshness poll read game 2, which the spec's read_game mock lacked, so the tab hit its error boundary ("Cannot read properties of undefined (reading 'linked')"); locally the poll never fired before the test ended. rust-windows-test: the escaped-header test exported through PGN atomic replacement, which Windows does not support ("PGN atomic replacement is unsupported on this platform").
+* **Failure scenario:** Every push to master shows the Test and rust-windows-test jobs red, and pnpm ci:remote:check refuses later pushes.
+* **Fix:** Give the spec's read_game mock the appended game and assert the tab stays verified past one poll interval; run the export round trip only on unix, keeping insert and read-back on every platform. Repairs are commits 73ae3ae4 and the following e2e commit on the build branch.
+* **Proof:** Container project run 3/3 green and the negative check fails without the mock; cargo test insert_db_game and pnpm rust:windows:check green; hosted Test and rust-windows-test green on the pushed SHA.
