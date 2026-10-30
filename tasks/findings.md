@@ -19116,7 +19116,7 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 
 ### Native database-selection verifier decodes the compressed store as plain JSON
 
-* **ID:** f-20261029-10 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261029-10 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** tooling
 * **Where:** scripts/verify-app.mjs DS2, selected database read at line2535.
@@ -19132,6 +19132,13 @@ This closure supersedes earlier open-review and open-cold-acceptance checkpoints
 ```text
 Former unpublished identifier: f-20261029-02
 ```
+
+Source closure, 2026-10-30. DS2 uses the production decimal-string storage_size codec. The real database explorer persists the exact successful selection. The unchanged ordinary native journey passed DS1 and DS2, alongside the source-derived historical DS2 failure and exact input restoration already preserved in the verifier header.
+
+The seven feature findings close their reviewed source obligations after the current ordinary native acceptance, not the subsequent release workflow. Original pinned game-references container proof passed both tests and all three hard snapshots. Its fresh release build and six frozen source/test/doc/spec hashes are preserved. After the separate verifier target repair, two uninstrumented full native journeys passed CR1–CR4, DS2, fifty practice ratings and shutdown on the same frozen release binary. Root independently reversed only that target repair, reproduced the first-move failure1, restored exact verifier2a46dd44 and completed native0. Complete native-start pre-review and the related26 files/1302 tests passed0. Exact canonical attempt paths and source hashes are retained in tasks/handoffs/2026-10-29-opening-game-references-review.md and the run archive.
+
+Full clean Rust/frontend publication gates, ordinary verified push, exact pushed-SHA required hosted jobs and reviewed installation remain subsequent obligations at this closure. Broad f-20261011-03 and f-20261022-05 remain open. The separate normal Train-pane layout observation f-20261030-04 remains open for its own product-layout build. No actual Mega Database availability, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Recent repair code and detection used xAI in separate sessions, original feature and root used OpenAI. No whole-range family separation is claimed.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"3317452b9a74528ca22ed4ef67d5fa927b5a51996b0b14550057b04065371fd6","header_sha256":"431cbcb4b33ac46ebf52b0de2affa295bea309b8b41ec4458f2c70501855a036","header_status":"handled","input_sha256":"ccf5a086acaddf2bf3c75763eb5a0410d275d1d9dff61bbb14649d52c664879c","kind":"mutation-receipt","operation":"8214d3e3a5d72cf2290d0dbc485011d565d8c877ab0093d8e3c6d21ee337f43a","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-10"],"target":"f-20261029-10","v":1} -->
 
 ---
 
