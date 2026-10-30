@@ -75,7 +75,7 @@ function PgnInput() {
   }, []);
 
   useEffect(() => {
-    setTmp(pgn);
+    setEditor({ text: pgn, root });
   }, [pgn, root]);
 
   const controls = (
