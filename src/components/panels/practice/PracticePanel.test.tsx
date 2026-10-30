@@ -539,7 +539,8 @@ test("defers deck sync until the retained view is released", async () => {
     getState: () => typeof fixtures.tree;
   };
   store.getState = () => store;
-  deferTreeView(store);
+  const deferredStore = store as unknown as Parameters<typeof deferTreeView>[0];
+  deferTreeView(deferredStore);
   fixtures.syncDeck.mockClear();
   fixtures.buildFromTree.mockClear();
   fixtures.tree.root = { children: [] };
@@ -548,7 +549,7 @@ test("defers deck sync until the retained view is released", async () => {
   expect(fixtures.syncDeck).not.toHaveBeenCalled();
   expect(fixtures.buildFromTree).not.toHaveBeenCalled();
 
-  releaseTreeView(store);
+  releaseTreeView(deferredStore);
   await act(async () => {});
   expect(fixtures.syncDeck).toHaveBeenCalledOnce();
 });
