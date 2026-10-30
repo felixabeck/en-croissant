@@ -19566,6 +19566,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
 * **Fix:** Apply existing spacing as scroll margin at the tree control boundary, preserving visible geometry, focus, controls and checker tolerances.
 * **Proof:** Keep the 1920px journey. Source-only Git hunk removal must reproduce the exact clipped-edge failure and restore green. Full unfiltered pixel proof remains required.
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"f56ed55c63bfc9f3a0f5217d13d9693dc8080916bf0c01600820e66712cfb91c","options":{"section":null},"request_id_sha256":"58a2dd802bff863278b5e74dad4822dbb60055ec6321b10f0cc776ad7e24f9f1","results":["f-20261030-13"],"target":"f-20261030-13","v":1} -->
 
 ### Library file-detail Trash action fails dark text contrast
 
