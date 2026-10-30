@@ -19498,6 +19498,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Related:** f-20261030-05 is the active Library presentation redesign. This is a separate pre-existing empty-state predicate defect in the same file, discovered while checking the required unavailable-collection state.
 * **Fix:** Preserve loading/failure/filter behavior and suppress the whole-library empty message whenever an unavailable linked collection remains listed. No new strings, data processing or action changes.
 * **Proof:** A LibraryPage rendering regression with zero files/databases and one unavailable collection must show its recovery row without the whole-library empty message. Keep the test, remove only the predicate correction via Git, observe the specific assertion fail, then restore green. Include the existing focused suite and container visual matrix.
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"40349d2ec7543dd81c9c5fb875c4396d7d0db60da38f3cd1a79c9367043692f5","options":{"section":null},"request_id_sha256":"582c185c0f3ae373ac3f84098e063f245f89f642a500df407b5b877552de12c6","results":["f-20261030-08"],"target":"f-20261030-08","v":1} -->
 
 ### Database card padding lost double-click opening in the Library redesign
 
