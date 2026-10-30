@@ -19385,3 +19385,18 @@ At 800×647 in the container, before the change, the wheel left scrollTop at 0 a
 
 Keyboard focus already revealed the button on the unchanged overflow-hidden panel: after Tab, scrollTop was 98 and the button was inside. The plan expected that step to stay clipped. The pre-edit run still failed on the wheel and on the clip assertion, so the scrollport was implemented. The container proof is Chromium. pnpm verify:app was not run.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"ea41d9ccf580a73a0959d9e77ce7206c199b6de8adef941c41b6a2a3f638446f","header_sha256":"9cd27712e12e01fd8fe091efb3bd3d37cebb1f364d1ed81625863d5c6da8462b","header_status":"handled","input_sha256":"7414f7739c4d14d387b0b8d61121eeaa77ff2da0e09ae57d504237bdca39c260","kind":"mutation-receipt","operation":"941981c9787a02e3e38f14014676865a072dcbcf0fa709556aefca09bac28b24","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-04"],"target":"f-20261030-04","v":1} -->
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Trashing a game PGN leaves its linked collection listed as "search index is unavailable"
+
+* **ID:** f-20261030-06 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Impact class:** behaviour
+* **Open question:** Should a trashed source hide, retire or delete its linked collection, given that restore must keep working and permanent delete must clean up?
+* **Where:** src-tauri/src/db/linked_collections.rs reconciliation of registry records whose source was trashed; src/components/library/LibraryPage.tsx missing-peer list.
+* **Defect:** Trashing moves the PGN into `.en-croissant-trash/<UUID>/` and rebinds its handle (src-tauri/src/file_workspace.rs trash_workspace_entry). Reconciliation excludes the trash directory from the workspace walk and retains the record; recovery fails with StaleGame and the record is described as `unavailable`. The Library lists every non-ready record absent from the file tree as a missing peer with `Collections.Unavailable`. Permanent deletion never removes the record either. Related: f-20261004-15 (linked collections, handled).
+* **Failure scenario:** Observed 2026-10-30 in Felix's Library: `Beck-Müller-2026-10-22.pgn` was trashed (file under Repertoire/.en-croissant-trash/e93eb7b1-…), registry record 422bb80e-e75e-45d1-b797-7e3206c80956 remains, and the Library shows the file name followed by "The search index is unavailable. Retry, or select the collection's source file again."
+* **Fix:** Planned in tasks/plans/2026-10-30-new-game-to-database.md Approach E: distinct `trashed` status hidden from Library, database lists, game references and save targets; handle-only matching for trashed records; reconciliation-driven removal once the trashed source is gone; reference preference preserved while trashed; account flows unchanged.
+* **Proof:** Native tests for trash, same-name recreate, restore, permanent delete and injected removal failure; renderer tests for each consumer.
