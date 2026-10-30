@@ -1,6 +1,6 @@
 # Library redesign review record
 
-Current checkpoint: both presentation phases and all 42 intentional snapshots are committed. Both cumulative code-review findings are independently closed. Canonical browser proof and actual Tauri verification passed. All ten Library findings are canonically handled. Latest records review, clean final gates, push, required CI, installation and the post-push build ledger remain pending. This record does not claim release completion.
+Current checkpoint: both presentation phases and all 42 intentional snapshots are committed. Both cumulative code-review findings are independently closed. Canonical browser proof and actual Tauri verification passed. All ten Library findings are canonically handled. Records round 3 approved with no findings. The first final gate was deliberately interrupted after two unrelated coverage timeouts. The existing reviewed receipt sequence will be used for a new full gate. Latest operational records review, green final gates, push, required CI, installation and the post-push build ledger remain pending. This record does not claim release completion.
 
 Archived plans, source citations, decisions and checkpoint paragraphs below describe their frozen revisions. Their then-pending statements are historical and superseded by the current checkpoint and later entries. In particular, the original Library decision was d-20261030-05 in this unpublished branch. After an upstream ID collision, the identical original decision was re-recorded through the canonical writer as d-20261030-15. The current published d-20261030-05 governs freshness and is a different decision.
 
@@ -1038,6 +1038,32 @@ The after exports are exact bytes from committed canonical baselines, with sourc
 
 Plan authorship and arbitration sharedrootcontext. Detection andsourceimplementation used the sameOpenAI/Codexfamily in separatesessions, withoutfamilyseparation. Rootowned finalUI acceptance.
 
+
+````
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
+
+## Final gate interruption and operational continuation
+
+All 31 patches carried unchanged through the immediate pre-gate rebase onto published 8ec4d7aa. Git range-diff contains only equals pairs. The reviewed clean candidate was 3f27a937575cc67440871405c6bca66c232588fd. Remote CI check was green before the attempt.
+
+Canonical attempt gate-push-gate.nhIPAQ observed two existing state-test coverage timeouts. Root stopped its verified scheduler and canonical completion is 143 push-gate 3f27a937575cc67440871405c6bca66c232588fd. Contract, coverage and browser were interrupted, no complete result is claimed. Build and bundle had passed. Cleanup completed with no live owned group member or browser container. Raw logs are external in final-gate-interrupted.
+
+The exact observation and continuation are canonically appended to existing f-20261029-16, which remains open for its separate frontend-state tooling owner. The Library implementation and tests are unchanged. Existing decisions d-20261029-16 and d-20261030-01 provide the reviewed sequence: mutation guard first, unchanged full coverage at 3221225472 bytes, unchanged full mutation at 6442450944 bytes, require both exact-tree checks, then the complete unmodified frontend scheduler on the same clean committed tree. Every lane still must pass. This temporary invocation changes no fixture, assertion, timeout, retry, ratchet, source or machine cap. Successful isolation will not prove the broader timing class permanently repaired. This uses an existing procedure and adds no repository machinery.
+
+## Preserved final records round 3
+
+````text
+# Final records review
+
+Raw report:
+
+No findings. Closure claims match retained review/native evidence. All three exported after images exactly match committed canonical PNGs.
+
+Unverifiable independently: Felix’s original authorization, supplied screenshot and root’s inspection actions. Ledger validation was blocked by the read-only sandbox’s cache-write restriction.
+
+VERDICT: APPROVED
+Arbitration: APPROVED, no findings, adopted r3=0. Root directly received original authorization and inspected the supplied screenshot and exported images. Independent read-only validation limitation is covered by root findings.py check, which reports ok: 679 findings, 26 pickable, 3 blocked. Round launcher-to-root-read wall 70 seconds, active wall unknown. Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate sessions.
 
 ````
 
