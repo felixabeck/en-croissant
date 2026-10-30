@@ -461,7 +461,7 @@ async function exerciseMixedDatabases(
         // Stacked cards label their stats; one-line rows move the captions into the section header.
         const captions = (await card.getByText("Games", { exact: true }).isVisible())
             ? card
-            : tree.locator("[data-section='databases'] [aria-hidden]");
+            : tree.locator("[data-section='databases'] [data-library-columns]");
         for (const caption of ["Games", "Storage"])
             await expect(captions.getByText(caption, { exact: true }).first()).toBeVisible();
         const favourite = card.getByLabel("Reference Database", { exact: true });

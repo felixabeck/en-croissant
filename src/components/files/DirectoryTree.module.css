@@ -1,4 +1,12 @@
 .tree {
+  /* File row columns, shared by the rows and their captions. */
+  --file-icon: 1rem;
+  --file-games: 4rem;
+  /* Wider while the count carries its "Games" label. */
+  --file-games-stacked: 5rem;
+  --file-metadata: 13rem;
+  /* Two sm IconActions (delete, move) and their gap. */
+  --file-actions: 4.25rem;
   container-type: inline-size;
   font-variant-numeric: tabular-nums;
 }
@@ -90,12 +98,13 @@
   display: none;
   min-height: 0;
   padding-block: 0 var(--mantine-spacing-xs);
-  color: var(--mantine-color-dimmed);
-  font-size: var(--mantine-font-size-xs);
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
   cursor: default;
+}
+
+/* A label line above the count keeps every count at the same x. */
+.inlineLabel {
+  display: block;
+  font-size: var(--mantine-font-size-xs);
 }
 
 @container (min-width: 24rem) {
@@ -106,18 +115,18 @@
 
   .metadata {
     display: grid;
-    grid-template-columns: 3rem minmax(0, 1fr);
+    grid-template-columns: var(--file-games-stacked) minmax(0, 1fr);
   }
 }
 
 @container (min-width: 32rem) {
   .row {
-    grid-template-columns: minmax(0, 1fr) 13rem 4.25rem;
+    grid-template-columns: minmax(0, 1fr) var(--file-metadata) var(--file-actions);
     grid-template-areas: "name metadata actions";
   }
 
   .metadata {
-    grid-template-columns: 4rem minmax(0, 1fr);
+    grid-template-columns: var(--file-games) minmax(0, 1fr);
   }
 
   .inlineLabel {
@@ -130,7 +139,7 @@
 }
 
 .columns .name {
-  padding-left: calc(16px + var(--mantine-spacing-xs));
+  padding-left: calc(var(--file-icon) + var(--mantine-spacing-xs));
 }
 
 .games {
@@ -143,6 +152,7 @@
   gap: var(--mantine-spacing-xs);
 }
 
+/* GenericCard paints the database row itself; the tree item must not paint over it. */
 .databaseList > .item,
 .databaseList > .item[aria-selected="true"],
 .databaseList > .item:hover {

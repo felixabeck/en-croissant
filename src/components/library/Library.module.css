@@ -1,6 +1,11 @@
 /* Library surfaces follow DESIGN.md's tiers: the list pane is a card (tier 1),
    each section is surface-inset (tier 2), database rows lift back to card. */
 .section {
+  /* Database row columns, shared by the cards and their captions. The actions
+     column fits the reference star and a default-size Open database button. */
+  --library-database-icon: 2.25rem;
+  --library-database-games: 6rem;
+  --library-database-storage: 5.5rem;
   --library-database-actions: 10.5rem;
   padding: var(--mantine-spacing-xs) 0;
   border-radius: var(--cf-radius-lg);
@@ -11,8 +16,9 @@
   margin-top: var(--mantine-spacing-md);
 }
 
+/* Shown from 24rem: on a narrower list the icon would squeeze the section name. */
 .sectionIcon {
-  display: inline-flex;
+  display: none;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
@@ -35,6 +41,15 @@
 .databaseIcon {
   color: var(--cf-primary);
   background: color-mix(in srgb, var(--cf-primary) 16%, transparent);
+}
+
+/* Column captions of both sections. */
+.columnCaption {
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 /* Database rows: name | games | storage, then the card's reference/open footer. */
@@ -67,8 +82,8 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: var(--library-database-icon);
+  height: var(--library-database-icon);
   border-radius: var(--cf-radius-sm);
 }
 
@@ -99,6 +114,10 @@
   .section {
     padding-inline: var(--mantine-spacing-xs);
   }
+
+  .sectionIcon {
+    display: inline-flex;
+  }
 }
 
 /* Database rows go one-line later than file rows: they carry two stats plus actions. */
@@ -109,7 +128,9 @@
 
   .databaseMain {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 6rem 5.5rem;
+    grid-template-columns: minmax(0, 1fr) var(--library-database-games) var(
+        --library-database-storage
+      );
   }
 
   .databaseMain .statLabel {
@@ -118,18 +139,15 @@
 
   .databaseColumns {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 6rem 5.5rem var(--library-database-actions);
+    grid-template-columns:
+      minmax(0, 1fr) var(--library-database-games) var(--library-database-storage)
+      var(--library-database-actions);
     gap: var(--mantine-spacing-md);
     /* Card border plus horizontal padding keep captions over their values. */
     padding: 0 calc(var(--mantine-spacing-sm) + 1px) var(--mantine-spacing-xs);
-    color: var(--mantine-color-dimmed);
-    font-size: var(--mantine-font-size-xs);
-    font-weight: 500;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
   }
 
   .databaseColumns > span:first-child {
-    padding-left: calc(2.25rem + var(--mantine-spacing-sm));
+    padding-left: calc(var(--library-database-icon) + var(--mantine-spacing-sm));
   }
 }

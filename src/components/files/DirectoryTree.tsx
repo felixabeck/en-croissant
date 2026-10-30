@@ -387,7 +387,11 @@ export default function DirectoryTree({
               {t("Files.Title", { defaultValue: "Files" })}
             </LibrarySectionHeading>
             {fileCount > 0 && (
-              <div className={`${classes.row} ${classes.columns}`} aria-hidden>
+              <div
+                className={`${classes.row} ${classes.columns} ${libraryClasses.columnCaption}`}
+                aria-hidden
+                data-library-columns
+              >
                 <div className={classes.name}>{t("Common.Name")}</div>
                 <div className={classes.metadata}>
                   <span>{t("Databases.Card.Games")}</span>

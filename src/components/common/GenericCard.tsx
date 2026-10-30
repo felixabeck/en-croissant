@@ -16,7 +16,6 @@ type Props<T> = {
   onDoubleClick?: () => void;
   tabIndex?: number;
   footer?: ReactNode;
-  compactStats?: boolean;
   /** Places the footer beside the selection instead of below it. */
   orientation?: "vertical" | "horizontal";
   className?: string;
@@ -32,7 +31,6 @@ export default function GenericCard<T>({
   onDoubleClick,
   tabIndex,
   footer,
-  compactStats = false,
   orientation = "vertical",
   className,
 }: Props<T>) {
@@ -54,7 +52,7 @@ export default function GenericCard<T>({
         {Header}
 
         {stats && (
-          <div className={cx(classes.info, { [classes.compactInfo]: compactStats })}>
+          <div className={classes.info}>
             {stats.map((stat) => (
               <div key={stat.label}>
                 <Text c="dimmed" fw="bold" className={classes.label}>

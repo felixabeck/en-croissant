@@ -83,7 +83,11 @@ export function LibraryDatabaseColumns({
   reference: string;
 }) {
   return (
-    <div className={classes.databaseColumns} aria-hidden>
+    <div
+      className={`${classes.databaseColumns} ${classes.columnCaption}`}
+      aria-hidden
+      data-library-columns
+    >
       <span>{name}</span>
       <span>{games}</span>
       <span>{storage}</span>
