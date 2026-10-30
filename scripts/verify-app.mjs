@@ -234,7 +234,7 @@ import {
 } from "../src/state/store/debouncedStorage.ts";
 import { decodeEngineOwnerValue } from "../src/state/engineOwnerEnvelope.ts";
 import {
-  fileFreshnessApplicationWithinBudget,
+  fileFreshnessMainThreadWithinBudget,
   fileFreshnessTiming,
 } from "./file-freshness-timing.mjs";
 import {
@@ -4276,9 +4276,9 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     `read_game duration: ${measuredReadTimeMs}`,
   );
   check(
-    fileFreshnessApplicationWithinBudget(freshnessTiming, FILE_FRESHNESS_APPLY_BUDGET_MS),
-    `the freshness store application takes at most ${FILE_FRESHNESS_APPLY_BUDGET_MS} ms excluding lex await`,
-    `applicationMs: ${formatDuration(applicationMs)} ms; ` +
+    fileFreshnessMainThreadWithinBudget(freshnessTiming, FILE_FRESHNESS_APPLY_BUDGET_MS),
+    `the freshness main-thread publication takes at most ${FILE_FRESHNESS_APPLY_BUDGET_MS} ms excluding lex await`,
+    `mainThreadMs: ${formatDuration(mainThreadMs)} ms; ` +
       `readGame: ${formatDuration(measuredReadTimeMs)} ms; lexAwaitMs: ${formatDuration(freshnessMeasurement.lexAwaitMs)} ms`,
   );
   console.log(

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   fileFreshnessApplicationWithinBudget,
+  fileFreshnessMainThreadWithinBudget,
   fileFreshnessTiming,
 } from "./file-freshness-timing.mjs";
 
@@ -26,8 +27,41 @@ test("splits page timestamps and preserves the one-poll deadline width", () => {
     timing.deadlineMs,
     2000 + measurement.readTimeMs + measurement.observedAt - measurement.readFinishedAt,
   );
-  // Phase 1 diagnoses a slow commit without failing the store-application check.
+  // A slow commit fails the main-thread check even when the store application is fast.
   assert.equal(fileFreshnessApplicationWithinBudget(timing, 1000), true);
+  assert.equal(fileFreshnessMainThreadWithinBudget(timing, 1000), false);
+});
+
+test("compares the actual main-thread duration against both budget boundaries", () => {
+  for (const [mainThreadMs, expected] of [
+    [-1, false],
+    [0, true],
+    [999, true],
+    [1000, true],
+    [1001, false],
+  ]) {
+    const timing = fileFreshnessTiming(
+      {
+        ...measurement,
+        observedAt: measurement.readFinishedAt + measurement.lexAwaitMs + mainThreadMs,
+      },
+      2000,
+    );
+    assert.equal(
+      fileFreshnessMainThreadWithinBudget(timing, 1000),
+      expected,
+      `mainThreadMs=${mainThreadMs}`,
+    );
+  }
+});
+
+test("missing or non-finite main-thread stamps and lex durations fail the main-thread check", () => {
+  for (const key of ["readFinishedAt", "observedAt", "lexAwaitMs"]) {
+    for (const value of [null, undefined, Number.NaN, Infinity, -Infinity]) {
+      const timing = fileFreshnessTiming({ ...measurement, [key]: value }, 2000);
+      assert.equal(fileFreshnessMainThreadWithinBudget(timing, 1000), false, `${key}=${value}`);
+    }
+  }
 });
 
 test("compares the actual application duration against both budget boundaries", () => {

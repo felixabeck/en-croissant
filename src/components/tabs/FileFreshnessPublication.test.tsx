@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
 import { act } from "react";
@@ -127,7 +126,12 @@ class ResizeObserverStub {
 Object.defineProperty(window, "ResizeObserver", { writable: true, value: ResizeObserverStub });
 
 // Read the verifier's budget so the real-install proof cannot silently use a different ceiling.
-const verifier = readFileSync("scripts/verify-app.mjs", "utf8");
+const verifierFileSystemModule = "node:fs";
+const verifier = await (
+  import(verifierFileSystemModule) as Promise<{
+    readFileSync(path: string, encoding: "utf8"): string;
+  }>
+).then((fs) => fs.readFileSync("scripts/verify-app.mjs", "utf8"));
 const FILE_FRESHNESS_APPLY_BUDGET_MS = Number(
   verifier.match(/const FILE_FRESHNESS_APPLY_BUDGET_MS = ([\d_]+);/)![1].replaceAll("_", ""),
 );

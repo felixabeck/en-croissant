@@ -20,3 +20,7 @@ export function fileFreshnessTiming(
 export function fileFreshnessApplicationWithinBudget({ applicationMs }, budgetMs) {
   return Number.isFinite(applicationMs) && applicationMs >= 0 && applicationMs <= budgetMs;
 }
+
+export function fileFreshnessMainThreadWithinBudget({ mainThreadMs }, budgetMs) {
+  return Number.isFinite(mainThreadMs) && mainThreadMs >= 0 && mainThreadMs <= budgetMs;
+}
