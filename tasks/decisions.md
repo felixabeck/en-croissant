@@ -11088,8 +11088,8 @@ Former private decision identifier: d-20261029-14
 * **Rejected:** Unchanged from d-20261030-07.
 * **Reason:** d-20261030-07 stated that registry records are unchanged in shape. The implementation adds an optional persisted `trash_locator` field to each registry record (src-tauri/src/db/linked_collections.rs `Record`), which keeps cleanup retryable after permanent deletion removes the authority handle. This entry corrects the reversal path accordingly.
 * **Reversal path:** Map `trashed` back to `unavailable` in reconciliation, drop the consumer filters, and stop writing `trash_locator`. The field is serde-defaulted and skipped when empty, so older and newer builds read each other's registry; a reversal may leave the field in records until they are next written.
-* **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database (records-lens correction). · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"27e6b09bbdfa7cdf455494ee596decd368bd854d725aa1690d99ab74152b17d5","input_sha256":"e42dcf82330ddb531a0d6fa4e13a3fdddf14377a00fd8790c199e535f6ea0f14","kind":"mutation-receipt","operation":"c6bd723686aec26a8de2ee4c4512a90747bf00907119e03f1f095e5102721708","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-09"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database (records-lens correction). · **Superseded-by:** d-20261030-10
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"0018624cdab74d7e0be7e96842bba0c135b2ad2b16ae6d8c1274982eb699e0f9","input_sha256":"e42dcf82330ddb531a0d6fa4e13a3fdddf14377a00fd8790c199e535f6ea0f14","kind":"mutation-receipt","operation":"c6bd723686aec26a8de2ee4c4512a90747bf00907119e03f1f095e5102721708","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-09"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261030-10 — What happens to a linked collection whose source PGN is trashed? (corrected compatibility)
 
