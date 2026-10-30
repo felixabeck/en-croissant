@@ -19619,6 +19619,9 @@ Plan authorship and arbitration shared root context. Detection and code use the 
 
 <!-- ledger-meta {"command":"annotate","effect_lines":10,"effect_sha256":"5770211cb9e4dead2d0af13c1a6f5f03cf8877eeb37072c83f578b0d67bdfb29","input_sha256":"91f7732b37d7493c9ad37dca6abff8f2426b7ee3bb2665c6d5c87f77daca98dd","kind":"mutation-receipt","operation":"dcca918f4df15aa9214d06d9f21060f210b6db9cef165d3c59063450d25eb268","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-15"],"target":"f-20261030-15","v":1} -->
 
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"3aab84267bb9d1f810a5bd5d0ce55770778e3c7fa742641aef8ea3bb639e79ab","options":{"section":null},"request_id_sha256":"70ca287832e5da7cbfd006fecaf81d0c23f87d100f45fdaf01a7531d7672e601","results":["f-20261030-15"],"target":"f-20261030-15","v":1} -->
+
 ### Library file-count text inherits the low-contrast dark row hover pair
 
 * **ID:** f-20261030-16 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
