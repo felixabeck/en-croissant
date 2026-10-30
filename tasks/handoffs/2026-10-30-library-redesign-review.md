@@ -1051,7 +1051,7 @@ Seven code lenses approve the test-only repair. One records finding R2 requires 
 
 All eight canonical read-only lenses completed and were read. Seven code lenses approved without findings. Records R2 should-fix, confidence 99: f-20261030-18 lacked Follow-up of f-20261030-05 despite being created by that repair. Root adopted Fix and the canonical annotate transaction adds the required field. This is a new independent records issue, not a reopened C1 or R1. R2 awaits records-only closure. No source changed after the code approval.
 
-Cumulative diff_adopted_per_round r1=2 r2=0 r3=0 r4=0 r5=1. Three unique lens issues opened, two closed before the R2 closure. Root-retained CI18 remains locally repaired and open until hosted confirmation, separate from lens adoption counts. Round launcher-to-root-read wall 176 seconds, active wall unknown. No parallel spans are summed.
+Cumulative diff_adopted_per_round r1=2 r2=0 r3=0 r4=0 r5=1. Three unique lens issues opened, two closed before the R2 closure. Root-retained CI18 remains locally repaired and open until hosted confirmation, separate from lens adoption counts. Round launcher-to-review-record wall 176 seconds, including arbitration and the lineage transaction, active wall unknown. No parallel spans are summed.
 
 ## Raw correctness report
 
