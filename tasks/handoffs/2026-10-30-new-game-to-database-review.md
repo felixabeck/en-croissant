@@ -1,6 +1,6 @@
 # Review record: new game to database (build 2026-10-30)
 
-Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07. Finding: f-20261030-06.
+Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07 (superseded by d-20261030-09), d-20261030-08. Finding: f-20261030-06. The plan file `tasks/plans/2026-10-30-new-game-to-database.md` named in those records lives in an ignored directory; its full text is preserved in this handoff.
 
 ## Plan: Add new games directly to a games database
 
@@ -248,6 +248,10 @@ Decided autonomously (full auto; recorded in `tasks/decisions.md`):
 
 - Older builds reading a workspace with a `databaseDraft` origin fail schema validation for that
   tab; sessionStorage is per session, so only a downgrade inside one session is affected.
+  Correction (cumulative diff review, records lens): at base `4bd75ea8` the workspace validates
+  `tabs` as one array, and `planWorkspaceRepair` replaces the whole workspace with
+  `defaultWorkspace()` on failure, so such a same-session downgrade resets every open tab, not
+  only the draft tab.
 - An uncertain store leaves its marker set; the user sees the "may already have been added"
   warning and cannot store the same tab to that destination again (checking the database
   shows whether the game arrived), instead of risking a silent duplicate.
@@ -414,7 +418,46 @@ Adopted r4 = 1.
 ### Round 5 (r5 closure, 2 lenses)
 
 Verdicts: plan APPROVED, tests APPROVED. Closed: R3-01 (R1-06 reconfirmed). No open issues.
-Adopted r5 = 0. Adoptions per round: r1=14 r2=5 r3=2 r4=1 r5=0. Unique issues: 19 (R1-01..R1-14,
+Adopted r5 = 0. Adoptions per round: r1=14 r2=5 r3=2 r4=1 r5=0. Unique issues: 18 (R1-01..R1-14,
 R2-01..R2-03, R3-01; R1-06/R1-09/R3-01 reopened and closed within their lineage). Escalation used
 once (R1-06, round 3). Family: plan written and arbitrated by Claude (Opus), lenses on Codex
 (OpenAI), so plan review was family-separated.
+
+## Implementation and cumulative diff review
+
+Phases: Phase 1 (`f73eb740`, Codex openai.high sensitive, one resume after the leaf stopped on an
+intermediate red), Phase 2 (`bd0452f3`, sensitive, two proof-fix rounds: a cleanup-failure test
+injector and an unplanned locator rewrite reverted to the existing contract). Repairs before
+review: `96835d03` (20 existing e2e snapshots re-recorded through the container; diffs show only
+the new controls and reflow; the Library detail pane scrolls, `LibraryPage.tsx` split
+`overflow: auto`), `93de6143` (bundle total ceiling via the feature-growth route,
+d-20261030-08). An intermittent axe colour-contrast failure on a fading Settings tooltip in
+`engine-gap: … in dark` failed 2 of 8 runs on this branch and 0 of 8 on base `4bd75ea8`; the
+node is the sidebar link tooltip, not a changed component, so it is recorded here and not filed
+(rule 4d single load flake) unless it reddens final gates.
+
+Diff review round 1 (`4bd75ea8..93de6143`, 12 code lenses + records lens, Codex openai.high;
+code authored by Codex, so detection is same-family; plan authorship and arbitration by Claude):
+APPROVED chess-semantics, ipc-contract, persisted-state, platform-semantics, root-cause,
+tauri-security, minimalism (1 nit), error-handling (1 should-fix), tests (2 should-fix); REVISE
+correctness, code-quality, pgn-index, records.
+
+| ID | Finding | Lens | Disposition | Repair |
+|---|---|---|---|---|
+| CR1-01 | Queued draft save inserts a duplicate after a queued Save to database rebinds the tab | correctness | Fix | `784b3e25` |
+| CR1-02 | Bare 100/256 store-attempt bounds | code-quality | Fix | `784b3e25` |
+| CR1-03 | `getDatabases` writes reference preferences | code-quality | Fix | `8a26314d` |
+| CR1-04 | Save to database modal discards typed listing failures | error-handling | Fix | `8a26314d` |
+| CR1-05 | `insert_db_game_blocking` forwarding layer | minimalism | Fix | fix(pgn) commit |
+| CR1-06 | `headersToPGN` does not escape header values; insert rejects `Open "A" Cup` | pgn-index | Fix | fix(pgn) commit; first attempt changed native Event/Site spelling and was reverted (6694b6e7 contract); decode once in `databaseGameSeed` |
+| CR1-07 | No storeAttempts persistence-failure test | tests | Fix | `784b3e25` |
+| CR1-08 | No linked-append uncertainty retention test | tests | Fix | `784b3e25` |
+| CR1-09 | d-20261029-15 / -18 not superseded by the new ceiling | records | Fix | trailers → d-20261030-08 |
+| CR1-10 | d-20261030-07 reversal claimed registry shape unchanged (`trash_locator` added) | records | Fix | d-20261030-09 supersedes d-20261030-07 |
+| CR1-11 | Downgrade risk understated (whole workspace resets) | records | Fix | Risks correction above |
+| CR1-12 | Records name the ignored plan path | records | Fix | header note: plan preserved in this handoff |
+| CR1-13 | "Unique issues: 19" should be 18 | records | Fix | corrected |
+
+Out-of-diff defect filed: f-20261030-07 (vendored `RawHeader::decode` drops a literal backslash
+after an escaped backslash). Closure round 2 (`93de6143..HEAD`, 8 code lenses): CR1-01..CR1-08
+CLOSED with evidence, no new findings, all APPROVED. diff_adopted_per_round: r1=13 r2=0.
