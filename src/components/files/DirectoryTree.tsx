@@ -1,6 +1,11 @@
-import { LibrarySectionHeading, LibraryTypeBadge } from "@/components/library/presentation";
+import {
+  LibraryDatabaseColumns,
+  LibrarySectionHeading,
+  LibraryTypeBadge,
+  libraryClasses,
+} from "@/components/library/presentation";
 import { Box, Group, Text } from "@mantine/core";
-import { FileText, Folder, FolderOpen, FolderSymlink, Trash2 } from "lucide-react";
+import { Database, FileText, Folder, FolderOpen, FolderSymlink, Trash2 } from "lucide-react";
 import { useAtom } from "jotai";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
@@ -317,8 +322,9 @@ export default function DirectoryTree({
             <div className={classes.metadata}>
               {node.type === "file" && (
                 <>
-                  <Text size="xs" c="dimmed" className="wrap-anywhere">
-                    {node.numGames}
+                  <Text size="sm" c="dimmed" className={`${classes.games} wrap-anywhere`}>
+                    <span className={classes.inlineLabel}>{t("Databases.Card.Games")} </span>
+                    <span>{node.numGames}</span>
                   </Text>
                   <LibraryTypeBadge>
                     {t(
@@ -376,14 +382,36 @@ export default function DirectoryTree({
     <Box role="tree" aria-label={label ?? t("Files.Title")} className={classes.tree}>
       {grouped && visible.length > 0 ? (
         <>
-          <LibrarySectionHeading count={fileCount}>
-            {t("Files.Title", { defaultValue: "Files" })}
-          </LibrarySectionHeading>
-          {visible.slice(0, fileCount).map(render)}
-          <LibrarySectionHeading count={visible.length - fileCount}>
-            {t("Databases.Title", { defaultValue: "Databases" })}
-          </LibrarySectionHeading>
-          {visible.slice(fileCount).map(render)}
+          <Box role="presentation" className={libraryClasses.section} data-section="files">
+            <LibrarySectionHeading count={fileCount} icon={<FileText />}>
+              {t("Files.Title", { defaultValue: "Files" })}
+            </LibrarySectionHeading>
+            {fileCount > 0 && (
+              <div className={`${classes.row} ${classes.columns}`} aria-hidden>
+                <div className={classes.name}>{t("Common.Name")}</div>
+                <div className={classes.metadata}>
+                  <span>{t("Databases.Card.Games")}</span>
+                  <span>{t("Files.FileType")}</span>
+                </div>
+                <div className={classes.actions} />
+              </div>
+            )}
+            {visible.slice(0, fileCount).map(render)}
+          </Box>
+          <Box role="presentation" className={libraryClasses.section} data-section="databases">
+            <LibrarySectionHeading count={visible.length - fileCount} icon={<Database />}>
+              {t("Databases.Title", { defaultValue: "Databases" })}
+            </LibrarySectionHeading>
+            {visible.length > fileCount && (
+              <LibraryDatabaseColumns
+                name={t("Common.Name")}
+                games={t("Databases.Card.Games")}
+                storage={t("Databases.Card.Storage")}
+                reference={t("Databases.Settings.ReferenceDatabase")}
+              />
+            )}
+            <div className={classes.databaseList}>{visible.slice(fileCount).map(render)}</div>
+          </Box>
         </>
       ) : (
         visible.map(render)

@@ -1,23 +1,42 @@
 import { wrappingButton } from "@/components/common/wrappingButton";
 import { Badge, Group, Text, type BadgeProps } from "@mantine/core";
 import type { ReactNode } from "react";
+import classes from "./Library.module.css";
+
+export { classes as libraryClasses };
 
 export const libraryButtonProps = { color: "gold", styles: wrappingButton } as const;
 
-export function LibrarySectionHeading({ children, count }: { children: ReactNode; count: number }) {
+export function LibrarySectionHeading({
+  children,
+  count,
+  icon,
+}: {
+  children: ReactNode;
+  count: number;
+  icon?: ReactNode;
+}) {
   return (
     <Group
       component="h2"
       m={0}
       px="xs"
-      py="sm"
+      pt="xs"
+      pb="sm"
       justify="space-between"
       gap="xs"
       role="presentation"
     >
-      <Text component="span" size="sm" fw={600} miw={0} style={{ overflowWrap: "anywhere" }}>
-        {children}
-      </Text>
+      <Group component="span" gap="xs" miw={0} wrap="nowrap">
+        {icon && (
+          <span className={classes.sectionIcon} aria-hidden>
+            {icon}
+          </span>
+        )}
+        <Text component="span" size="sm" fw={600} miw={0} style={{ overflowWrap: "anywhere" }}>
+          {children}
+        </Text>
+      </Group>
       <Badge component="span" size="xs" color="gray">
         {count}
       </Badge>
@@ -48,5 +67,27 @@ export function LibraryTypeBadge({
     >
       {children}
     </Badge>
+  );
+}
+
+/** The column captions of the Databases section, aligned with `libraryClasses.databaseCard`. */
+export function LibraryDatabaseColumns({
+  name,
+  games,
+  storage,
+  reference,
+}: {
+  name: string;
+  games: string;
+  storage: string;
+  reference: string;
+}) {
+  return (
+    <div className={classes.databaseColumns} aria-hidden>
+      <span>{name}</span>
+      <span>{games}</span>
+      <span>{storage}</span>
+      <span>{reference}</span>
+    </div>
   );
 }

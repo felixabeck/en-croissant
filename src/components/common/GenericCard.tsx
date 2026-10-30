@@ -17,6 +17,9 @@ type Props<T> = {
   tabIndex?: number;
   footer?: ReactNode;
   compactStats?: boolean;
+  /** Places the footer beside the selection instead of below it. */
+  orientation?: "vertical" | "horizontal";
+  className?: string;
 };
 
 export default function GenericCard<T>({
@@ -30,8 +33,11 @@ export default function GenericCard<T>({
   tabIndex,
   footer,
   compactStats = false,
+  orientation = "vertical",
+  className,
 }: Props<T>) {
-  const cardClasses = cx(classes.card, {
+  const cardClasses = cx(classes.card, className, {
+    [classes.horizontal]: orientation === "horizontal",
     [classes.selected]: isSelected,
     [classes.error]: !!error,
   });

@@ -264,7 +264,7 @@ export default function LibraryPage() {
           mih={split ? 0 : undefined}
           style={{ overflow: split ? "auto" : undefined }}
         >
-          <Stack gap="xs" miw={0}>
+          <Stack gap="sm" miw={0} h={split ? "100%" : undefined}>
             <Group gap="xs" wrap="wrap">
               <Input
                 flex="2 1 12rem"
@@ -311,7 +311,14 @@ export default function LibraryPage() {
             {files.trash}
             {files.status}
             {databases.status}
-            <Box mah="60vh" mih="8rem" style={{ overflow: "auto" }}>
+            <Box
+              mah={split ? undefined : "60vh"}
+              mih="8rem"
+              flex={split ? "1 1 0" : undefined}
+              // The reserved gutter keeps the scrollbar off the row actions.
+              pr={split ? "xs" : undefined}
+              style={{ overflow: "auto", scrollbarGutter: split ? "stable" : undefined }}
+            >
               {databases.progress}
               <DirectoryTree
                 {...files.listProps}

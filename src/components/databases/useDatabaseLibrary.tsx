@@ -1,4 +1,4 @@
-import { LibraryTypeBadge, libraryButtonProps } from "@/components/library/presentation";
+import { libraryButtonProps, libraryClasses } from "@/components/library/presentation";
 import NewDatabaseGameButton from "@/components/boards/NewDatabaseGameButton";
 import { tauri } from "@/platform/tauri";
 import { listingFailure } from "@/components/files/listingFailure";
@@ -199,7 +199,7 @@ export function useDatabaseLibrary(
     collections: data?.collections ?? [],
     unread,
     renderUnreadRow: (item: (typeof unread)[number]) => (
-      <Stack key={item.key} gap="xs" miw={0}>
+      <Stack key={item.key} gap={4} miw={0} className={libraryClasses.unreadDatabase}>
         <Text fw={500} fz="sm" className="wrap-anywhere">
           {item.filename}
         </Text>
@@ -226,44 +226,44 @@ export function useDatabaseLibrary(
         isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
         setSelected={setSelected}
         error={item.type === "error" ? item.error : ""}
+        orientation="horizontal"
+        className={libraryClasses.databaseCard}
         onDoubleClick={() => {
           if (item.type === "error") return;
           openDatabase(item);
         }}
         Header={
-          // On a narrow card, the icon/title group and Games database type badge
-          // wrap onto separate rows instead of squeezing the title.
-          <Group justify="space-between">
-            <Group miw={0}>
-              <Database size="1.5rem" />
+          <div className={libraryClasses.databaseMain}>
+            <div className={libraryClasses.databaseName}>
+              <span className={libraryClasses.databaseIcon} aria-hidden>
+                <Database size="1.125rem" />
+              </span>
               <Box miw={0}>
-                <Text fw={500} fz="sm" className="wrap-anywhere">
+                <Text fw={600} fz="sm" className="wrap-anywhere">
                   {item.type === "success" ? item.title : item.error}
                 </Text>
                 <Text size="xs" c="dimmed" className="wrap-anywhere">
                   {item.type === "error" ? item.filename : item.description}
                 </Text>
               </Box>
-            </Group>
-            <LibraryTypeBadge>
-              {t("Library.GamesDatabase", { defaultValue: "Games database" })}
-            </LibraryTypeBadge>
-          </Group>
+            </div>
+            <div className={libraryClasses.databaseStat}>
+              <span className={libraryClasses.statLabel}>{t("Databases.Card.Games")}</span>
+              <Text fz="sm" fw={600}>
+                {item.type === "success" ? formatNumber(item.game_count) : "???"}
+              </Text>
+            </div>
+            <div className={libraryClasses.databaseStat}>
+              <span className={libraryClasses.statLabel}>{t("Databases.Card.Storage")}</span>
+              <Text fz="sm" c="dimmed">
+                {item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???"}
+              </Text>
+            </div>
+          </div>
         }
-        stats={[
-          {
-            label: t("Databases.Card.Games"),
-            value: item.type === "success" ? formatNumber(item.game_count) : "???",
-          },
-          {
-            label: t("Databases.Card.Storage"),
-            value: item.type === "success" ? formatBytes(item.storage_size ?? 0) : "???",
-          },
-        ]}
-        compactStats
         footer={
           item.type === "success" ? (
-            <Group justify="space-between" wrap="wrap">
+            <Group justify="space-between" gap="xs" wrap="wrap">
               <Rating
                 aria-label={t("Databases.Settings.ReferenceDatabase")}
                 value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}

@@ -453,11 +453,17 @@ async function exerciseMixedDatabases(
         const card = await assertDatabaseCardBoundary(opener, database.title);
         await expect(card.getByText(database.games, { exact: true })).toBeVisible();
         await expect(card.getByText(database.storage, { exact: true })).toBeVisible();
-        const games = (await card.getByText("Games", { exact: true }).boundingBox())!;
-        const storage = (await card.getByText("Storage", { exact: true }).boundingBox())!;
+        const games = (await card.getByText(database.games, { exact: true }).boundingBox())!;
+        const storage = (await card.getByText(database.storage, { exact: true }).boundingBox())!;
         expect(storage.x - games.x, "Stats must stay compact inside the card").toBeLessThanOrEqual(
             MAX_COMPACT_STATS_GAP_REM * fontSizePx,
         );
+        // Stacked cards label their stats; one-line rows move the captions into the section header.
+        const captions = (await card.getByText("Games", { exact: true }).isVisible())
+            ? card
+            : tree.locator("[data-section='databases'] [aria-hidden]");
+        for (const caption of ["Games", "Storage"])
+            await expect(captions.getByText(caption, { exact: true }).first()).toBeVisible();
         const favourite = card.getByLabel("Reference Database", { exact: true });
         await reachable(favourite);
         await favourite.getByRole("radio", { name: "1", exact: true }).focus();

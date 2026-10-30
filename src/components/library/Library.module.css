@@ -1,0 +1,135 @@
+/* Library surfaces follow DESIGN.md's tiers: the list pane is a card (tier 1),
+   each section is surface-inset (tier 2), database rows lift back to card. */
+.section {
+  --library-database-actions: 10.5rem;
+  padding: var(--mantine-spacing-xs) 0;
+  border-radius: var(--cf-radius-lg);
+  background: var(--cf-surface-inset);
+}
+
+.section + .section {
+  margin-top: var(--mantine-spacing-md);
+}
+
+.sectionIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--cf-radius-sm);
+}
+
+.sectionIcon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.section[data-section="files"] .sectionIcon {
+  color: var(--cf-foreground);
+  background: var(--cf-interactive);
+}
+
+.section[data-section="databases"] .sectionIcon,
+.databaseIcon {
+  color: var(--cf-primary);
+  background: color-mix(in srgb, var(--cf-primary) 16%, transparent);
+}
+
+/* Database rows: name | games | storage, then the card's reference/open footer. */
+.databaseMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.databaseName {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mantine-spacing-sm);
+  min-width: 0;
+}
+
+/* The title wraps below the icon rather than shrinking to nothing on a narrow card. */
+.databaseName > :last-child {
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+
+.databaseIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--cf-radius-sm);
+}
+
+.databaseStat {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.statLabel {
+  display: block;
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
+}
+
+.databaseColumns {
+  display: none;
+}
+
+.unreadDatabase {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 1px solid var(--cf-destructive);
+  border-radius: var(--cf-radius-lg);
+  background: var(--cf-card);
+}
+
+@container (min-width: 24rem) {
+  .section {
+    padding-inline: var(--mantine-spacing-xs);
+  }
+}
+
+/* Database rows go one-line later than file rows: they carry two stats plus actions. */
+@container (min-width: 36rem) {
+  .section .databaseCard {
+    grid-template-columns: minmax(0, 1fr) var(--library-database-actions);
+  }
+
+  .databaseMain {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 6rem 5.5rem;
+  }
+
+  .databaseMain .statLabel {
+    display: none;
+  }
+
+  .databaseColumns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 6rem 5.5rem var(--library-database-actions);
+    gap: var(--mantine-spacing-md);
+    /* Card border plus horizontal padding keep captions over their values. */
+    padding: 0 calc(var(--mantine-spacing-sm) + 1px) var(--mantine-spacing-xs);
+    color: var(--mantine-color-dimmed);
+    font-size: var(--mantine-font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .databaseColumns > span:first-child {
+    padding-left: calc(2.25rem + var(--mantine-spacing-sm));
+  }
+}
