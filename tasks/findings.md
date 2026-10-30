@@ -19275,7 +19275,7 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 
 ### Tournament game opening omits the linked locator required by native admission
 
-* **ID:** f-20261030-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261030-01 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** behaviour
 * **Where:** src/components/databases/TournamentCard.tsx165 constructs gameOrigin without game.linked. src/utils/tabs.ts572 passes that missing locator as null. src-tauri/src/db/linked_collections.rs3291 resolve_game rejects an absent locator with StaleGame for linked sources.
@@ -19284,6 +19284,13 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 * **Proof:** Retain a component regression that actually activates the tournament row and observes the required linked locator at the admission boundary through the real shared helper. The old inline producer must fail the retained assertion, restored helper routing must pass, and standalone games must retain their existing origin. Existing full original-game admission coverage remains shared, no helper-object mirror test.
 * **Related:** f-20261010-03 repaired tournament pagination, a different defect. No shared Root is established.
 * **Found by:** Minimalism code r3 at9aa9bd2f in the full-auto opening-game-reference task, confidence98. Root independently traced the real native rejection condition. This is new adopted review issue DR10, planned in this same repair batch. Plan authorship and arbitration shared one context. Detection shared the original code's OpenAI model family through the disclosed native read-only fallback.
+
+Source closure, 2026-10-30. TournamentCard now uses the same real databaseGameSeed as the three other database-game callers, preserving the linked occurrence locator required by native admission. Its component coverage invokes the actual runTabCreation transaction with createTab observed, retaining an unmocked shared seed. R4 closed DR10 and R5 closed its DR13 test-reuse follow-up. This was a fourth caller of the existing domain concept, with no new admission path.
+
+The seven feature findings close their reviewed source obligations after the current ordinary native acceptance, not the subsequent release workflow. Original pinned game-references container proof passed both tests and all three hard snapshots. Its fresh release build and six frozen source/test/doc/spec hashes are preserved. After the separate verifier target repair, two uninstrumented full native journeys passed CR1–CR4, DS2, fifty practice ratings and shutdown on the same frozen release binary. Root independently reversed only that target repair, reproduced the first-move failure1, restored exact verifier2a46dd44 and completed native0. Complete native-start pre-review and the related26 files/1302 tests passed0. Exact canonical attempt paths and source hashes are retained in tasks/handoffs/2026-10-29-opening-game-references-review.md and the run archive.
+
+Full clean Rust/frontend publication gates, ordinary verified push, exact pushed-SHA required hosted jobs and reviewed installation remain subsequent obligations at this closure. Broad f-20261011-03 and f-20261022-05 remain open. The separate normal Train-pane layout observation f-20261030-04 remains open for its own product-layout build. No actual Mega Database availability, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Recent repair code and detection used xAI in separate sessions, original feature and root used OpenAI. No whole-range family separation is claimed.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"f7f12c1d8291eff940fb3f961bdef83b667750102a5338a324f57ff2681f091a","header_sha256":"ee772c1772245b795ebcd114417d00c2fe50f3a02662b8e26385b86f95125bdb","header_status":"handled","input_sha256":"221ec8ba0e6f6c6cfd901ca705d39c94a498f2be27c3d43207d830c610976565","kind":"mutation-receipt","operation":"e78b712b3f41d40aca4cafe5f10145060fafc90dba76fec2934255e48fff69f8","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-01"],"target":"f-20261030-01","v":1} -->
 
 ---
 
