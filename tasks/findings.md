@@ -19298,7 +19298,7 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 
 ### Citation repair promotes an ambiguous combined-header prefix to a verified match
 
-* **ID:** f-20261030-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261030-02 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** behaviour
 * **Where:** src/utils/gameReferences.ts208 complete combined-prefix exception and its verification fallthrough, introduced in28e4b71a.
@@ -19307,6 +19307,13 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 * **Proof:** Query-sensitive lookup and rendered action regression must fail on71e915f5 and pass after repair. Include dated-round and round-only ambiguous combined prefixes, no automatic admission, explicit selected occurrence identity and unambiguous single-reading controls. Root independently reverse only the production repair with retained tests, restore exact hashes and run full related and pre-review proof before closure review.
 * **Follow-up of:** f-20261029-13. Correction-created DR12 in its28e4b71a repair, a new false-certainty regression while the supplied DR1 contradictions are closed. No shared Root is asserted for different local causes.
 * **Found by:** Correctness code R4 at70199ec1, confidence93, selected Executor Grok. Root traced the new early-return exception and final verified result. Plan authorship and arbitration share root context. This detection and the R3 repair author share xAI family. Final review remains incomplete and no publication is claimed.
+
+Source closure, 2026-10-30. R5 correctness, root-cause, tests and chess-semantics explicitly closed DR12. The matcher retains compatible candidates but clears verification when another complete tuple leaves combined-header boundary certainty unresolved. The root removed only the actual matching fix while retaining final95873e1e tests, observed two expected-unverified versus received-verified failures at exit1, restored exact source a8f25603 and observed green0. Original contradictions remain strict and single unambiguous matching readings still verify.
+
+The seven feature findings close their reviewed source obligations after the current ordinary native acceptance, not the subsequent release workflow. Original pinned game-references container proof passed both tests and all three hard snapshots. Its fresh release build and six frozen source/test/doc/spec hashes are preserved. After the separate verifier target repair, two uninstrumented full native journeys passed CR1–CR4, DS2, fifty practice ratings and shutdown on the same frozen release binary. Root independently reversed only that target repair, reproduced the first-move failure1, restored exact verifier2a46dd44 and completed native0. Complete native-start pre-review and the related26 files/1302 tests passed0. Exact canonical attempt paths and source hashes are retained in tasks/handoffs/2026-10-29-opening-game-references-review.md and the run archive.
+
+Full clean Rust/frontend publication gates, ordinary verified push, exact pushed-SHA required hosted jobs and reviewed installation remain subsequent obligations at this closure. Broad f-20261011-03 and f-20261022-05 remain open. The separate normal Train-pane layout observation f-20261030-04 remains open for its own product-layout build. No actual Mega Database availability, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Recent repair code and detection used xAI in separate sessions, original feature and root used OpenAI. No whole-range family separation is claimed.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"05c37ac4259226853bdbb77fa5fdbaa51ff80643c12d3650f06ea02baac3f149","header_sha256":"1d8b07f9802774d044b62bfa05b41ca0774b7ce027a3c9389d5a73f056116101","header_status":"handled","input_sha256":"1aeca07426ada63a4c1ea5e4ed71b4eb7cf31f6d38957e1b14b37d2f40e02e98","kind":"mutation-receipt","operation":"d0b6b56f7e1ca10c7d96a2f83cc474433da2ec1fbd72bf18e8a073741652065e","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-02"],"target":"f-20261030-02","v":1} -->
 
 ---
 
