@@ -98,9 +98,29 @@ test("linked collection New game appends to its PGN without inserting into the i
         retiredDatabase: null,
         fetchSinceMs: null,
     };
+    const appendedGame = {
+        pgn: '[Result "*"]\n\n1. e4 *',
+        present: true,
+        stamp: "b".repeat(64),
+        revision: "saved-generation",
+        linked: {
+            collection: collection.id,
+            ordinal: 2,
+            stamp: "b".repeat(64),
+            generation: "saved-generation",
+        },
+    };
+    const pgnGames = [...(gameOpeningCommands.read_game.pgnGames ?? []), appendedGame];
     await mockScenario({
         commands: filesWorkspaceCommands([[file]], {
             ...gameOpeningCommands,
+            read_game: { pgnGames },
+            read_games: { pgnGames },
+            // Exercise reconciliation once, then keep later polls at the saved revision.
+            file_revision: {
+                results: ["opening-fixture-revision"],
+                result: appendedGame.revision,
+            },
             list_workspace_databases: { result: { entries: [], unread: [] } },
             linked_collections_supported: { result: true },
             list_linked_collections: { result: [collection] },
@@ -134,6 +154,28 @@ test("linked collection New game appends to its PGN without inserting into the i
     await expect
         .poll(async () => (await activeWorkspaceTab(page))?.gameOrigin)
         .toMatchObject({ kind: "file", gameNumber: 2, file: { handle: file.handle } });
+    const savedAt = Date.now();
+    await expect
+        .poll(async () => {
+            const reconciled = await page.evaluate(() =>
+                window.__E2E_TAURI__
+                    .invocations()
+                    .some(
+                        (item) =>
+                            item.command === "read_game" && (item.args as { n?: number }).n === 2,
+                    ),
+            );
+            return reconciled && Date.now() - savedAt > 2_000;
+        })
+        .toBe(true);
+    await expect(
+        page.getByText("Cannot read properties of undefined", { exact: false }),
+    ).toHaveCount(0);
+    await expect(page.locator("[data-file-freshness]")).toHaveAttribute(
+        "data-file-freshness",
+        /^verified:/,
+    );
+    await expect(page.getByRole("button", { name: /^Save PGN/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Save PGN/ })).toHaveAttribute(
         "data-variant",
         "transparent",
