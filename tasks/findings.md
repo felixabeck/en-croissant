@@ -19497,7 +19497,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Library shows its empty message while an unavailable linked collection is listed
 
-* **ID:** f-20261030-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-08 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Where:** `src/components/library/LibraryPage.tsx` loadedEmpty condition and missing linked-collection peers.
@@ -19508,6 +19508,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** A LibraryPage rendering regression with zero files/databases and one unavailable collection must show its recovery row without the whole-library empty message. Keep the test, remove only the predicate correction via Git, observe the specific assertion fail, then restore green. Include the existing focused suite and container visual matrix.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"40349d2ec7543dd81c9c5fb875c4396d7d0db60da38f3cd1a79c9367043692f5","options":{"section":null},"request_id_sha256":"582c185c0f3ae373ac3f84098e063f245f89f642a500df407b5b877552de12c6","results":["f-20261030-08"],"target":"f-20261030-08","v":1} -->
+
+Whole-Library empty presentation now requires no missing linked collections. The retained source-only G8 predicate negative failed the empty-message assertion and restoration passed. See phase-1-round-2 g8 proof and the unavailable-only component/browser case.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"b4b0bd3f3ee678e33b67075b576009232a232439cfc84436cf7e86322cd8a795","header_sha256":"f513fd894d8c183504759c810ae98c94006e384966e3f60c66e83a6551bd6426","header_status":"handled","input_sha256":"0ce57bd4fe83785bd1928c949c2a554b7769fe94eb49453e48ae57f73550636d","kind":"mutation-receipt","operation":"51dec230e7a0e8b71dc49fb99c87fbcc636ab337313ed229bdc8713a6783fadf","options":{"section":null},"request_id_sha256":"78d2361fe4961f6d495a24680ceda450dd44ec55dfe75cf50ea51e1757a8887a","results":["f-20261030-08"],"target":"f-20261030-08","v":1} -->
 
 ### Database card padding lost double-click opening in the Library redesign
 
