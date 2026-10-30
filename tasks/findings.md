@@ -19367,7 +19367,7 @@ Root authored this clarification as Codex/OpenAI. Its records detection was Grok
 
 ### The normal practice pane clips Start Practice below its content viewport at an ordinary 800px window
 
-* **ID:** f-20261030-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261030-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** ux
 * **Where:** src/components/panels/practice/PracticePanel.tsx715 sets the non-compact Train panel overflow to hidden. Its Start Practice control is at967–981. The default mosaic pane has bounded height.
@@ -19378,3 +19378,10 @@ Root authored this clarification as Codex/OpenAI. Its records detection was Grok
 * **Related:** f-20261030-03 owns the separate verifier error of clicking an unclipped raw center. Reusing its existing reachableStableCoordinates helper can repair that test gesture but does not establish ordinary user scroll reachability. Handledf-20261021-04 concerns focused Build at320px/200percent, and handledf-20260829-02 concerns earlier responsive screens. This witness is normal Train at800px, with no shared cause or regression origin established.
 * **Disposition:** Record for a separate responsive product-layout build. The current citation task repairs only its evidenced verifier targeting failure. No new product layout decision is implied.
 * **Found by:** Selected Executor Grok temporary native observation, rootCodex trace. Plan authorship and arbitration share root context. Detection usesxAI like recent repair code, original feature isOpenAI.
+
+The Train tab panel is the scrollport for its stack. overflow-y is auto and overflow-x is hidden, with min-height 0. Decision d-20261030-04. Product commit d378b4bb. The two practice-feedback tests share practiceFeedbackSetup in 7224320f.
+
+At 800×647 in the container, before the change, the wheel left scrollTop at 0 and Start Practice stayed below the panel (button 371.1875–413.1875, panel bottom 356.1875, clientHeight 125, scrollHeight 351). After the change the wheel moves scrollTop to 100 and the button is inside. A pointer click at the visible center starts practice. The Build panel stays overflow hidden. No snapshot was rewritten.
+
+Keyboard focus already revealed the button on the unchanged overflow-hidden panel: after Tab, scrollTop was 98 and the button was inside. The plan expected that step to stay clipped. The pre-edit run still failed on the wheel and on the clip assertion, so the scrollport was implemented. The container proof is Chromium. pnpm verify:app was not run.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"ea41d9ccf580a73a0959d9e77ce7206c199b6de8adef941c41b6a2a3f638446f","header_sha256":"9cd27712e12e01fd8fe091efb3bd3d37cebb1f364d1ed81625863d5c6da8462b","header_status":"handled","input_sha256":"7414f7739c4d14d387b0b8d61121eeaa77ff2da0e09ae57d504237bdca39c260","kind":"mutation-receipt","operation":"941981c9787a02e3e38f14014676865a072dcbcf0fa709556aefca09bac28b24","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-04"],"target":"f-20261030-04","v":1} -->
