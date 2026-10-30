@@ -82,8 +82,8 @@ fn insert_db_game_round_trip_then_update_keeps_one_row_and_updates_counts() {
     }
 }
 
-#[test]
-fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn() {
+#[tokio::test]
+async fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn() {
     let source = r#"[Event "Open \"A\" \\ Cup"]
 [Site "Hall \"B\" \\ Wing"]
 [White "Ada \"Ace\" \\ Labs"]
@@ -137,14 +137,9 @@ fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn(
     let path = dir.path().join("escaped.pgn");
     std::fs::write(&path, b"old").unwrap();
     let destination = grant_pgn_file(&app, &path, "escaped.pgn", vec![PathOperation::WritePgn]);
-    export_to_pgn_blocking(
-        &state.pgn_path_authority,
-        &state.database_repository,
-        handle.clone(),
-        destination,
-        &token,
-    )
-    .unwrap();
+    export_to_pgn(handle.clone(), destination, app.state::<AppState>())
+        .await
+        .unwrap();
     let exported = std::fs::read_to_string(path).unwrap();
     for line in source.lines().take(4) {
         assert!(exported.contains(line), "{exported}");

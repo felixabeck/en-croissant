@@ -4940,8 +4940,8 @@ mod tests {
             .next()
             .unwrap();
         // Includes the two collection-service admission checks, the authority door,
-        // and the deletion recovery present-arm re-resolve.
-        assert_eq!(production.matches("resolve_database(").count(), 22);
+        // the insert command's mutation resolution, and the deletion recovery present-arm re-resolve.
+        assert_eq!(production.matches("resolve_database(").count(), 23);
         let resolver = production
             .split("pub(crate) fn resolve_database(")
             .nth(1)
@@ -4953,6 +4953,19 @@ mod tests {
         assert!(!production.contains("database_path("));
         assert!(!production.contains("DatabaseFileTarget {"));
         assert!(!production.contains("assemble("));
+        for function in ["insert_db_game_from_reader", "write_db_game_blocking"] {
+            let body = production
+                .split(&format!("fn {function}("))
+                .nth(1)
+                .unwrap()
+                .split("\n}")
+                .next()
+                .unwrap();
+            assert!(
+                body.contains("resolve_database(authority, &file, PathOperation::DatabaseMutate)?"),
+                "{function}"
+            );
+        }
 
         let source = include_str!("search.rs");
         let production = source
