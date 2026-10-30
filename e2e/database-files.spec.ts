@@ -18,7 +18,7 @@ import {
     waitForScrollAreaScrollbarsHidden,
     dragMosaicDivider,
 } from "./fixtures";
-import type { Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 for (const oldRoute of ["/files", "/databases"] as const) {
     test(`database-files: ${oldRoute} redirects to Library`, async ({ page }) => {
@@ -306,277 +306,398 @@ const desktopLibrarySurfaces = [
     { width: 1440, scale: 100, scheme: "dark", split: true },
 ] as const;
 
-for (const surface of desktopLibrarySurfaces) {
-    test(`database-files: mixed Library at ${surface.width}px ${surface.scale}% ${surface.scheme}`, async ({
-        page,
-        mockScenario,
-        capture,
-        assertAccessible,
-        assertNoHorizontalOverflow,
-    }, testInfo) => {
-        await page.addInitScript(({ scale, scheme }) => {
-            localStorage.setItem("font-size", String(scale));
-            localStorage.setItem("mantine-color-scheme", scheme);
-        }, surface);
-        await page.emulateMedia({ colorScheme: surface.scheme });
-        await page.setViewportSize({ width: surface.width, height: 1000 });
-        const { files, databases, unavailable, scenario } = mixedDesktopLibraryFixture();
-        await mockScenario(scenario);
-        await page.goto("/library");
-        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
-        await expect(page.locator("html")).toHaveAttribute(
-            "data-mantine-color-scheme",
-            surface.scheme,
-        );
-        await expect(page.locator("html")).toHaveCSS(
-            "font-size",
-            surface.scale === 100 ? "16px" : "32px",
-        );
-        const fontSizePx = await page
-            .locator("html")
-            .evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
-        const tree = page.getByRole("tree", { name: "Library", exact: true });
-        await expect(page.getByRole("tree")).toHaveCount(1);
-        const rows = tree.getByRole("treeitem");
-        const orderedNames = [
-            filesWorkspaceFixture.openingDirectory.name,
-            ...files.map((file) => file.name),
-            unavailable.name,
-            ...databases.map((database) => database.title),
-        ];
-        await expect(rows).toHaveCount(orderedNames.length);
-        expect(
-            await rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
-        ).toEqual(orderedNames);
-        const sections = tree.locator("h2");
-        await expect(sections).toHaveCount(2);
-        const assertCounts = async (fileCount: number, databaseCount: number) => {
-            for (const [index, name, count] of [
-                [0, "Files", fileCount],
-                [1, "Databases", databaseCount],
-            ] as const) {
-                const section = sections.nth(index);
-                await section.scrollIntoViewIfNeeded();
-                await expect(section.getByText(name, { exact: true })).toBeVisible();
-                await expect(section.getByText(String(count), { exact: true })).toBeVisible();
-            }
-        };
-        await assertCounts(6, 2);
-        const search = page.getByRole("textbox", { name: "Search", exact: true });
-        const type = page.getByRole("textbox", { name: "File type", exact: true });
-        await expect(type).toHaveAccessibleName("File type");
-        await expect(type).toHaveAttribute("placeholder", "All types");
-        expect(
-            await type.evaluate((input) =>
-                [...(input as HTMLInputElement).labels!].map((label) => label.textContent),
-            ),
-        ).toEqual(["File type"]);
-        await search.fill(files[0]!.name);
-        await expect(rows).toHaveCount(1);
-        await assertCounts(1, 0);
-        await search.fill("");
-        await type.click();
-        await page.getByRole("option", { name: "Games database", exact: true }).click();
-        await expect(rows).toHaveCount(2);
-        await assertCounts(0, 2);
-        await page.getByRole("button", { name: "Clear type filter", exact: true }).click();
-        await assertCounts(6, 2);
+type DesktopLibrarySurface = (typeof desktopLibrarySurfaces)[number];
 
-        const panes = page
-            .locator(".mantine-SimpleGrid-root")
-            .filter({ has: tree })
-            .locator(":scope > .mantine-Paper-root");
-        await expect(panes).toHaveCount(2);
-        const list = panes.nth(0);
-        const detail = panes.nth(1);
-        const listBox = (await list.boundingBox())!;
-        const detailBox = (await detail.boundingBox())!;
-        if (surface.split) {
-            expect(Math.abs(listBox.y - detailBox.y)).toBeLessThanOrEqual(1);
-            expect(detailBox.x).toBeGreaterThanOrEqual(listBox.x + listBox.width);
-            for (const pane of [list, detail]) await expect(pane).toBeInViewport({ ratio: 1 });
-        } else {
-            expect(Math.abs(listBox.x - detailBox.x)).toBeLessThanOrEqual(1);
-            expect(detailBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height);
+async function openMixedLibrary(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+    capture: (name: string) => Promise<void>,
+    surface: DesktopLibrarySurface,
+) {
+    await page.addInitScript(({ scale, scheme }) => {
+        localStorage.setItem("font-size", String(scale));
+        localStorage.setItem("mantine-color-scheme", scheme);
+    }, surface);
+    await page.emulateMedia({ colorScheme: surface.scheme });
+    await page.setViewportSize({ width: surface.width, height: 1000 });
+    const { files, databases, unavailable, scenario } = mixedDesktopLibraryFixture();
+    await mockScenario(scenario);
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-mantine-color-scheme", surface.scheme);
+    await expect(page.locator("html")).toHaveCSS(
+        "font-size",
+        surface.scale === 100 ? "16px" : "32px",
+    );
+    const fontSizePx = await page
+        .locator("html")
+        .evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+    const tree = page.getByRole("tree", { name: "Library", exact: true });
+    await expect(page.getByRole("tree")).toHaveCount(1);
+    const rows = tree.getByRole("treeitem");
+    const orderedNames = [
+        filesWorkspaceFixture.openingDirectory.name,
+        ...files.map((file) => file.name),
+        unavailable.name,
+        ...databases.map((database) => database.title),
+    ];
+    await expect(rows).toHaveCount(orderedNames.length);
+    expect(
+        await rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
+    ).toEqual(orderedNames);
+    const sections = tree.locator("h2");
+    await expect(sections).toHaveCount(2);
+    const assertCounts = async (fileCount: number, databaseCount: number) => {
+        for (const [index, name, count] of [
+            [0, "Files", fileCount],
+            [1, "Databases", databaseCount],
+        ] as const) {
+            const section = sections.nth(index);
+            await section.scrollIntoViewIfNeeded();
+            await expect(section.getByText(name, { exact: true })).toBeVisible();
+            await expect(section.getByText(String(count), { exact: true })).toBeVisible();
         }
-        const reachable = async (control: Locator) => {
-            await control.scrollIntoViewIfNeeded();
-            await expect(control).toBeInViewport({ ratio: 1 });
-            await assertNothingClipped(control, { mode: "reachable" });
-        };
-        for (const control of [
-            search,
-            type,
-            ...(await page
-                .getByRole("group", { name: "Add New", exact: true })
-                .getByRole("button")
-                .all()),
-            page.getByRole("button", { name: "Change collection", exact: true }),
-        ])
-            await reachable(control);
-        const rowGeometry = [];
-        for (const file of files) {
-            const row = tree.getByRole("treeitem", { name: file.name, exact: true });
-            const count = row.getByText(String(file.gameCount), { exact: true });
-            const badge = row.getByText(file.label, { exact: true });
-            const remove = row.getByRole("button", { name: "Delete", exact: true });
-            const move = row.getByRole("button", { name: "Move", exact: true });
-            await reachable(row);
-            // End the previous row's action-focus tooltip before measuring this row's hover.
-            await page.mouse.move(surface.width / 2, 0);
-            await row.focus();
-            await expect(page.getByRole("tooltip")).toHaveCount(0);
-            await row.hover();
-            expect(await row.evaluate((element) => element.matches(":hover"))).toBe(true);
-            await assertAccessible();
-            await page.mouse.move(surface.width / 2, 0);
-            const rest = await remove.evaluate((element) => getComputedStyle(element).color);
-            const muted = await count.evaluate((element) => getComputedStyle(element).color);
-            expect(rest, "Delete must be as quiet as row metadata at rest").toBe(muted);
-            await remove.hover();
-            expect(await remove.evaluate((element) => getComputedStyle(element).color)).not.toBe(
-                rest,
-            );
-            await page.mouse.move(surface.width / 2, 0);
-            await move.focus();
-            await move.press("Shift+Tab");
-            await expect(remove).toBeFocused();
-            expect(await remove.evaluate((element) => getComputedStyle(element).color)).not.toBe(
-                rest,
-            );
-            await expect(remove).toBeEnabled();
-            for (const control of [count, badge, remove, move]) await reachable(control);
-            rowGeometry.push({
-                count: (await count.boundingBox())!,
-                type: (await badge.boundingBox())!,
-                remove: (await remove.boundingBox())!,
-                move: (await move.boundingBox())!,
-            });
-        }
-        for (const geometry of rowGeometry.slice(1)) {
-            for (const key of ["count", "type", "remove", "move"] as const) {
-                expect(
-                    Math.abs(geometry[key].x - rowGeometry[0]![key].x),
-                    `${key} column must align independently of file-name length`,
-                ).toBeLessThanOrEqual(1);
-            }
-        }
-
-        const positions = async () =>
-            rows.evaluateAll((nodes) =>
-                nodes.map((node) => ({
-                    name: node.getAttribute("aria-label"),
-                    x: node.getBoundingClientRect().x,
-                    y: node.getBoundingClientRect().y,
-                })),
-            );
-        await selectFilesTreeRow(page, filesWorkspaceFixture.openingDirectory.name);
-        await expect(detail.getByText("Entries: 0", { exact: true })).toBeVisible();
-        // In split mode the list has its own scroller, so detail height cannot move any row.
-        const before = await positions();
-        const shortDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!
-            .height;
-        await selectFilesTreeRow(page, files[0]!.name);
-        await expect(detail.getByRole("button", { name: "Open game", exact: true })).toBeEnabled();
-        if (surface.split) {
-            expect(await positions()).toEqual(before);
-        }
-        const fileDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!.height;
-        expect(
-            fileDetailHeight,
-            "The stationary-list check must exercise different detail heights",
-        ).toBeGreaterThan(shortDetailHeight);
-        const record = { shortDetailHeight, fileDetailHeight, before, after: await positions() };
-        await testInfo.attach("selection-geometry.json", {
-            body: JSON.stringify(record, null, 2),
-            contentType: "application/json",
-        });
-        for (const action of await detail.getByRole("button").all()) await reachable(action);
-        await assertNothingClipped(list, { mode: "reachable" });
-        await assertNothingClipped(detail, { mode: "reachable" });
-        await assertNoHorizontalOverflow();
-        const selectedFileRow = tree.getByRole("treeitem", { name: files[0]!.name, exact: true });
-        await selectedFileRow.hover();
-        expect(await selectedFileRow.evaluate((element) => element.matches(":hover"))).toBe(true);
-        await assertAccessible();
-        await page.mouse.move(surface.width / 2, 0);
-        await assertAccessible();
-        const snapshot = async (selection: string) => {
-            const name = `library-mixed-${surface.width}-${surface.scale}-${surface.scheme}-${selection}`;
-            await capture(name);
-            if (surface.scale === 100)
-                await expect.soft(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
-        };
+    };
+    const panes = page
+        .locator(".mantine-SimpleGrid-root")
+        .filter({ has: tree })
+        .locator(":scope > .mantine-Paper-root");
+    await expect(panes).toHaveCount(2);
+    const list = panes.nth(0);
+    const detail = panes.nth(1);
+    const reachable = async (control: Locator) => {
+        await control.scrollIntoViewIfNeeded();
+        await expect(control).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(control, { mode: "reachable" });
+    };
+    const snapshot = async (selection: string) => {
+        const name = `library-mixed-${surface.width}-${surface.scale}-${surface.scheme}-${selection}`;
+        await capture(name);
+        if (surface.scale === 100)
+            await expect.soft(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+    };
+    const search = page.getByRole("textbox", { name: "Search", exact: true });
+    const type = page.getByRole("textbox", { name: "File type", exact: true });
+    const fileSnapshotPosition = async () => {
         await search.scrollIntoViewIfNeeded();
         if (!surface.split) await detail.scrollIntoViewIfNeeded();
-        await snapshot("file");
+    };
+    return {
+        files,
+        databases,
+        unavailable,
+        fontSizePx,
+        tree,
+        rows,
+        sections,
+        assertCounts,
+        search,
+        type,
+        panes,
+        list,
+        detail,
+        reachable,
+        snapshot,
+        fileSnapshotPosition,
+    };
+}
 
-        for (const database of databases) {
-            const row = tree.getByRole("treeitem", { name: database.title, exact: true });
-            const opener = row.getByRole("button", { name: "Open database", exact: true });
-            await reachable(opener);
-            const card = await assertDatabaseCardBoundary(opener, database.title);
-            await expect(card.getByText(database.games, { exact: true })).toBeVisible();
-            await expect(card.getByText(database.storage, { exact: true })).toBeVisible();
-            const games = (await card.getByText("Games", { exact: true }).boundingBox())!;
-            const storage = (await card.getByText("Storage", { exact: true }).boundingBox())!;
-            expect(
-                storage.x - games.x,
-                "Stats must stay compact inside the card",
-            ).toBeLessThanOrEqual(MAX_COMPACT_STATS_GAP_REM * fontSizePx);
-            const favourite = card.getByLabel("Reference Database", { exact: true });
-            await reachable(favourite);
-            await favourite.getByRole("radio", { name: "1", exact: true }).focus();
-            await favourite.getByRole("radio", { name: "1", exact: true }).press("Space");
-            await expect(favourite.getByRole("radio", { name: "1", exact: true })).toBeChecked();
-            await expect(page).toHaveURL("/library");
-            await selectFilesTreeRow(page, database.title);
-            await reachable(detail.getByRole("link", { name: "Explore", exact: true }));
-            await assertNothingClipped(detail, { mode: "reachable" });
-            await assertNoHorizontalOverflow();
-        }
-        await snapshot("database");
-        const warning = await selectFilesTreeRow(page, unavailable.name);
-        await expect(warning).toContainText("The search index is unavailable");
-        await expect(warning.getByText("Select", { exact: true })).toBeVisible();
-        await expect(detail.locator("[data-linked-collection]")).toHaveAttribute(
-            "data-linked-collection",
-            unavailable.id,
+type MixedLibraryContext = Awaited<ReturnType<typeof openMixedLibrary>>;
+
+async function hoverUnselectedMixedRow(page: Page, row: Locator, width: number) {
+    // Clear action-focus tooltips before auditing the actual row hover.
+    await page.mouse.move(width / 2, 0);
+    await row.focus();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await row.hover();
+    expect(await row.evaluate((element) => element.matches(":hover"))).toBe(true);
+}
+
+async function selectMixedDirectory(context: MixedLibraryContext, page: Page) {
+    await selectFilesTreeRow(page, filesWorkspaceFixture.openingDirectory.name);
+    await expect(context.detail.getByText("Entries: 0", { exact: true })).toBeVisible();
+}
+
+async function selectMixedFile(context: MixedLibraryContext, page: Page) {
+    const row = await selectFilesTreeRow(page, context.files[0]!.name);
+    await expect(
+        context.detail.getByRole("button", { name: "Open game", exact: true }),
+    ).toBeEnabled();
+    return row;
+}
+
+async function prepareMixedFile(
+    context: MixedLibraryContext,
+    page: Page,
+    surface: DesktopLibrarySurface,
+) {
+    const { detail, reachable, fileSnapshotPosition } = context;
+    await selectMixedDirectory(context, page);
+    const row = await selectMixedFile(context, page);
+    for (const action of await detail.getByRole("button").all()) await reachable(action);
+    await row.hover();
+    await page.mouse.move(surface.width / 2, 0);
+    await fileSnapshotPosition();
+}
+
+async function exerciseMixedDatabases(
+    context: MixedLibraryContext,
+    page: Page,
+    assertNoHorizontalOverflow: () => Promise<void>,
+) {
+    const { databases, tree, detail, reachable, fontSizePx } = context;
+    for (const database of databases) {
+        const row = tree.getByRole("treeitem", { name: database.title, exact: true });
+        const opener = row.getByRole("button", { name: "Open database", exact: true });
+        await reachable(opener);
+        const card = await assertDatabaseCardBoundary(opener, database.title);
+        await expect(card.getByText(database.games, { exact: true })).toBeVisible();
+        await expect(card.getByText(database.storage, { exact: true })).toBeVisible();
+        const games = (await card.getByText("Games", { exact: true }).boundingBox())!;
+        const storage = (await card.getByText("Storage", { exact: true }).boundingBox())!;
+        expect(storage.x - games.x, "Stats must stay compact inside the card").toBeLessThanOrEqual(
+            MAX_COMPACT_STATS_GAP_REM * fontSizePx,
         );
-        await expect(detail.getByRole("alert")).toContainText("The search index is unavailable");
-        await expect(detail.getByRole("button", { name: "Explore", exact: true })).toBeDisabled();
-        for (const name of ["Rebuild search index", "Source PGN", "Use selected source"]) {
-            const control =
-                name === "Source PGN"
-                    ? detail.getByRole("textbox", { name, exact: true })
-                    : detail.getByRole("button", { name, exact: true });
-            await reachable(control);
-        }
-        await assertNothingClipped(list, { mode: "reachable" });
+        const favourite = card.getByLabel("Reference Database", { exact: true });
+        await reachable(favourite);
+        await favourite.getByRole("radio", { name: "1", exact: true }).focus();
+        await favourite.getByRole("radio", { name: "1", exact: true }).press("Space");
+        await expect(favourite.getByRole("radio", { name: "1", exact: true })).toBeChecked();
+        await expect(page).toHaveURL("/library");
+        await selectFilesTreeRow(page, database.title);
+        await reachable(detail.getByRole("link", { name: "Explore", exact: true }));
         await assertNothingClipped(detail, { mode: "reachable" });
         await assertNoHorizontalOverflow();
-        await warning.hover();
-        expect(await warning.evaluate((element) => element.matches(":hover"))).toBe(true);
-        await assertAccessible();
-        await page.mouse.move(surface.width / 2, 0);
-        await assertAccessible();
-        await warning.scrollIntoViewIfNeeded();
-        if (!surface.split) await detail.scrollIntoViewIfNeeded();
-        await snapshot("unavailable");
-        // Section headings do not enter the single cross-kind arrow sequence.
-        const lastFile = tree.getByRole("treeitem", { name: files.at(-1)!.name, exact: true });
-        await lastFile.focus();
-        await lastFile.press("ArrowDown");
-        await expect(warning).toBeFocused();
-        await warning.press("ArrowDown");
-        const firstDatabase = tree.getByRole("treeitem", {
-            name: databases[0]!.title,
-            exact: true,
-        });
-        await expect(firstDatabase).toBeFocused();
-        await firstDatabase.press("ArrowUp");
-        await expect(warning).toBeFocused();
+    }
+}
+
+for (const surface of desktopLibrarySurfaces) {
+    const mixedTest = test.extend<{ mixed: MixedLibraryContext }>({
+        mixed: async ({ page, mockScenario, capture }, use) => {
+            await use(await openMixedLibrary(page, mockScenario, capture, surface));
+        },
     });
+    mixedTest(
+        `database-files: mixed Library files/filter/layout/selection at ${surface.width}px ${surface.scale}% ${surface.scheme}`,
+        async ({ page, mixed, assertAccessible, assertNoHorizontalOverflow }, testInfo) => {
+            const {
+                files,
+                tree,
+                rows,
+                list,
+                detail,
+                reachable,
+                search,
+                type,
+                assertCounts,
+                snapshot,
+                fileSnapshotPosition,
+            } = mixed;
+            await assertCounts(6, 2);
+            await expect(type).toHaveAccessibleName("File type");
+            await expect(type).toHaveAttribute("placeholder", "All types");
+            expect(
+                await type.evaluate((input) =>
+                    [...(input as HTMLInputElement).labels!].map((label) => label.textContent),
+                ),
+            ).toEqual(["File type"]);
+            await search.fill(files[0]!.name);
+            await expect(rows).toHaveCount(1);
+            await assertCounts(1, 0);
+            await search.fill("");
+            await type.click();
+            await page.getByRole("option", { name: "Games database", exact: true }).click();
+            await expect(rows).toHaveCount(2);
+            await assertCounts(0, 2);
+            await page.getByRole("button", { name: "Clear type filter", exact: true }).click();
+            await assertCounts(6, 2);
+
+            const listBox = (await list.boundingBox())!;
+            const detailBox = (await detail.boundingBox())!;
+            if (surface.split) {
+                expect(Math.abs(listBox.y - detailBox.y)).toBeLessThanOrEqual(1);
+                expect(detailBox.x).toBeGreaterThanOrEqual(listBox.x + listBox.width);
+                for (const pane of [list, detail]) await expect(pane).toBeInViewport({ ratio: 1 });
+            } else {
+                expect(Math.abs(listBox.x - detailBox.x)).toBeLessThanOrEqual(1);
+                expect(detailBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height);
+            }
+            for (const control of [
+                search,
+                type,
+                ...(await page
+                    .getByRole("group", { name: "Add New", exact: true })
+                    .getByRole("button")
+                    .all()),
+                page.getByRole("button", { name: "Change collection", exact: true }),
+            ])
+                await reachable(control);
+            const rowGeometry = [];
+            for (const file of files) {
+                const row = tree.getByRole("treeitem", { name: file.name, exact: true });
+                const count = row.getByText(String(file.gameCount), { exact: true });
+                const badge = row.getByText(file.label, { exact: true });
+                const remove = row.getByRole("button", { name: "Delete", exact: true });
+                const move = row.getByRole("button", { name: "Move", exact: true });
+                await reachable(row);
+                await hoverUnselectedMixedRow(page, row, surface.width);
+                await page.mouse.move(surface.width / 2, 0);
+                const rest = await remove.evaluate((element) => getComputedStyle(element).color);
+                const muted = await count.evaluate((element) => getComputedStyle(element).color);
+                expect(rest, "Delete must be as quiet as row metadata at rest").toBe(muted);
+                await remove.hover();
+                expect(
+                    await remove.evaluate((element) => getComputedStyle(element).color),
+                ).not.toBe(rest);
+                await page.mouse.move(surface.width / 2, 0);
+                await move.focus();
+                await move.press("Shift+Tab");
+                await expect(remove).toBeFocused();
+                expect(
+                    await remove.evaluate((element) => getComputedStyle(element).color),
+                ).not.toBe(rest);
+                await expect(remove).toBeEnabled();
+                for (const control of [count, badge, remove, move]) await reachable(control);
+                rowGeometry.push({
+                    count: (await count.boundingBox())!,
+                    type: (await badge.boundingBox())!,
+                    remove: (await remove.boundingBox())!,
+                    move: (await move.boundingBox())!,
+                });
+            }
+            for (const geometry of rowGeometry.slice(1)) {
+                for (const key of ["count", "type", "remove", "move"] as const) {
+                    expect(
+                        Math.abs(geometry[key].x - rowGeometry[0]![key].x),
+                        `${key} column must align independently of file-name length`,
+                    ).toBeLessThanOrEqual(1);
+                }
+            }
+
+            const positions = async () =>
+                rows.evaluateAll((nodes) =>
+                    nodes.map((node) => ({
+                        name: node.getAttribute("aria-label"),
+                        x: node.getBoundingClientRect().x,
+                        y: node.getBoundingClientRect().y,
+                    })),
+                );
+            await selectMixedDirectory(mixed, page);
+            // In split mode the list has its own scroller, so detail height cannot move any row.
+            const before = await positions();
+            const shortDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!
+                .height;
+            const selectedFileRow = await selectMixedFile(mixed, page);
+            if (surface.split) {
+                expect(await positions()).toEqual(before);
+            }
+            const fileDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!
+                .height;
+            expect(
+                fileDetailHeight,
+                "The stationary-list check must exercise different detail heights",
+            ).toBeGreaterThan(shortDetailHeight);
+            const record = {
+                shortDetailHeight,
+                fileDetailHeight,
+                before,
+                after: await positions(),
+            };
+            await testInfo.attach("selection-geometry.json", {
+                body: JSON.stringify(record, null, 2),
+                contentType: "application/json",
+            });
+            for (const action of await detail.getByRole("button").all()) await reachable(action);
+            await assertNothingClipped(list, { mode: "reachable" });
+            await assertNothingClipped(detail, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            await selectedFileRow.hover();
+            expect(await selectedFileRow.evaluate((element) => element.matches(":hover"))).toBe(
+                true,
+            );
+            await assertAccessible();
+            await page.mouse.move(surface.width / 2, 0);
+            await assertAccessible();
+            await fileSnapshotPosition();
+            await snapshot("file");
+        },
+    );
+
+    mixedTest(
+        `database-files: mixed Library unselected-row hover accessibility at ${surface.width}px ${surface.scale}% ${surface.scheme}`,
+        async ({ page, mixed, assertAccessible }) => {
+            const { files, tree, reachable } = mixed;
+            for (const file of files) {
+                const row = tree.getByRole("treeitem", { name: file.name, exact: true });
+                await reachable(row);
+                await hoverUnselectedMixedRow(page, row, surface.width);
+                await assertAccessible();
+            }
+        },
+    );
+
+    mixedTest(
+        `database-files: mixed Library databases/contained controls at ${surface.width}px ${surface.scale}% ${surface.scheme}`,
+        async ({ page, mixed, assertNoHorizontalOverflow }) => {
+            await prepareMixedFile(mixed, page, surface);
+            await exerciseMixedDatabases(mixed, page, assertNoHorizontalOverflow);
+            await mixed.snapshot("database");
+        },
+    );
+
+    mixedTest(
+        `database-files: mixed Library unavailable recovery/keyboard at ${surface.width}px ${surface.scale}% ${surface.scheme}`,
+        async ({ page, mixed, assertAccessible, assertNoHorizontalOverflow }) => {
+            const { files, databases, unavailable, tree, list, detail, reachable, snapshot } =
+                mixed;
+            await prepareMixedFile(mixed, page, surface);
+            await exerciseMixedDatabases(mixed, page, assertNoHorizontalOverflow);
+            const warning = await selectFilesTreeRow(page, unavailable.name);
+            await expect(warning).toContainText("The search index is unavailable");
+            await expect(warning.getByText("Select", { exact: true })).toBeVisible();
+            await expect(detail.locator("[data-linked-collection]")).toHaveAttribute(
+                "data-linked-collection",
+                unavailable.id,
+            );
+            await expect(detail.getByRole("alert")).toContainText(
+                "The search index is unavailable",
+            );
+            await expect(
+                detail.getByRole("button", { name: "Explore", exact: true }),
+            ).toBeDisabled();
+            for (const name of ["Rebuild search index", "Source PGN", "Use selected source"]) {
+                const control =
+                    name === "Source PGN"
+                        ? detail.getByRole("textbox", { name, exact: true })
+                        : detail.getByRole("button", { name, exact: true });
+                await reachable(control);
+            }
+            await assertNothingClipped(list, { mode: "reachable" });
+            await assertNothingClipped(detail, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+            await warning.hover();
+            expect(await warning.evaluate((element) => element.matches(":hover"))).toBe(true);
+            await assertAccessible();
+            await page.mouse.move(surface.width / 2, 0);
+            await assertAccessible();
+            await warning.scrollIntoViewIfNeeded();
+            if (!surface.split) await detail.scrollIntoViewIfNeeded();
+            await snapshot("unavailable");
+            // Section headings do not enter the single cross-kind arrow sequence.
+            const lastFile = tree.getByRole("treeitem", { name: files.at(-1)!.name, exact: true });
+            await lastFile.focus();
+            await lastFile.press("ArrowDown");
+            await expect(warning).toBeFocused();
+            await warning.press("ArrowDown");
+            const firstDatabase = tree.getByRole("treeitem", {
+                name: databases[0]!.title,
+                exact: true,
+            });
+            await expect(firstDatabase).toBeFocused();
+            await firstDatabase.press("ArrowUp");
+            await expect(warning).toBeFocused();
+        },
+    );
 }
 
 test("database-files: an unavailable-only Library offers recovery without the whole-Library empty message", async ({
