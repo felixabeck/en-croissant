@@ -19519,7 +19519,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Database card padding lost double-click opening in the Library redesign
 
-* **ID:** f-20261030-09 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-09 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Follow-up of:** f-20261030-05, introduced by the footer-containing card boundary in 49230bcbbf215904897403de24583e4a326f6a05.
@@ -19530,6 +19530,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** Keep an integration regression that double-clicks the actual padded card surface and expects the existing database navigation. Remove only the source correction through Git, observe that navigation assertion fail, then restore green. Exercise existing favourite/selection/open controls and a real Playwright padding click, retaining the standard focused, related, type, contract and pre-review proof.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"ac0ad32fc3460d537c03620f131260b233ac5ee01fe930c5dd043e6f1726119a","options":{"section":null},"request_id_sha256":"b371d5ff680881ef2ec0da8cc388e8052c40e4a2afbaf83f8135100439b44484","results":["f-20261030-09"],"target":"f-20261030-09","v":1} -->
+
+The containing card restores direct-target padding selection and double-click opening while footer descendants keep their original actions. LibraryPage integration proves one navigation callback, and the real browser padding-point double-click proves the overview route. Source-only padding-hunk removal reproduced the regression in fix-1-proof/REPORT.md.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"20c8b65e6aed462d0e5faf84551b992c5637697336ef2f65f3a445e7598a726a","header_sha256":"8f7b6b916b4be43262a752942c321b1101a93b76a710f023108f8f9920727bc7","header_status":"handled","input_sha256":"80b21e1cb497cd4a9f9208dd5e0201cb9b56322de9a42740f9c16d55650962e4","kind":"mutation-receipt","operation":"f38fc310cff173debddbff5215e92576426ccb09e4b0235a9491c53f5f17731e","options":{"section":null},"request_id_sha256":"184dd442a6f3c1c192162d0bdd83232fbd532fca5c0f894df7dd1176a3b53f8e","results":["f-20261030-09"],"target":"f-20261030-09","v":1} -->
 
 ### File detail metadata action clips its pencil at normal font size
 
