@@ -8,7 +8,7 @@ Plan authorship and arbitration shared one context. Earlier implementation and d
 
 ## Plan review disposition
 
-Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. R4 explicitly closed original DR1. R5 explicitly CLOSED DR12 and nits DR13/14. R6 explicitly CLOSED all three records clarifications. R7 explicitly CLOSED the runtime native-target correction. All17 unique adopted code/records Fix issues are CLOSED. Four observations are retained as Skip, DR15 and DR19/20/21, with no lens Defer. Separate runtime product-layout finding f-20261030-04 is deferred to its own build. Final same-source UI proof is accepted. This pre-gate checkpoint awaits the final records review and publication gates, hosted confirmation and installation. Current publication aliases and the immutable private records are documented below.
+Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. R4 explicitly closed original DR1. R5 explicitly CLOSED DR12 and nits DR13/14. R6 explicitly CLOSED all three records clarifications. R7 explicitly CLOSED the runtime native-target correction. R8 adopted one new records clarification, DR22, now implemented and awaiting R9 closure. There are18 unique adopted code/records Fix issues,17 CLOSED and DR22 pending reviewer closure. Four observations remain Skip, DR15 and DR19/20/21, with no lens Defer. Separate runtime product-layout finding f-20261030-04 is deferred to its own build. Final same-source UI proof is accepted. This pre-gate checkpoint awaits records closure and publication gates, hosted confirmation and installation. Current publication aliases and the immutable private records are documented below.
 
 - PR-1, error-handling r1 finding 1, should-fix confidence90. Fix. Source discovery already retains safe localized failure distinctions. O2 was corrected to carry safe typed source-qualified reasons through failed and zero-result searches. Plan and error-handling r2 explicitly closed it.
 - PR-2, tests r3 finding 1, blocker confidence92. Fix. O4 requires candidate-retention through a query-sensitive source that excludes out-of-range dates. Plan and tests r4 explicitly closed the plan correction. Root later proved the implemented regression fails with only the production correction removed.
@@ -3849,4 +3849,29 @@ Chrome MCP did not drive Tauri. No new browser or WebDriver was started. Native 
 - Root owns the final visual decision and release.
 
 **Provenance:** Root plan authorship/arbitration share Codex/OpenAI context. Original feature and early detection OpenAI. Recent repairs including verifier 2a and source detection Grok/xAI in fresh sessions share family. Root operative record prose is OpenAI; this imported Grok report text is xAI. No whole-range family separation, provider quota, or Codex writer rollover is claimed.
+````
+
+
+## R8 canonical UI-status clarification at the pre-gate checkpoint
+
+The single R8 selected Grok records lens completed canonically1/1, profile LEAF commands7, with REVISE. Root adopted one should-fix confidence90 as DR22. The latest f-20261030-03 close note still listed Final UI proof acceptance as remaining, while the same reviewed range's handoff already recorded that acceptance. This is a canonical-record freshness correction, not a source or UI behavior defect.
+
+Root used findings.py annotate on handled f-20261030-03 in73cb5cbf. The new same-ledger note explicitly says final same-source UI acceptance is COMPLETE and supersedes that earlier pending-UI item. It preserves the sealed close receipt and accurately separates the adopter's Git/hash/image checks from the two actual ordinary native positive runs. The header stays handled. At this pre-gate checkpoint only later publication gates, preflight, push, hosted confirmation, installation and post-push ledger remain. Their outcome belongs to the later build-ledger row.
+
+Code/records adoptions through completed R8 are r1=9 r2=0 r3=2 r4=3 r5=3 r6=0 r7=0 r8=1. There are18 unique adopted Fix issues, with17 already CLOSED and DR22 implemented awaiting R9 closure. Four retained Skips DR15/19/20/21 remain. Runtime native-target Fix f-20261030-03 and product-layout Defer f-20261030-04 stay separate from lens adoption counts. Plan10 rounds and3 closed issues are unchanged. No R9 outcome or count is predicted.
+
+No business source, assertion, fixture, image, locale, dependency, timeout or policy changed. Verifier2a, all six frozen files and release binarye66f remain exact. The record-only correction uses validated canonical mutation and findings.py check under policy1b. Complete source pre-review IqqZhm0 and R7 source closure remain applicable. No heavy code check is replaced or reported rerun.
+
+R8 measured wall was675.8s through saved root arbitration, active wallunknown. The source and proof checks the records lens confirmed remain intact. Root records are Codex/OpenAI, detection selected Grok/xAI, imported reports stay attributed to their actual author. Planning and arbitration share root context. No whole-range family separation, quota event or Codex writer rollover is claimed.
+
+### Complete report text: R8 records
+
+````text
+The R7 source close and imported reports match the named proof. One live remaining-obligation sentence is stale after UI acceptance in this same range.
+
+[should-fix] `tasks/findings.md:19349` — The latest f-20261030-03 close note still lists “Final UI proof acceptance” among remaining release obligations. In this same range the handoff records that proof as accepted (`tasks/handoffs/2026-10-29-opening-game-references-review.md:11`, `:3638`, `:3645`). `findings.py` annotate is allowed on a handled entry, so the close receipt can stay sealed and a later note can record that UI acceptance. A findings.md reader who stops at this last note is told UI proof is still pending. (confidence: 90)
+
+Checked and holding: handled header for f-20261030-03, verifier `2a46dd44` in `bba858ac`, frozen six-file and binary `e66f` hashes, native `1` then `0` receipts, GO9 after practice and before CR in the fixed logs, 800×647 diagnostic geometry, R7 7/7 `APPROVED` with `grok-4.6-build`, DR19/20/21 Skip text vs `r7-arbitration.json`, 17 unique Fix closed, f-20261029-10/11/12/13/14 and f-20261030-01/02 handled, f-20261011-03 / f-20261022-05 / f-20261030-04 open and f-20261030-04 pickable, Mantine `overflow-y: auto` with no AppModal / `Modal.module.css` override, hard spec last Open game + Enter + `gameId: 2`, native PNG is Add Engine permission guidance. Sealed annotate “header remains open” is a frozen receipt under the later handled header and close note. Imported raw reports, including the unused GO9-before-practice aside, stay sealed. `findings.py check` and live hosted jobs were not re-run here.
+
+VERDICT: REVISE
 ````
