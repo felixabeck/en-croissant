@@ -19741,7 +19741,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Linked collection New game loses the Save PGN button after the file origin is set
 
-* **ID:** f-20261030-18 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261030-18 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** bba03ee4-dfe9-458d-a29c-87e57980831a
 * **Impact class:** behaviour
 * **Open question:** After a linked collection New game is saved and the tab origin is the appended PGN game, why is the Save PGN button absent from the accessibility tree?
@@ -19751,6 +19751,9 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Defect:** Job `test` failed once, at `e2e/new-game-to-database.spec.ts:82` ("linked collection New game appends to its PGN without inserting into the index"). `expect(page.getByRole("button", { name: /^Save PGN/ })).toHaveAttribute("data-variant", "transparent")` timed out at 8000ms with `element(s) not found`. The origin poll on the lines immediately above is the previous statement, and the failure stack is line 137, so that poll had already matched. Log `/tmp/build-bba03ee4-dfe9-458d-a29c-87e57980831a/ci-test.log` around the 12:47:33Z record. This is not f-20261011-08, which was the fresh-board save picker and is handled.
 * **Proof:** Re-run that spec in `pnpm test:e2e:container` (or the CI `test` job). It fails on the missing Save PGN button before a fix and passes after the button is present with `data-variant="transparent"` once the origin is the appended file game.
 * **Found by:** Grok drain session reading the failed `test` job log for run 41056249546.
+
+The linked-collection Save PGN failure named here is the same hosted failure already closed on f-20261030-17. The Where line cites e2e/new-game-to-database.spec.ts:137 on ancestor 135c580404bfb156b445c195990497f55da83865. At HEAD the spec seeds read_game and read_games with the appended game and asserts the tab origin stays a file game past one freshness poll. Repair commit 766dd1d4 is in this history. Hosted run 41063715985 succeeded after that repair. This entry was appended by hand without a publication receipt, so it stayed pickable after the repair. Closed as the same defect as f-20261030-17.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"9c2caf1d9d3d490b893b29b54e82bfee09775065bfcce1ab5dda61f11788c95f","header_sha256":"45e407b4585f4ea221b30ec6fa52800931a36f9fbe43b50b565b839cfed49527","header_status":"handled","input_sha256":"5466d04e2bab418b59d2ff7400215b7f9d3d1ad4cfff876add9576edd045167e","kind":"mutation-receipt","operation":"e08c7f7ba9dab034f803c0dcc528b82ece7f68e75af31df3825257cad0a00931","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-18"],"target":"f-20261030-18","v":1} -->
 
 ### Escaped-header database export test unwraps the Windows atomic-replacement refusal
 
