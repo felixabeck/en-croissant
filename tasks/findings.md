@@ -19805,3 +19805,17 @@ Standard reviewed installer gate-install.E0oEdX completed0 on source3361. Actual
 
 Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation. CI: https://github.com/felixabeck/en-croissant/actions/runs/41105654154
 <!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"60aa9c796e8abec9029392d6bb99475e042adcf18330342bba9e29dc9233b986","header_sha256":"21085283f64bfa5b6daf61732af22feea80cd29c9213213f038e22a64f61feb4","header_status":"handled","input_sha256":"c9aefcf26b2dc31bd155d6ae3027a6808705d716a4a717d1c06971493b9537eb","kind":"mutation-receipt","operation":"3de7eca0e874a72286192084eafc1f1d8701be0a22b914cd8163d55c0621d3d5","options":{"section":null},"request_id_sha256":"fa668f8d2e1a4243aea9ff62ecb5568246bdbfaaab5dadabbe390879c8893d38","results":["f-20261030-20"],"target":"f-20261030-20","v":1} -->
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Hosted Test intermittently fails the linked New game journey before the board has a box
+
+* **ID:** f-20261030-21 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Impact class:** tooling
+* **Where:** e2e/new-game-to-database.spec.ts:152 calls playBoardMove right after `toHaveURL("/")`; e2e/fixtures.ts:394 dereferences `cg-board` boundingBox() without waiting for it.
+* **Defect:** Hosted CI run 41126822671 on 40c51aaf failed "linked collection New game appends to its PGN without inserting into the index" with `TypeError: Cannot read properties of null (reading 'width')` at fixtures.ts:394: the board element existed but had no layout box yet. The rerun of the same job on the same SHA passed, and four local container runs passed, so it is a race in the helper, not a product failure.
+* **Failure scenario:** A push to master shows the Test job red at random and holds the post-push install until someone reruns the job.
+* **Fix:** playBoardMove (or squarePosition) waits for the board to be visible with a non-null box (`expect(board).toBeVisible()` plus a polled boundingBox) before computing square coordinates.
+* **Found by:** Claude Code while waiting on hosted CI for the Library surface-tier push (2026-10-30).
