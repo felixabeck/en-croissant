@@ -19606,7 +19606,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Library database opener is half a pixel clipped after native scrolling
 
-* **ID:** f-20261030-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-13 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Where:** src/components/files/DirectoryTree.module.css native row-control scrolling.
@@ -19616,6 +19616,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** Keep the 1920px journey. Source-only Git hunk removal must reproduce the exact clipped-edge failure and restore green. Full unfiltered pixel proof remains required.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"f56ed55c63bfc9f3a0f5217d13d9693dc8080916bf0c01600820e66712cfb91c","options":{"section":null},"request_id_sha256":"58a2dd802bff863278b5e74dad4822dbb60055ec6321b10f0cc776ad7e24f9f1","results":["f-20261030-13"],"target":"f-20261030-13","v":1} -->
+
+DirectoryTree buttons and inputs have local token scroll margin. Source-only removal reproduced the half-pixel viewport clipping, including the observed0.9861111044883728 ratio, and restoration cleared it. See fix-1-proof/REPORT.md. No geometry tolerance changed.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"34577b8666abd275628124e68cfdaef4064f7f07b589def41d535c0229960292","header_sha256":"03e6e6e497c9df687bb080e35eec940edb5927eebb77d9b07a4dba63290a11eb","header_status":"handled","input_sha256":"3874b95d16a9c173c12c1fcd244635ca970831ba2597888906ea9e17a6b10c00","kind":"mutation-receipt","operation":"85ca7834e1a79920a6f3576259acd8cce21d88038a86c470ade38203c11c754f","options":{"section":null},"request_id_sha256":"1f21e62e14d3b4f1c7705fe4b60b9b300fe7b5941349c54b55847221e44f9763","results":["f-20261030-13"],"target":"f-20261030-13","v":1} -->
 
 ### Library file-detail Trash action fails dark text contrast
 
