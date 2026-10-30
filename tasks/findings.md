@@ -19177,6 +19177,10 @@ Former unpublished identifier: f-20261029-03
 Former unpublished identifier: f-20261029-04
 ```
 
+* **Further publication recovery, 2026-10-30:** Current ownership is governed by d-20261030-02, a canonical adoption of the unchanged tree-store plus physical-document-key choice. Published d-20261029-32 is now the independent tablebase pane-layout decision and d-20261029-33 is tablebase acceptance. Earlier ownership32 and superseded native continuation33 statements in this task describe private checkpoints only, not those published decisions. Their exact records and receipts remain preserved in backup/opening-game-references-before-tablebase-layout-20261030 at505ab995. Original private ownership14 remains archived at62159f00. Native mechanism34 and corrected-control35 are unchanged. All12 source/code/measurement commits compare equal across the f6134d14 rebase, with no source payload skipped. The R4 confidence repair remains in the owned integration stash pending restoration and complete pre-review. This is identity recovery without changing ownership behavior, persistence or production engine timing. Final ordinary native proof, exact-SHA hosted jobs and installation remain pending.
+
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"6e45144ec608da0575d55d1c8e33686df92ccd970d58ba2a69574d6c3d3798f9","input_sha256":"4ce956aa66ab9a88d3f4b88c61855ec6c2cb451a3c8de62446752b5fbbf88e4d","kind":"mutation-receipt","operation":"3f980f7f352b07ac56dc218aff7eb3546dd03a89db81bcdf9f145c95051e5dc3","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-12"],"target":"f-20261029-12","v":1} -->
+
 ---
 
 ## 2026-10-29 — filed through the inbox spool
