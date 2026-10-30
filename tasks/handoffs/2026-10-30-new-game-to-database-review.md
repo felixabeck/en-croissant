@@ -1,6 +1,6 @@
 # Review record: new game to database (build 2026-10-30)
 
-Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07 (superseded by d-20261030-09), d-20261030-08. Finding: f-20261030-06. The plan file `tasks/plans/2026-10-30-new-game-to-database.md` named in those records lives in an ignored directory; its full text is preserved in this handoff.
+Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07 (superseded by d-20261030-09, then d-20261030-10), d-20261030-08. Finding: f-20261030-06. The plan file `tasks/plans/2026-10-30-new-game-to-database.md` named in those records lives in an ignored directory; its full text is preserved in this handoff.
 
 ## Plan: Add new games directly to a games database
 
@@ -248,10 +248,9 @@ Decided autonomously (full auto; recorded in `tasks/decisions.md`):
 
 - Older builds reading a workspace with a `databaseDraft` origin fail schema validation for that
   tab; sessionStorage is per session, so only a downgrade inside one session is affected.
-  Correction (cumulative diff review, records lens): at base `4bd75ea8` the workspace validates
-  `tabs` as one array, and `planWorkspaceRepair` replaces the whole workspace with
-  `defaultWorkspace()` on failure, so such a same-session downgrade resets every open tab, not
-  only the draft tab.
+  (A round-1 records-lens claim that the whole workspace would reset was withdrawn in the
+  closure round: base `src/state/workspace.ts` validates each tab with
+  `tabSchema.nullable().catch(null)` and drops only invalid tabs, so this text was right.)
 - An uncertain store leaves its marker set; the user sees the "may already have been added"
   warning and cannot store the same tab to that destination again (checking the database
   shows whether the game arrived), instead of risking a silent duplicate.
@@ -453,11 +452,11 @@ correctness, code-quality, pgn-index, records.
 | CR1-07 | No storeAttempts persistence-failure test | tests | Fix | `784b3e25` |
 | CR1-08 | No linked-append uncertainty retention test | tests | Fix | `784b3e25` |
 | CR1-09 | d-20261029-15 / -18 not superseded by the new ceiling | records | Fix | trailers → d-20261030-08 |
-| CR1-10 | d-20261030-07 reversal claimed registry shape unchanged (`trash_locator` added) | records | Fix | d-20261030-09 supersedes d-20261030-07 |
-| CR1-11 | Downgrade risk understated (whole workspace resets) | records | Fix | Risks correction above |
+| CR1-10 | d-20261030-07 reversal claimed registry shape unchanged (`trash_locator` added) | records | Fix | d-20261030-09 supersedes d-20261030-07; its two-way compatibility claim was wrong (base `Record` denies unknown fields), corrected by d-20261030-10 |
+| CR1-11 | Downgrade risk understated (whole workspace resets) | records | Withdrawn | The lens withdrew it in closure: base filters invalid tabs individually; the original risk text stands |
 | CR1-12 | Records name the ignored plan path | records | Fix | header note: plan preserved in this handoff |
 | CR1-13 | "Unique issues: 19" should be 18 | records | Fix | corrected |
 
 Out-of-diff defect filed: f-20261030-07 (vendored `RawHeader::decode` drops a literal backslash
 after an escaped backslash). Closure round 2 (`93de6143..HEAD`, 8 code lenses): CR1-01..CR1-08
-CLOSED with evidence, no new findings, all APPROVED. diff_adopted_per_round: r1=13 r2=0.
+CLOSED with evidence, no new findings, all APPROVED. Records closure: CR1-09, CR1-10, CR1-12, CR1-13 CLOSED; CR1-11 withdrawn; one new records finding (d-20261030-09 compatibility claim) fixed by d-20261030-10. diff_adopted_per_round: r1=13 r2=1.
