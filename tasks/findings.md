@@ -19585,7 +19585,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Selected Library type badge fails contrast at 200 percent
 
-* **ID:** f-20261030-12 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-12 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Where:** src/components/library/presentation.tsx shared LibraryTypeBadge.
@@ -19595,6 +19595,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** Keep the existing German journey. Source-only Git hunk removal must reproduce contrast failure, restoration must pass. Retain full pixel and native verification.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"c2405e6ae31e5be4b458f76b61009d79b257b41e3e483522aea20e78a272770f","options":{"section":null},"request_id_sha256":"5f2f7acf4f8079e384f0b8693ecd1dfff7c0a69da4e188d0b916e5d587a1bd43","results":["f-20261030-12"],"target":"f-20261030-12","v":1} -->
+
+Library type-badge labels use the existing foreground token while preserving their type tint. Source-only removal reproduced the selected-badge contrast failure and restoration passed in fix-1-proof/REPORT.md. No global palette or checker threshold changed.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"6e1229f17177f2b63148b78d6d1bf64360f60af39ac4850ad158d435eb83551a","header_sha256":"16efd552f075675d3b056e034c5927bd76ad7ef749a4034513b6005a690f5915","header_status":"handled","input_sha256":"ecdccd50b7ec388f4240a724a6898a1bdaf01a1128f3c99aa090e939582998a7","kind":"mutation-receipt","operation":"7d26775ffc605d17eb67129e4adec9b14737b046c67ce11fd8ce4bb19226f868","options":{"section":null},"request_id_sha256":"111444f1cf2653152f1b85d53667536b0cffd8a4891676c7e49f9269c40b2283","results":["f-20261030-12"],"target":"f-20261030-12","v":1} -->
 
 ### Library database opener is half a pixel clipped after native scrolling
 
