@@ -10940,8 +10940,8 @@ Former unpublished feature identifier: d-20261029-03
 ```
 
 * **Measurement clarification:** The original candidate figures above describe the earlier recorded production build. Accepted phase1 source682e8da6 later measured entry556146, largestLazy486067 and total1660313, leaving9687 bytes under the same1670000 ceiling. These later figures supersede the earlier candidate figures, with no further limit increase. The rebased final tree still requires fresh build and budget proof. Feature behavior is governed by d-20261029-17.
-* **Decided by:** Codex under Felix's full-auto feature request of 2026-10-29. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":16,"effect_sha256":"92548dc4f3ca6dec65836cfb6718ceb7b23d51d8477df29b156813de80be0a7e","input_sha256":"9cb60b11e25b2858e0ff41b5b93238833fe742f89bea4e7fdfef8e4548dcfca7","kind":"mutation-receipt","operation":"12c64f9af2afe29a3e613116c0aca74b880323dff01a0564c8680074fb44f712","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-18"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex under Felix's full-auto feature request of 2026-10-29. Plan authorship and arbitration shared one context. Detection ran on the same OpenAI model family as the code. **Superseded-by:** d-20261030-08
+<!-- ledger-meta {"command":"record-decision","effect_lines":16,"effect_sha256":"9e6188b92abd8d450afb2a103506d466fa09cc51731a86b1a49f8c128c9c8c3f","input_sha256":"9cb60b11e25b2858e0ff41b5b93238833fe742f89bea4e7fdfef8e4548dcfca7","kind":"mutation-receipt","operation":"12c64f9af2afe29a3e613116c0aca74b880323dff01a0564c8680074fb44f712","options":{"section":null},"request_id_sha256":null,"results":["d-20261029-18"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261029-34 — Separate warm-transition protocol progress from completed child cleanup in the native test
 
