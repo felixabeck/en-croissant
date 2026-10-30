@@ -203,20 +203,28 @@ function metadataVerification(
             // A bare following year can begin prose. Keep the identifiable original
             // date/round constraints while the competing reading requires a choice.
             verified = false;
-        } else if (
-            siteFollows ||
-            (!(prefix && event && site && prefix.text === `${event} ${site}`) &&
-                [...afterRound.matchAll(fieldsInText)].some(
-                    (match) => match[1] && fieldRound(match),
-                ))
-        ) {
-            // The first field is still inside an unresolved header, or site evidence
-            // placed it there. Do not compare it as date/round or promote later prose.
-            return "unverified";
+        } else {
+            const matchingCombinedHeaderPrefix = Boolean(
+                prefix && event && site && prefix.text === `${event} ${site}`,
+            );
+            const laterCompleteDatedRound = [...afterRound.matchAll(fieldsInText)].some(
+                (match) => match[1] && fieldRound(match),
+            );
+            const certainClosingBoundary = !laterCompleteDatedRound;
+            if (siteFollows || (laterCompleteDatedRound && !matchingCombinedHeaderPrefix)) {
+                // The first field is still inside an unresolved header, or site evidence
+                // placed it there. Do not compare it as date/round or promote later prose.
+                return "unverified";
+            }
+            if (!certainClosingBoundary) {
+                // Matching the candidate's combined headers does not prove this close
+                // once another complete dated-round remains after the prefix.
+                verified = false;
+            }
+            // The anchored original year/round still constrain the game. A later tuple
+            // separated by ordinary prose is incidental and is compared only through
+            // those retained fields below.
         }
-        // A complete event/site header already anchored the original year/round.
-        // A later tuple separated by ordinary prose is incidental and is compared
-        // only through those retained fields below.
     }
     const metadata = referenceFieldsVerification(fields, game);
     if (metadata === "rejected") return "rejected";

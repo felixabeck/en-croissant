@@ -8,7 +8,7 @@ import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 const mocks = vi.hoisted(() => ({
   getTournamentGames: vi.fn(),
   notify: vi.fn(),
-  createTab: vi.fn(),
+  createTab: vi.fn(async (_args: { gameOrigin?: { linked?: unknown } }) => "opened"),
   navigate: vi.fn(),
 }));
 vi.mock("@/utils/db", () => ({ getTournamentGames: mocks.getTournamentGames }));
@@ -18,8 +18,19 @@ vi.mock("zustand", () => ({
   useStore: (_store: unknown, selector: (state: unknown) => unknown) =>
     selector({ tournaments: { activeTab: "games" }, setTournamentsActiveTab: vi.fn() }),
 }));
-vi.mock("jotai", () => ({ useAtom: () => [[], vi.fn()], useSetAtom: () => vi.fn() }));
-vi.mock("@/state/atoms", () => ({ activeTabAtom: {}, tabsAtom: {} }));
+vi.mock("jotai", () => ({
+  useAtom: () => [[], vi.fn()],
+  useSetAtom: () => vi.fn(),
+  useStore: () => ({ get: vi.fn() }),
+}));
+vi.mock("@/state/atoms", () => ({
+  activeTabAtom: {},
+  tabsAtom: {},
+  closingTabsAtom: {},
+  initializeWorkspace: vi.fn(),
+  reclaimTabLocalState: vi.fn(),
+  updateTabById: vi.fn(),
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("lucide-react", () => ({ Eye: () => null }));
 // Keep the table boundary interactive and render the records supplied by TournamentCard.
@@ -84,24 +95,9 @@ vi.mock("@/components/common/IconAction", () => ({
     <button type="button" aria-label={label} onClick={onClick} />
   ),
 }));
-vi.mock("@/utils/tabs", () => ({
+vi.mock("@/utils/tabs", async (original) => ({
+  ...(await original<typeof import("@/utils/tabs")>()),
   createTab: mocks.createTab,
-  runTabCreation: ({
-    create,
-    onSuccess,
-    onError,
-  }: {
-    create: () => unknown;
-    onSuccess?: () => void;
-    onError?: (error: unknown) => void;
-  }) => {
-    try {
-      create();
-      onSuccess?.();
-    } catch (error) {
-      onError?.(error);
-    }
-  },
 }));
 vi.mock("@mantine/core", () => ({
   Paper: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -326,6 +322,7 @@ async function openTournamentGame(game: NormalizedGame) {
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[aria-label="Common.Open"]')!.click(),
   );
+  await vi.waitFor(() => expect(mocks.createTab).toHaveBeenCalled());
   return database;
 }
 
@@ -363,6 +360,6 @@ test("opening a standalone tournament game keeps an ordinary database origin", a
       }),
     }),
   );
-  expect(mocks.createTab.mock.calls[0][0].gameOrigin.linked ?? null).toBeNull();
+  expect(mocks.createTab.mock.calls[0]?.[0].gameOrigin?.linked ?? null).toBeNull();
   expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({ to: "/" });
 });

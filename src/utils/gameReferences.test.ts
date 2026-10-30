@@ -15,6 +15,7 @@ import {
     matchesReferencePlayer,
     recognizeGameReferences,
     REFERENCE_SEARCH_LIMITS,
+    type GameReference,
 } from "./gameReferences";
 
 vi.mock("./db", () => ({ getDatabases: vi.fn(), query_games: vi.fn(), query_players: vi.fn() }));
@@ -177,6 +178,52 @@ async function lookupUI(
         host.remove();
         vi.unstubAllGlobals();
     }
+}
+
+async function expectUnverifiedChoice(
+    text: string,
+    citation: GameReference,
+    candidate: NormalizedGame,
+) {
+    const result = await lookupGameReference(
+        citation,
+        new AbortController().signal,
+        querySensitiveSource([candidate]),
+    );
+    expect(result).toEqual({
+        complete: true,
+        failures: [],
+        candidates: [
+            {
+                database,
+                source: "Source A (source-a.db3)",
+                game: candidate,
+                verification: "unverified",
+            },
+        ],
+    });
+    await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
+        expect(admission.create).not.toHaveBeenCalled();
+        expect(host.querySelector("[data-game-reference]")?.textContent).toBe(citation.label);
+        expect(host.firstElementChild?.textContent).toBe(text);
+        expect(host.textContent).toContain("Source A (source-a.db3)");
+        expect(host.textContent).toContain("GameReferences.Choose");
+        const open = [...host.querySelectorAll("button")].find(
+            (node) => node.textContent === "Common.OpenGame",
+        )!;
+        await act(async () => open.click());
+        expect(admission.create).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    date: candidate.date,
+                    round: candidate.round,
+                    event: candidate.event,
+                    site: candidate.site,
+                }),
+                gameOrigin: { kind: "database", database, gameId: candidate.id },
+            }),
+        );
+    });
 }
 
 test.each(["????.??.??", "2023.01.01"])(
@@ -923,55 +970,19 @@ test.each([
     const text = `${pair} Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`;
     const citation = recognizeGameReferences(text)[0];
     const original = { ...game, event: "Tata Steel (A)", site: "Wijk aan Zee" };
-    const expectChoice = async (candidate: NormalizedGame) => {
-        const result = await lookupGameReference(
-            citation,
-            new AbortController().signal,
-            querySensitiveSource([candidate]),
-        );
-        expect(result).toEqual({
-            complete: true,
-            failures: [],
-            candidates: [
-                {
-                    database,
-                    source: "Source A (source-a.db3)",
-                    game: candidate,
-                    verification: "unverified",
-                },
-            ],
-        });
-        await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
-            expect(admission.create).not.toHaveBeenCalled();
-            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
-            expect(host.firstElementChild?.textContent).toBe(text);
-            expect(host.textContent).toContain("Source A (source-a.db3)");
-            expect(host.textContent).toContain("GameReferences.Choose");
-            const open = [...host.querySelectorAll("button")].find(
-                (node) => node.textContent === "Common.OpenGame",
-            )!;
-            await act(async () => open.click());
-            expect(admission.create).toHaveBeenCalledExactlyOnceWith(
-                expect.objectContaining({
-                    headers: expect.objectContaining({
-                        date: candidate.date,
-                        round: candidate.round,
-                        event: candidate.event,
-                        site: candidate.site,
-                    }),
-                    gameOrigin: { kind: "database", database, gameId: candidate.id },
-                }),
-            );
-        });
-    };
-    await expectChoice(original);
-    await expectChoice({ ...original, date: "2024.01.01", round: laterRound });
+    expect(citation.label).toBe(pair);
+    await expectUnverifiedChoice(text, citation, original);
+    await expectUnverifiedChoice(text, citation, {
+        ...original,
+        date: "2024.01.01",
+        round: laterRound,
+    });
     for (const missing of [
         { date: "????.??.??" },
         { round: "?" },
         { date: "????.??.??", round: "?" },
     ])
-        await expectChoice({ ...original, ...missing });
+        await expectUnverifiedChoice(text, citation, { ...original, ...missing });
     for (const conflict of [
         { date: "2023.01.01", round: "9" },
         { date: "2022.12.01", round: laterRound },
@@ -995,7 +1006,7 @@ test.each([
     { prose: "Better was Bd3 in 2024 (A).", laterRound: "A" },
     { prose: "Better was Bd3 2024 (A).", laterRound: "A" },
 ])(
-    "intervening prose keeps the anchored year and round for $prose",
+    "intervening prose keeps the anchored year and round as an explicit choice for $prose",
     async ({ prose, laterRound }) => {
         const pair = "0-1 Beerdsen,T-Bluebaum,M";
         const text = `${pair} Tata Steel (A) Wijk aan Zee 2022 (3) ${prose}`;
@@ -1007,6 +1018,13 @@ test.each([
             closed: false,
         });
         expect(text.slice(citation.start, citation.end)).toBe(pair);
+        await expectUnverifiedChoice(text, citation, original);
+        for (const missing of [
+            { date: "????.??.??" },
+            { round: "?" },
+            { date: "????.??.??", round: "?" },
+        ])
+            await expectUnverifiedChoice(text, citation, { ...original, ...missing });
         for (const conflict of [
             { date: "2021.01.01", round: "9" },
             { date: "2024.01.01", round: laterRound },
@@ -1026,12 +1044,67 @@ test.each([
                 expect(admission.create).not.toHaveBeenCalled();
             });
         }
-        const result = await lookupGameReference(
-            citation,
+    },
+);
+
+test.each([
+    {
+        kind: "dated-round",
+        context: "Tata Steel Wijk aan Zee 2020 (A) Better was Bd3 2022 (3).",
+        controlContext: "Tata Steel Wijk aan Zee 2020 (A) Better was Bd3.",
+        short: { event: "Tata Steel", site: "Wijk aan Zee", date: "2020.01.01", round: "A" },
+        conflicts: [
+            { date: "2021.01.01", round: "9" },
+            { date: "2022.12.01", round: "3" },
+            { date: "2021.01.01" },
+            { round: "9" },
+            { date: "2022.12.01" },
+            { round: "3" },
+        ],
+    },
+    {
+        kind: "round-only",
+        context: "Tata Steel Wijk aan Zee (A) Better was Bd3 2022 (3).",
+        controlContext: "Tata Steel Wijk aan Zee (A) Better was Bd3.",
+        short: { event: "Tata Steel", site: "Wijk aan Zee", date: "2021.01.01", round: "A" },
+        conflicts: [{ date: "2022.12.01", round: "3" }, { round: "3" }, { round: "9" }],
+    },
+])(
+    "a matching combined $kind prefix cannot close once a later complete tuple remains",
+    async ({ context, controlContext, short, conflicts }) => {
+        const pair = "0-1 Beerdsen,T-Bluebaum,M";
+        const text = `${pair} ${context}`;
+        const citation = recognizeGameReferences(text)[0];
+        const original = { ...game, ...short };
+        expect(citation).toMatchObject({ context });
+        expect(text.slice(citation.start, citation.end)).toBe(citation.label);
+        await expectUnverifiedChoice(text, citation, original);
+        for (const missing of [
+            { date: "????.??.??" },
+            { round: "?" },
+            { date: "????.??.??", round: "?" },
+        ])
+            await expectUnverifiedChoice(text, citation, { ...original, ...missing });
+        for (const conflict of conflicts) {
+            const candidate = { ...original, ...conflict };
+            const rejected = await lookupGameReference(
+                citation,
+                new AbortController().signal,
+                querySensitiveSource([candidate]),
+            );
+            expect(rejected).toEqual({ candidates: [], failures: [], complete: true });
+            await lookupUI(text, querySensitiveSource([candidate]), () => {
+                expect(admission.create).not.toHaveBeenCalled();
+            });
+        }
+        const controlText = `${pair} ${controlContext}`;
+        const controlCitation = recognizeGameReferences(controlText)[0];
+        const control = await lookupGameReference(
+            controlCitation,
             new AbortController().signal,
             querySensitiveSource([original]),
         );
-        expect(result).toEqual({
+        expect(control).toEqual({
             complete: true,
             failures: [],
             candidates: [
@@ -1043,9 +1116,10 @@ test.each([
                 },
             ],
         });
-        await lookupUI(text, querySensitiveSource([original]), (host) => {
-            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
-            expect(host.firstElementChild?.textContent).toBe(text);
+        await lookupUI(controlText, querySensitiveSource([original]), (host) => {
+            expect(host.querySelector("[data-game-reference]")?.textContent).toBe(
+                controlCitation.label,
+            );
             expect(admission.create).toHaveBeenCalledExactlyOnceWith(
                 expect.objectContaining({
                     headers: expect.objectContaining({
@@ -1058,51 +1132,6 @@ test.each([
                 }),
             );
         });
-        for (const missing of [
-            { date: "????.??.??" },
-            { round: "?" },
-            { date: "????.??.??", round: "?" },
-        ]) {
-            const candidate = { ...original, ...missing };
-            const offered = await lookupGameReference(
-                citation,
-                new AbortController().signal,
-                querySensitiveSource([candidate]),
-            );
-            expect(offered).toEqual({
-                complete: true,
-                failures: [],
-                candidates: [
-                    {
-                        database,
-                        source: "Source A (source-a.db3)",
-                        game: candidate,
-                        verification: "unverified",
-                    },
-                ],
-            });
-            await lookupUI(text, querySensitiveSource([candidate]), async (host) => {
-                expect(admission.create).not.toHaveBeenCalled();
-                expect(host.querySelector("[data-game-reference]")?.textContent).toBe(pair);
-                expect(host.firstElementChild?.textContent).toBe(text);
-                expect(host.textContent).toContain("GameReferences.Choose");
-                const open = [...host.querySelectorAll("button")].find(
-                    (node) => node.textContent === "Common.OpenGame",
-                )!;
-                await act(async () => open.click());
-                expect(admission.create).toHaveBeenCalledExactlyOnceWith(
-                    expect.objectContaining({
-                        headers: expect.objectContaining({
-                            date: candidate.date,
-                            round: candidate.round,
-                            event: candidate.event,
-                            site: candidate.site,
-                        }),
-                        gameOrigin: { kind: "database", database, gameId: candidate.id },
-                    }),
-                );
-            });
-        }
     },
 );
 
