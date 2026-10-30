@@ -1,6 +1,6 @@
 # Review record: new game to database (build 2026-10-30)
 
-Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07 (superseded by d-20261030-09, then d-20261030-10), d-20261030-08. Finding: f-20261030-06. The plan file `tasks/plans/2026-10-30-new-game-to-database.md` named in those records lives in an ignored directory; its full text is preserved in this handoff.
+Cumulative plan and plan-review history of the build run `new-game-to-database` (worktree branch `build/new-game-to-database-20261030`). Raw lens reports were in `/tmp/build-newgame-1474822` (temporary). Decisions: d-20261030-06, d-20261030-07 (superseded by d-20261030-09, -10, then d-20261030-11), d-20261030-08. Finding: f-20261030-06. The plan file `tasks/plans/2026-10-30-new-game-to-database.md` named in those records lives in an ignored directory; its full text is preserved in this handoff.
 
 ## Plan: Add new games directly to a games database
 
@@ -459,4 +459,4 @@ correctness, code-quality, pgn-index, records.
 
 Out-of-diff defect filed: f-20261030-07 (vendored `RawHeader::decode` drops a literal backslash
 after an escaped backslash). Closure round 2 (`93de6143..HEAD`, 8 code lenses): CR1-01..CR1-08
-CLOSED with evidence, no new findings, all APPROVED. Records closure: CR1-09, CR1-10, CR1-12, CR1-13 CLOSED; CR1-11 withdrawn; one new records finding (d-20261030-09 compatibility claim) fixed by d-20261030-10. diff_adopted_per_round: r1=13 r2=1.
+CLOSED with evidence, no new findings, all APPROVED. Records closure: CR1-09, CR1-10, CR1-12, CR1-13 CLOSED; CR1-11 withdrawn; one new records finding (d-20261030-09 compatibility claim) fixed by d-20261030-10. Round 3 (records): CR1-11 and CR2-01 CLOSED; CR3-01 (stripping `trash_locator` alone ignores duplicate locators) reopened the same mechanism a second time, so per policy §4a a focused fresh-context review-plan judgment supplied the complete downgrade conditions (also covering migration-referenced records), recorded as d-20261030-11. diff_adopted_per_round: r1=13 r2=1 r3=1.
