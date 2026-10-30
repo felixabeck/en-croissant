@@ -114,7 +114,7 @@ function FileCard({
             disabled={previewOmitted || selected.numGames <= 0 || page >= selected.numGames}
           />
           <IconAction label={t("Files.EditMetadata")} size="sm" onClick={onEditMetadata}>
-            <Pencil />
+            <Pencil size="1rem" />
           </IconAction>
         </Group>
         <Text ta="center" c="dimmed" miw={0}>

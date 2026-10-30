@@ -63,7 +63,15 @@ export default function GenericCard<T>({
     </UnstyledButton>
   );
   return footer ? (
-    <div className={cardClasses}>
+    <div
+      className={cardClasses}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setSelected(id);
+      }}
+      onDoubleClick={(event) => {
+        if (event.target === event.currentTarget) onDoubleClick?.();
+      }}
+    >
       {selection}
       <div className={classes.footer}>{footer}</div>
     </div>

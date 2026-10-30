@@ -136,6 +136,480 @@ function linkedLibraryFixture() {
     return { file, database, locator, collection };
 }
 
+// Find the painted boundary, rather than depending on the selection/footer DOM depth.
+async function assertDatabaseCardBoundary(opener: Locator, title: string) {
+    const row = opener.locator('xpath=ancestor::*[@role="treeitem"][1]');
+    const selection = row.getByRole("button").filter({ hasText: title });
+    await expect(selection).toHaveCount(1);
+    await expect(selection.getByText(title, { exact: true })).toHaveCount(1);
+    const ancestors = [
+        selection,
+        ...(await selection.locator("xpath=ancestor::*").all()).reverse(),
+    ];
+    let card: Locator | undefined;
+    for (const ancestor of ancestors) {
+        if (
+            await ancestor.evaluate((element) => {
+                const style = getComputedStyle(element);
+                return ["Top", "Right", "Bottom", "Left"].every(
+                    (side) =>
+                        Number.parseFloat(
+                            style.getPropertyValue(`border-${side.toLowerCase()}-width`),
+                        ) > 0 &&
+                        style.getPropertyValue(`border-${side.toLowerCase()}-style`) !== "none",
+                );
+            })
+        ) {
+            card = ancestor;
+            break;
+        }
+    }
+    expect(card, "Open database must have a containing bordered card").toBeDefined();
+    const boundary = card!;
+    expect(
+        await boundary.evaluate((element) => element.closest('[role="treeitem"]') !== null),
+    ).toBe(true);
+    await expect(boundary).toContainText(title);
+    await expect(boundary.getByRole("button").filter({ hasText: title })).toHaveCount(1);
+    await expect(boundary.getByRole("button", { name: "Open database", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(selection.getByRole("button", { name: "Open database", exact: true })).toHaveCount(
+        0,
+    );
+    await expect(selection.getByLabel("Reference Database", { exact: true })).toHaveCount(0);
+    const favourite = boundary.getByLabel("Reference Database", { exact: true });
+    await expect(favourite).toHaveCount(1);
+    await expect(
+        boundary.locator(
+            "button :is(button, a[href], input, select, textarea, [role=button], [role=radio])",
+        ),
+    ).toHaveCount(0);
+    const outer = (await boundary.boundingBox())!;
+    for (const control of [opener, favourite]) {
+        const box = (await control.boundingBox())!;
+        expect(box.width).toBeGreaterThan(0);
+        expect(box.height).toBeGreaterThan(0);
+        expect(box.x).toBeGreaterThanOrEqual(outer.x);
+        expect(box.y).toBeGreaterThanOrEqual(outer.y);
+        expect(box.x + box.width).toBeLessThanOrEqual(outer.x + outer.width);
+        expect(box.y + box.height).toBeLessThanOrEqual(outer.y + outer.height);
+    }
+    return boundary;
+}
+
+function mixedDesktopLibraryFixture() {
+    const names = [
+        ["Beck-Kuckling-2026-10-11", "game", 2, "Game"],
+        ["Schw_Caro Kann", "repertoire", 128, "Repertoire"],
+        [
+            "Weiß_Königsgambit — annotated preparation for the next tournament round",
+            "game",
+            12480,
+            "Game",
+        ],
+        ["Weiß_Alejechin", "puzzle", 0, "Puzzle"],
+    ] as const;
+    const files = names.map(([name, type, count, label], index) => ({
+        ...gameOpeningFixture.file,
+        name,
+        handle: { ...gameOpeningFixture.file.handle, id: { id: `mixed-desktop-${index}` } },
+        metadata: { type, tags: [] },
+        gameCount: count,
+        label,
+    }));
+    const { collection } = linkedLibraryFixture();
+    const unavailable = {
+        ...collection,
+        name: "Beck-Müller-2026-10-22.pgn",
+        status: "unavailable",
+        database: null,
+    };
+    const databases = [
+        {
+            title: "OMCORR202609",
+            id: gameOpeningFixture.databaseId,
+            filename: "opening.db3",
+            games: "2,356,537",
+            storage: "517.21 MB",
+            count: 2356537,
+            bytes: "542333993",
+        },
+        {
+            title: "Meine Partien",
+            id: "mixed-masters",
+            filename: "masters.db3",
+            games: "116",
+            storage: "320 KB",
+            count: 116,
+            bytes: "327680",
+        },
+    ];
+    const producers = databases.map((database) =>
+        databaseCommands(database.id, database.filename, {
+            title: database.title,
+            description: "Independent games database",
+            game_count: database.count,
+            player_count: 256,
+            event_count: 32,
+            storage_size: database.bytes,
+            indexed: false,
+        }),
+    );
+    return {
+        files,
+        databases,
+        unavailable,
+        scenario: {
+            commands: {
+                ...filesWorkspaceCommands(
+                    [[filesWorkspaceFixture.openingDirectory, ...files]],
+                    gameOpeningCommands,
+                ),
+                list_workspace_databases: {
+                    result: {
+                        entries: producers.flatMap(
+                            (producer) =>
+                                (
+                                    producer.list_workspace_databases!.result as {
+                                        entries: unknown[];
+                                    }
+                                ).entries,
+                        ),
+                        unread: [],
+                    },
+                },
+                // Initial listing and the existing post-workspace revalidation use the same producer.
+                get_db_info: {
+                    results: [0, 1, 2, 3].flatMap(() =>
+                        producers.map((producer) => producer.get_db_info!.result),
+                    ),
+                },
+                linked_collections_supported: { result: true },
+                list_linked_collections: { result: [unavailable] },
+                collection_for_database: { result: null },
+                clear_games: { result: null },
+            },
+        } satisfies MockScenario,
+    };
+}
+
+const desktopLibrarySurfaces = [
+    { width: 1280, scale: 100, scheme: "light", split: true },
+    { width: 1440, scale: 100, scheme: "light", split: true },
+    { width: 1920, scale: 100, scheme: "light", split: true },
+    { width: 1280, scale: 200, scheme: "light", split: false },
+    { width: 1440, scale: 200, scheme: "light", split: false },
+    { width: 1920, scale: 200, scheme: "light", split: true },
+    { width: 1440, scale: 100, scheme: "dark", split: true },
+] as const;
+
+for (const surface of desktopLibrarySurfaces) {
+    test(`database-files: mixed Library at ${surface.width}px ${surface.scale}% ${surface.scheme}`, async ({
+        page,
+        mockScenario,
+        capture,
+        assertAccessible,
+        assertNoHorizontalOverflow,
+    }, testInfo) => {
+        await page.addInitScript(({ scale, scheme }) => {
+            localStorage.setItem("font-size", String(scale));
+            localStorage.setItem("mantine-color-scheme", scheme);
+        }, surface);
+        await page.emulateMedia({ colorScheme: surface.scheme });
+        await page.setViewportSize({ width: surface.width, height: 1000 });
+        const { files, databases, unavailable, scenario } = mixedDesktopLibraryFixture();
+        await mockScenario(scenario);
+        await page.goto("/library");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        await expect(page.locator("html")).toHaveAttribute(
+            "data-mantine-color-scheme",
+            surface.scheme,
+        );
+        await expect(page.locator("html")).toHaveCSS(
+            "font-size",
+            surface.scale === 100 ? "16px" : "32px",
+        );
+        const tree = page.getByRole("tree", { name: "Library", exact: true });
+        await expect(page.getByRole("tree")).toHaveCount(1);
+        const rows = tree.getByRole("treeitem");
+        const orderedNames = [
+            filesWorkspaceFixture.openingDirectory.name,
+            ...files.map((file) => file.name),
+            unavailable.name,
+            ...databases.map((database) => database.title),
+        ];
+        await expect(rows).toHaveCount(orderedNames.length);
+        expect(
+            await rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
+        ).toEqual(orderedNames);
+        const sections = tree.locator("h2");
+        await expect(sections).toHaveCount(2);
+        const assertCounts = async (fileCount: number, databaseCount: number) => {
+            for (const [index, name, count] of [
+                [0, "Files", fileCount],
+                [1, "Databases", databaseCount],
+            ] as const) {
+                const section = sections.nth(index);
+                await section.scrollIntoViewIfNeeded();
+                await expect(section.getByText(name, { exact: true })).toBeVisible();
+                await expect(section.getByText(String(count), { exact: true })).toBeVisible();
+            }
+        };
+        await assertCounts(6, 2);
+        const search = page.getByRole("textbox", { name: "Search", exact: true });
+        const type = page.getByRole("textbox", { name: "File type", exact: true });
+        await expect(type).toHaveAccessibleName("File type");
+        await expect(type).toHaveAttribute("placeholder", "All types");
+        expect(
+            await type.evaluate((input) =>
+                [...(input as HTMLInputElement).labels!].map((label) => label.textContent),
+            ),
+        ).toEqual(["File type"]);
+        await search.fill(files[0]!.name);
+        await expect(rows).toHaveCount(1);
+        await assertCounts(1, 0);
+        await search.fill("");
+        await type.click();
+        await page.getByRole("option", { name: "Games database", exact: true }).click();
+        await expect(rows).toHaveCount(2);
+        await assertCounts(0, 2);
+        await page.getByRole("button", { name: "Clear type filter", exact: true }).click();
+        await assertCounts(6, 2);
+
+        const panes = page
+            .locator(".mantine-SimpleGrid-root")
+            .filter({ has: tree })
+            .locator(":scope > .mantine-Paper-root");
+        await expect(panes).toHaveCount(2);
+        const list = panes.nth(0);
+        const detail = panes.nth(1);
+        const listBox = (await list.boundingBox())!;
+        const detailBox = (await detail.boundingBox())!;
+        if (surface.split) {
+            expect(Math.abs(listBox.y - detailBox.y)).toBeLessThanOrEqual(1);
+            expect(detailBox.x).toBeGreaterThanOrEqual(listBox.x + listBox.width);
+            for (const pane of [list, detail]) await expect(pane).toBeInViewport({ ratio: 1 });
+        } else {
+            expect(Math.abs(listBox.x - detailBox.x)).toBeLessThanOrEqual(1);
+            expect(detailBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height);
+        }
+        const reachable = async (control: Locator) => {
+            await control.scrollIntoViewIfNeeded();
+            await expect(control).toBeInViewport({ ratio: 1 });
+            await assertNothingClipped(control, { mode: "reachable" });
+        };
+        for (const control of [
+            search,
+            type,
+            ...(await page
+                .getByRole("group", { name: "Add New", exact: true })
+                .getByRole("button")
+                .all()),
+            page.getByRole("button", { name: "Change collection", exact: true }),
+        ])
+            await reachable(control);
+        const rowGeometry = [];
+        for (const file of files) {
+            const row = tree.getByRole("treeitem", { name: file.name, exact: true });
+            const count = row.getByText(String(file.gameCount), { exact: true });
+            const badge = row.getByText(file.label, { exact: true });
+            const remove = row.getByRole("button", { name: "Delete", exact: true });
+            const move = row.getByRole("button", { name: "Move", exact: true });
+            await reachable(row);
+            // End the previous row's action-focus tooltip before measuring this row's hover.
+            await page.mouse.move(surface.width / 2, 0);
+            await row.focus();
+            await expect(page.getByRole("tooltip")).toHaveCount(0);
+            await row.hover();
+            expect(await row.evaluate((element) => element.matches(":hover"))).toBe(true);
+            await assertAccessible();
+            await page.mouse.move(surface.width / 2, 0);
+            const rest = await remove.evaluate((element) => getComputedStyle(element).color);
+            const muted = await count.evaluate((element) => getComputedStyle(element).color);
+            expect(rest, "Delete must be as quiet as row metadata at rest").toBe(muted);
+            await remove.hover();
+            expect(await remove.evaluate((element) => getComputedStyle(element).color)).not.toBe(
+                rest,
+            );
+            await page.mouse.move(surface.width / 2, 0);
+            await move.focus();
+            await move.press("Shift+Tab");
+            await expect(remove).toBeFocused();
+            expect(await remove.evaluate((element) => getComputedStyle(element).color)).not.toBe(
+                rest,
+            );
+            await expect(remove).toBeEnabled();
+            for (const control of [count, badge, remove, move]) await reachable(control);
+            rowGeometry.push({
+                count: (await count.boundingBox())!,
+                type: (await badge.boundingBox())!,
+                remove: (await remove.boundingBox())!,
+                move: (await move.boundingBox())!,
+            });
+        }
+        for (const geometry of rowGeometry.slice(1)) {
+            for (const key of ["count", "type", "remove", "move"] as const) {
+                expect(
+                    Math.abs(geometry[key].x - rowGeometry[0]![key].x),
+                    `${key} column must align independently of file-name length`,
+                ).toBeLessThanOrEqual(1);
+            }
+        }
+
+        const positions = async () =>
+            rows.evaluateAll((nodes) =>
+                nodes.map((node) => ({
+                    name: node.getAttribute("aria-label"),
+                    x: node.getBoundingClientRect().x,
+                    y: node.getBoundingClientRect().y,
+                })),
+            );
+        await selectFilesTreeRow(page, filesWorkspaceFixture.openingDirectory.name);
+        await expect(detail.getByText("Entries: 0", { exact: true })).toBeVisible();
+        // In split mode the list has its own scroller, so detail height cannot move any row.
+        const before = await positions();
+        const shortDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!
+            .height;
+        await selectFilesTreeRow(page, files[0]!.name);
+        await expect(detail.getByRole("button", { name: "Open game", exact: true })).toBeEnabled();
+        if (surface.split) {
+            expect(await positions()).toEqual(before);
+        }
+        const fileDetailHeight = (await detail.locator(":scope > *").first().boundingBox())!.height;
+        expect(
+            fileDetailHeight,
+            "The stationary-list check must exercise different detail heights",
+        ).toBeGreaterThan(shortDetailHeight);
+        const record = { shortDetailHeight, fileDetailHeight, before, after: await positions() };
+        await testInfo.attach("selection-geometry.json", {
+            body: JSON.stringify(record, null, 2),
+            contentType: "application/json",
+        });
+        for (const action of await detail.getByRole("button").all()) await reachable(action);
+        await assertNothingClipped(list, { mode: "reachable" });
+        await assertNothingClipped(detail, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        const selectedFileRow = tree.getByRole("treeitem", { name: files[0]!.name, exact: true });
+        await selectedFileRow.hover();
+        expect(await selectedFileRow.evaluate((element) => element.matches(":hover"))).toBe(true);
+        await assertAccessible();
+        await page.mouse.move(surface.width / 2, 0);
+        await assertAccessible();
+        const snapshot = async (selection: string) => {
+            const name = `library-mixed-${surface.width}-${surface.scale}-${surface.scheme}-${selection}`;
+            await capture(name);
+            if (surface.scale === 100)
+                await expect.soft(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+        };
+        await search.scrollIntoViewIfNeeded();
+        if (!surface.split) await detail.scrollIntoViewIfNeeded();
+        await snapshot("file");
+
+        for (const database of databases) {
+            const row = tree.getByRole("treeitem", { name: database.title, exact: true });
+            const opener = row.getByRole("button", { name: "Open database", exact: true });
+            await reachable(opener);
+            const card = await assertDatabaseCardBoundary(opener, database.title);
+            await expect(card.getByText(database.games, { exact: true })).toBeVisible();
+            await expect(card.getByText(database.storage, { exact: true })).toBeVisible();
+            const games = (await card.getByText("Games", { exact: true }).boundingBox())!;
+            const storage = (await card.getByText("Storage", { exact: true }).boundingBox())!;
+            expect(
+                storage.x - games.x,
+                "Stats must stay compact inside the card",
+            ).toBeLessThanOrEqual(((12 * surface.scale) / 100) * 16);
+            const favourite = card.getByLabel("Reference Database", { exact: true });
+            await reachable(favourite);
+            await favourite.getByRole("radio", { name: "1", exact: true }).focus();
+            await favourite.getByRole("radio", { name: "1", exact: true }).press("Space");
+            await expect(favourite.getByRole("radio", { name: "1", exact: true })).toBeChecked();
+            await expect(page).toHaveURL("/library");
+            await selectFilesTreeRow(page, database.title);
+            await reachable(detail.getByRole("link", { name: "Explore", exact: true }));
+            await assertNothingClipped(detail, { mode: "reachable" });
+            await assertNoHorizontalOverflow();
+        }
+        await snapshot("database");
+        const warning = await selectFilesTreeRow(page, unavailable.name);
+        await expect(warning).toContainText("The search index is unavailable");
+        await expect(warning.getByText("Select", { exact: true })).toBeVisible();
+        await expect(detail.locator("[data-linked-collection]")).toHaveAttribute(
+            "data-linked-collection",
+            unavailable.id,
+        );
+        await expect(detail.getByRole("alert")).toContainText("The search index is unavailable");
+        await expect(detail.getByRole("button", { name: "Explore", exact: true })).toBeDisabled();
+        for (const name of ["Rebuild search index", "Source PGN", "Use selected source"]) {
+            const control =
+                name === "Source PGN"
+                    ? detail.getByRole("textbox", { name, exact: true })
+                    : detail.getByRole("button", { name, exact: true });
+            await reachable(control);
+        }
+        await assertNothingClipped(list, { mode: "reachable" });
+        await assertNothingClipped(detail, { mode: "reachable" });
+        await assertNoHorizontalOverflow();
+        await warning.hover();
+        expect(await warning.evaluate((element) => element.matches(":hover"))).toBe(true);
+        await assertAccessible();
+        await page.mouse.move(surface.width / 2, 0);
+        await assertAccessible();
+        await warning.scrollIntoViewIfNeeded();
+        if (!surface.split) await detail.scrollIntoViewIfNeeded();
+        await snapshot("unavailable");
+        // Section headings do not enter the single cross-kind arrow sequence.
+        const lastFile = tree.getByRole("treeitem", { name: files.at(-1)!.name, exact: true });
+        await lastFile.focus();
+        await lastFile.press("ArrowDown");
+        await expect(warning).toBeFocused();
+        await warning.press("ArrowDown");
+        const firstDatabase = tree.getByRole("treeitem", {
+            name: databases[0]!.title,
+            exact: true,
+        });
+        await expect(firstDatabase).toBeFocused();
+        await firstDatabase.press("ArrowUp");
+        await expect(warning).toBeFocused();
+    });
+}
+
+test("database-files: an unavailable-only Library offers recovery without the whole-Library empty message", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+    assertAccessible,
+}) => {
+    const { unavailable } = mixedDesktopLibraryFixture();
+    await mockScenario({
+        commands: {
+            ...filesWorkspaceCommands([[]], gameOpeningCommands),
+            list_workspace_databases: { result: { entries: [], unread: [] } },
+            linked_collections_supported: { result: true },
+            list_linked_collections: { result: [unavailable] },
+        },
+    });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    const row = await selectFilesTreeRow(page, unavailable.name);
+    await expect(page.getByRole("treeitem")).toHaveCount(1);
+    await expect(row).toContainText("The search index is unavailable");
+    await expect(
+        page.getByText("Your library is empty. Create a file or add a database to get started.", {
+            exact: true,
+        }),
+    ).toHaveCount(0);
+    const detail = page.locator("[data-linked-collection]");
+    for (const name of ["Rebuild search index", "Use selected source"]) {
+        const action = detail.getByRole("button", { name, exact: true });
+        await action.scrollIntoViewIfNeeded();
+        await expect(action).toBeInViewport({ ratio: 1 });
+        await assertNothingClipped(action, { mode: "reachable" });
+    }
+    await assertNoHorizontalOverflow();
+    await assertAccessible();
+});
+
 test("database-files: fixed-coordinate file double-click stays on the requested row after a preserved original", async ({
     page,
     mockScenario,
@@ -1350,6 +1824,46 @@ test("database-files: short split panes retain table rows, board, notation and c
     await assertNoHorizontalOverflow();
 });
 
+test("database-files: real double-click on database card outer padding opens the overview", async ({
+    page,
+    mockScenario,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("font-size", "100"));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await mockScenario({ commands: gameOpeningCommands });
+    await page.goto("/library");
+    const opener = page.getByRole("button", { name: "Open database", exact: true });
+    const card = await assertDatabaseCardBoundary(opener, gameOpeningFixture.databaseTitle);
+    await card.scrollIntoViewIfNeeded();
+    const point = await card.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const x = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) / 2;
+        const y = box.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) / 2;
+        return {
+            x,
+            y,
+            hit: document.elementFromPoint(x, y) === element,
+            outsideControls: [
+                ...element.querySelectorAll('button, [aria-label="Reference Database"]'),
+            ].every((control) => {
+                const rect = control.getBoundingClientRect();
+                return x < rect.left || x > rect.right || y < rect.top || y > rect.bottom;
+            }),
+        };
+    });
+    expect(point.hit, "The real pointer must hit the card's outer padding").toBe(true);
+    expect(
+        point.outsideControls,
+        "The padding point must be outside selection and footer controls",
+    ).toBe(true);
+    await page.mouse.dblclick(point.x, point.y);
+    await expect(page).toHaveURL(`/databases/${gameOpeningFixture.databaseId}`);
+    await expect(
+        page.getByRole("heading", { name: gameOpeningFixture.databaseTitle, exact: true }),
+    ).toBeVisible();
+});
+
 for (const gesture of ["button", "double-click", "Enter"] as const) {
     test(`database-files: visible database opener and explicit game ${gesture}`, async ({
         page,
@@ -1361,7 +1875,7 @@ for (const gesture of ["button", "double-click", "Enter"] as const) {
         await page.goto("/library");
         const opener = page.getByRole("button", { name: "Open database", exact: true });
         await expect(opener).toHaveText("Open database");
-        await expect(opener.locator("../..")).toContainText(gameOpeningFixture.databaseTitle);
+        await assertDatabaseCardBoundary(opener, gameOpeningFixture.databaseTitle);
         await expect(opener.locator("button")).toHaveCount(0);
         await capture("database-labelled-opener");
         await expect(page).toHaveScreenshot("database-labelled-opener.png", { fullPage: true });

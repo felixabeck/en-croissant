@@ -156,7 +156,7 @@ export default function LibraryPage() {
             miw={0}
             style={{ cursor: "pointer" }}
           >
-            <Text size="xs" c="dimmed" className="wrap-anywhere">
+            <Text size="xs" c="var(--cf-foreground)" className="wrap-anywhere">
               {t("Collections.Unavailable", {
                 defaultValue:
                   "The search index is unavailable. Retry, or select the collection's source file again.",

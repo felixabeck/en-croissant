@@ -8,6 +8,10 @@
   border-radius: var(--cf-radius-sm);
 }
 
+.item :is(button, input) {
+  scroll-margin-block: var(--mantine-spacing-xs);
+}
+
 .item[aria-selected="true"] {
   background: var(--cf-accent);
   box-shadow: inset 3px 0 var(--cf-primary);
@@ -20,6 +24,7 @@
 
 @media (hover: hover) {
   .item:hover {
+    --mantine-color-dimmed: var(--cf-foreground);
     background: var(--cf-interactive-hover);
   }
 }

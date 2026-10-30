@@ -544,7 +544,9 @@ export function useFileWorkspace(
               <Button
                 size="xs"
                 {...libraryButtonProps}
+                variant="default"
                 color="danger"
+                c="var(--cf-foreground)"
                 onClick={() => setDeleteTarget(selected)}
               >
                 {t("Files.Trash", { defaultValue: "Trash" })}

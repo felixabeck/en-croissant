@@ -356,6 +356,32 @@ test("an unavailable collection prevents a false whole-library empty state", asy
   expect(button("Rebuild search index")).toBeDefined();
 });
 
+test.each(["padding", "header"])(
+  "database card %s selects and double-click opens through the Library hook exactly once",
+  async (surface) => {
+    await click(rows()[0]);
+    const databaseRow = rows()[1];
+    const selection = databaseRow.querySelector<HTMLButtonElement>("button[aria-pressed]")!;
+    const card = selection.parentElement!;
+    expect(card.tagName).toBe("DIV");
+    expect(card.contains(button("Open database"))).toBe(true);
+    const target = surface === "padding" ? card : selection.querySelector("p")!;
+    await click(target);
+    expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(selection.getAttribute("aria-pressed")).toBe("true");
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    await act(async () => {
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+    });
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/databases/$databaseId",
+      params: { databaseId: "same-id" },
+    });
+    expect(activeDatabaseViewStore.getState().database?.file).toEqual(database.file);
+  },
+);
+
 test("contained database footer actions preserve database selection and never nest in the selection button", async () => {
   await click(rows()[0]);
   const databaseRow = rows()[1];
@@ -369,6 +395,13 @@ test("contained database footer actions preserve database selection and never ne
   expect(store.get(referenceDbAtom)).toEqual(database.file);
   expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
   await act(async () => favourite.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  const footer = open.parentElement!.parentElement!;
+  expect(footer.parentElement).toBe(selection.parentElement);
+  await click(footer);
+  await act(async () => {
+    footer.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+    open.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+  });
   expect(mocks.navigate).not.toHaveBeenCalled();
   await click(open);
   expect(mocks.navigate).toHaveBeenCalledWith({

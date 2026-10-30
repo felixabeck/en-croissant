@@ -15,7 +15,7 @@ export function LibrarySectionHeading({ children, count }: { children: ReactNode
       gap="xs"
       role="presentation"
     >
-      <Text component="span" size="sm" fw={600}>
+      <Text component="span" size="sm" fw={600} miw={0} style={{ overflowWrap: "anywhere" }}>
         {children}
       </Text>
       <Badge component="span" size="xs" color="gray">
@@ -39,7 +39,11 @@ export function LibraryTypeBadge({
       maw="100%"
       styles={{
         root: { height: "auto" },
-        label: { whiteSpace: "normal", overflowWrap: "anywhere" },
+        label: {
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
+          color: "var(--cf-foreground)",
+        },
       }}
     >
       {children}
