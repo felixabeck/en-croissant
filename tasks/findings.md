@@ -19283,3 +19283,21 @@ Former private finding identifier: f-20261029-06
 * **Evidence:** /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-final-native-ui.20261030-0204.YEmAn7/completion.record is1 final-native-ui.20261030-0204 1da359cfc030582f278aee1c1f33c53bc75651fe. Its full log and canonical Grok FAIL report /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/final-ui-leaf/verify-ui.txt preserve the renderer state and unchanged source hashes. Named final PNG was not produced.
 * **Related:** f-20261011-05 is rejected for a single rating25 failure that passed an immediate retry, and also records a separate rating6 witness. This occurrence fails before the first move at start practice, with no shared root cause evidenced. Keep those original decisions and observations unchanged.
 * **Found by:** Standard real Tauri verifier driven by selected Executor Grok,2026-10-30. Plan authorship and arbitration share root context. Current source repairs and detection share xAI family, original feature/root are OpenAI. No quota or Codex writer rollover occurred.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### The normal practice pane clips Start Practice below its content viewport at an ordinary 800px window
+
+* **ID:** f-20261030-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** ux
+* **Where:** src/components/panels/practice/PracticePanel.tsx715 sets the non-compact Train panel overflow to hidden. Its Start Practice control is at967–981. The default mosaic pane has bounded height.
+* **Spotted outside diff:** During ordinary native verification of opening game references at source1da359cfc030582f278aee1c1f33c53bc75651fe, record-only checkoutc11dc77a, before citation CR1–CR4.
+* **Failure scenario:** Open an existing repertoire in an800×647 app viewport with the normal split-pane layout. Start Practice exists and is enabled, but its rectangle top370.1875/bottom412.1875 is entirely below its ancestor clipping bottom356.1875. A physical pointer click at its box center565,391 lands on an emptyDIV. Pointerdown, pointerup and click all have originalContainsTargetfalse. The user cannot click this control in that pane's current visible region. Whether another ordinary scroll or focus action can reveal it is not yet measured.
+* **Evidence:** Real unchanged release binarye66f12e4f2427f7f4d736e5380e2cee3899de4234a1c56f90e73c738116f176b. Temporary observational instrumentation records actual viewport, unclipped rect, overflow intersection and capture events in /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-native-start-diag.20261030-1.1g4QVJ/log as NATIVE_START_DIAG before-click and after-click. No click, scroll or production handler is altered. This is a runtime geometry observation, not a completed native feature acceptance or proof that every input route is unreachable.
+* **Open question:** Give the normal Train pane a reachable bounded content region at ordinary desktop sizes while preserving its existing layout and responsive navigation. First measure wheel, keyboard/focus and pane resizing on the existing control, then verify the selected correction through actual pointer access without weakening clipping assertions or changing snapshots blindly.
+* **Related:** f-20261030-03 owns the separate verifier error of clicking an unclipped raw center. Reusing its existing reachableStableCoordinates helper can repair that test gesture but does not establish ordinary user scroll reachability. Handledf-20261021-04 concerns focused Build at320px/200percent, and handledf-20260829-02 concerns earlier responsive screens. This witness is normal Train at800px, with no shared cause or regression origin established.
+* **Disposition:** Record for a separate responsive product-layout build. The current citation task repairs only its evidenced verifier targeting failure. No new product layout decision is implied.
+* **Found by:** Selected Executor Grok temporary native observation, rootCodex trace. Plan authorship and arbitration share root context. Detection usesxAI like recent repair code, original feature isOpenAI.
