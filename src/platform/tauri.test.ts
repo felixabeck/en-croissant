@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     closeSplashscreen: vi.fn(),
@@ -497,6 +497,45 @@ describe("tauri command facade", () => {
 
         await tauri.listFileWorkspace(wsHandle);
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(wsHandle, null);
+    });
+
+    describe("optional lex timing hook", () => {
+        afterEach(() => vi.unstubAllGlobals());
+
+        test("preserves the command result when the hook is absent", async () => {
+            vi.stubGlobal("__verifyAppRecordLexPgn", undefined);
+            mocks.lexPgn.mockResolvedValueOnce({ status: "ok", data: [] });
+            await expect(tauri.lexPgn("1. e4")).resolves.toEqual([]);
+            mocks.lexPgn.mockRejectedValueOnce(new Error("lexer unavailable"));
+            await expect(tauri.lexPgn("1. e4")).rejects.toBeInstanceOf(TauriCommandError);
+        });
+
+        test.each(["success", "rejection"])(
+            "records elapsed time in finally on %s",
+            async (outcome) => {
+                const mark = vi.fn();
+                vi.stubGlobal("__verifyAppRecordLexPgn", mark);
+                if (outcome === "success") {
+                    mocks.lexPgn.mockResolvedValueOnce({ status: "ok", data: [] });
+                } else {
+                    mocks.lexPgn.mockRejectedValueOnce(new Error("lexer unavailable"));
+                }
+                const startedAt = performance.now();
+                const result = tauri.lexPgn("1. e4");
+                if (outcome === "success") await expect(result).resolves.toEqual([]);
+                else await expect(result).rejects.toBeInstanceOf(TauriCommandError);
+                const elapsedMs = performance.now() - startedAt;
+                expect(mark).toHaveBeenCalledOnce();
+                const durationMs = mark.mock.calls[0][0];
+                expect(Number.isFinite(durationMs)).toBe(true);
+                expect(durationMs).toBeGreaterThanOrEqual(0);
+                expect(durationMs).toBeLessThanOrEqual(elapsedMs);
+
+                mocks.closeSplashscreen.mockResolvedValueOnce({ status: "ok", data: null });
+                await tauri.closeSplashscreen();
+                expect(mark).toHaveBeenCalledOnce();
+            },
+        );
     });
 
     test("window focus subscriptions return the native listener cleanup", async () => {

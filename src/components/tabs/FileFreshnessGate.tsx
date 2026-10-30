@@ -172,6 +172,9 @@ function FileBackedGate({
   const installDiskTree = useCallback(
     (tree: Parameters<ReturnType<typeof store.getState>["setState"]>[0], revision: string) => {
       store.getState().setState(tree);
+      const markApplied = (globalThis as { __verifyAppRecordTreeApplied?: () => void })
+        .__verifyAppRecordTreeApplied;
+      if (typeof markApplied === "function") markApplied();
       setReloadCount((count) => count + 1);
       setFileFreshness(tabId, "verified", { verifiedRevision: revision });
     },

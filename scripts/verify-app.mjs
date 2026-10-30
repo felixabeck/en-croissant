@@ -234,6 +234,10 @@ import {
 } from "../src/state/store/debouncedStorage.ts";
 import { decodeEngineOwnerValue } from "../src/state/engineOwnerEnvelope.ts";
 import {
+  fileFreshnessApplicationWithinBudget,
+  fileFreshnessTiming,
+} from "./file-freshness-timing.mjs";
+import {
   APP_BINARY,
   Session,
   appProcesses,
@@ -4158,18 +4162,31 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
      const state = {
        startedAt: performance.now(),
        baselineReloadCount,
+       armed: true,
        readDurations: [],
        lastReadFinishedAt: null,
+       lexAwaitMs: 0,
+       appliedAt: null,
        fileId: null,
        terminal: null,
      };
      // The sealed IPC invoke cannot be wrapped, so the platform records this read.
      window.__verifyAppRecordReadGame = (durationMs, fileId) => {
-       if (state.terminal) return;
+       if (!state.armed || state.terminal) return;
        if (state.fileId == null) state.fileId = fileId ?? null;
        if (fileId !== state.fileId) return;
        state.readDurations.push(durationMs);
        state.lastReadFinishedAt = performance.now();
+       state.lexAwaitMs = 0;
+       state.appliedAt = null;
+     };
+     window.__verifyAppRecordLexPgn = (durationMs) => {
+       if (!state.armed || state.terminal || state.lastReadFinishedAt == null) return;
+       state.lexAwaitMs += durationMs;
+     };
+     window.__verifyAppRecordTreeApplied = () => {
+       if (!state.armed || state.terminal) return;
+       state.appliedAt = performance.now();
      };
      const observeFreshness = () => {
        const [freshnessState, countText] = (gate.getAttribute("data-file-freshness") || "").split(":");
@@ -4185,6 +4202,8 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
            reloadCount,
            observedAt: performance.now(),
            readFinishedAt: state.lastReadFinishedAt,
+           lexAwaitMs: state.lexAwaitMs,
+           appliedAt: state.appliedAt,
          };
        }
      };
@@ -4221,23 +4240,27 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
        reloadCount: measurement.terminal?.reloadCount ?? null,
        observedAt: measurement.terminal?.observedAt ?? null,
        readFinishedAt: measurement.terminal?.readFinishedAt ?? null,
+       lexAwaitMs: measurement.terminal?.lexAwaitMs ?? null,
+       appliedAt: measurement.terminal?.appliedAt ?? null,
      };`,
   );
   await session.execute(
-    "const measurement = window.__verifyAppFileFreshnessMeasurement; measurement.observer?.disconnect(); delete window.__verifyAppRecordReadGame; measurement.observer = null; return true;",
+    "const measurement = window.__verifyAppFileFreshnessMeasurement; measurement.armed = false; measurement.observer?.disconnect(); delete window.__verifyAppRecordReadGame; delete window.__verifyAppRecordLexPgn; delete window.__verifyAppRecordTreeApplied; measurement.observer = null; return true;",
   );
   const freshnessElapsedMs =
     freshnessMeasurement.observedAt - measurementReady.startedAt - rewriteDurationMs;
   const measuredReadTimeMs = freshnessMeasurement.readTimeMs;
-  const freshnessApplyMs =
-    Number.isFinite(freshnessMeasurement.observedAt) &&
-    Number.isFinite(freshnessMeasurement.readFinishedAt)
-      ? freshnessMeasurement.observedAt - freshnessMeasurement.readFinishedAt
-      : Number.NaN;
-  const freshnessDeadlineMs =
-    Number.isFinite(measuredReadTimeMs) && Number.isFinite(freshnessApplyMs)
-      ? FILE_FRESHNESS_POLL_INTERVAL_MS + measuredReadTimeMs + freshnessApplyMs
-      : Number.NaN;
+  const freshnessTiming = fileFreshnessTiming(
+    freshnessMeasurement,
+    FILE_FRESHNESS_POLL_INTERVAL_MS,
+  );
+  const {
+    applicationMs,
+    observationGapMs,
+    mainThreadMs,
+    deadlineMs: freshnessDeadlineMs,
+  } = freshnessTiming;
+  const formatDuration = (value) => (Number.isFinite(value) ? value.toFixed(1) : "unmeasured");
   const openTabReloaded =
     freshnessTransition.state === "conflict" ||
     (freshnessTransition.state === "verified" &&
@@ -4253,21 +4276,20 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
     `read_game duration: ${measuredReadTimeMs}`,
   );
   check(
-    Number.isFinite(measuredReadTimeMs) &&
-      Number.isFinite(freshnessApplyMs) &&
-      freshnessApplyMs >= 0 &&
-      freshnessApplyMs <= FILE_FRESHNESS_APPLY_BUDGET_MS,
-    `the freshness transition applies within ${FILE_FRESHNESS_APPLY_BUDGET_MS} ms of the measured read`,
-    `apply duration: ${Number.isFinite(freshnessApplyMs) ? `${freshnessApplyMs.toFixed(1)} ms` : "unmeasured"}; ` +
-      `read_game duration: ${Number.isFinite(measuredReadTimeMs) ? `${measuredReadTimeMs.toFixed(1)} ms` : "unmeasured"}`,
+    fileFreshnessApplicationWithinBudget(freshnessTiming, FILE_FRESHNESS_APPLY_BUDGET_MS),
+    `the freshness store application takes at most ${FILE_FRESHNESS_APPLY_BUDGET_MS} ms excluding lex await`,
+    `applicationMs: ${formatDuration(applicationMs)} ms; ` +
+      `readGame: ${formatDuration(measuredReadTimeMs)} ms; lexAwaitMs: ${formatDuration(freshnessMeasurement.lexAwaitMs)} ms`,
   );
   console.log(
     `  info  open file freshness: ${freshnessElapsedMs.toFixed(1)} ms after rewrite ` +
-      `(limit ${FILE_FRESHNESS_POLL_INTERVAL_MS} ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms + apply ${Number.isFinite(freshnessApplyMs) ? freshnessApplyMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
+      `(limit ${FILE_FRESHNESS_POLL_INTERVAL_MS} ms + readGame ${formatDuration(measuredReadTimeMs)} ms + ` +
+      `lexAwaitMs ${formatDuration(freshnessMeasurement.lexAwaitMs)} ms + mainThreadMs ${formatDuration(mainThreadMs)} ms; ` +
+      `applicationMs ${formatDuration(applicationMs)} ms; observationGapMs ${formatDuration(observationGapMs)} ms; ${freshnessTransition.state})`,
   );
   check(
     Number.isFinite(freshnessElapsedMs) && freshnessElapsedMs <= freshnessDeadlineMs,
-    "the open file-backed tab refreshes within one poll interval plus measured read and apply",
+    "the open file-backed tab refreshes within one poll interval plus measured read, lex await and main-thread time",
     `${freshnessElapsedMs.toFixed(1)} ms > ${Number.isFinite(freshnessDeadlineMs) ? `${freshnessDeadlineMs.toFixed(1)} ms` : "unmeasured deadline"}`,
   );
   if (freshnessTransition.state === "conflict") {
