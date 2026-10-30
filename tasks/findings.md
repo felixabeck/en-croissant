@@ -19563,7 +19563,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### German Library tree content overflows its narrow container at 200 percent
 
-* **ID:** f-20261030-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261030-11 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Follow-up of:** f-20261030-05, observed on the redesigned Library tree at 49230bcbbf215904897403de24583e4a326f6a05.
@@ -19574,6 +19574,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** Keep the unchanged German journey. It must pass its exact internal-clipping assertion on the repaired source. Remove only the source correction through Git, reproduce that precise failure, then restore green. Preserve the existing narrow, dark and desktop matrix plus all ratchets.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"5357bfa1441f5f5e3546a820becc1d2c9e79eef7c355bfea4db8e7c5ff6439cf","options":{"section":null},"request_id_sha256":"b1d32c30bfca4209b67dd37fc413eefcc498b46e9aaf583ec41362d7abd53c07","results":["f-20261030-11"],"target":"f-20261030-11","v":1} -->
+
+The shared section heading text has zero minimum width and wraps anywhere. Source-only heading removal reproduced the German narrow overflow. The exact P3 restored run reached its intentional old snapshot mismatch after geometry cleared, and the snapshot-ignored complete journey passed. Final updated comparisons are green. See fix-1-proof/REPORT.md.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"72b6b7749344ae801883e0cc7c1b3b56411e09c47129976463fb135f2c2fc12f","header_sha256":"1c1f29987cc6d0d7fda23a7a4d2f409d8af9db312e32b50976c0a1ad91721c03","header_status":"handled","input_sha256":"f3ca3494d6cd00e09628275124b66f9b531d994a223ff227e8c39f003daafa96","kind":"mutation-receipt","operation":"31af152e2c4a4ace4dfcd6abfd17af0cb10efb891a0ee78388cdf91a9bfd0bc7","options":{"section":null},"request_id_sha256":"ec4008df5b951299b89fe73498d488bd2fb2c794eb4355ad564638532cc7effe","results":["f-20261030-11"],"target":"f-20261030-11","v":1} -->
 
 ### Selected Library type badge fails contrast at 200 percent
 
