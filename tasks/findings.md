@@ -19480,6 +19480,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Authority:** Felix requested a full-auto Library visual redesign on 2026-10-30, with grouping, aligned rows, visible all-types state, warning collection state, contained database controls and responsive split layout.
 * **Related:** f-20260829-02 is handled and covers prior narrow-screen layout work. This entry concerns the supplied current screenshot, not a claim that its prior repair failed.
 * **Proof:** Focused Library/FileCard/DirectoryTree tests, canonical container screenshots at 1280/1440/1920, full frontend gates and pnpm verify:app.
+* **Found by:** Codex, following Felix's supplied Library screenshot and source tracing during this authorized redesign run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1e4f2546574e6805772470aca787f3b2dd1d67fd473ec089a6f85543997da9f6","input_sha256":"540250b12d7328872dddec3b9a350489b2e7de42cd10d9a78927f5df17c1dc21","kind":"mutation-receipt","operation":"04d009ff0dc568873948f8b980e4b1f2463b7c66741be38ee36e1fa140bc95ec","options":{"section":null},"request_id_sha256":"9ea0a1d4232cc277de9235afe55b1eff3bb531015b4fb6994030cfdff2dd1b98","results":["f-20261030-05"],"target":"f-20261030-05","v":1} -->
 
 ---
 
