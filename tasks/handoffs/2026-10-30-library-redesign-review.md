@@ -1043,6 +1043,104 @@ Plan authorship and arbitration sharedrootcontext. Detection andsourceimplementa
 
 Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
 
+## CI repair review round 5 and lineage correction
+
+Seven code lenses approve the test-only repair. One records finding R2 requires the Follow-up of field linking f-20261030-18 to f-20261030-05. Root adopted Fix and added the field through the canonical writer. Source review is complete through 0335a06c. R2 records closure, final gates and hosted confirmation remain pending. This later checkpoint supersedes the earlier pending code-review statement while preserving history.
+
+# CI repair cumulative review round 5
+
+All eight canonical read-only lenses completed and were read. Seven code lenses approved without findings. Records R2 should-fix, confidence 99: f-20261030-18 lacked Follow-up of f-20261030-05 despite being created by that repair. Root adopted Fix and the canonical annotate transaction adds the required field. This is a new independent records issue, not a reopened C1 or R1. R2 awaits records-only closure. No source changed after the code approval.
+
+Cumulative diff_adopted_per_round r1=2 r2=0 r3=0 r4=0 r5=1. Three unique lens issues opened, two closed before the R2 closure. Root-retained CI18 remains locally repaired and open until hosted confirmation, separate from lens adoption counts. Round launcher-to-root-read wall 176 seconds, active wall unknown. No parallel spans are summed.
+
+## Raw correctness report
+
+````text
+No correctness defects found in `e2e/database-files.spec.ts`. Traced fixture isolation, selection, reference-star transitions, scroll preparation, snapshot naming and all 56 Axe audits.
+
+Limitation: hosted timing remains unverified. No tests run or files changed during this review. Confidence: 92/100.
+
+Author and reviewer share the OpenAI/Codex family, without family separation.
+
+VERDICT: APPROVED
+````
+
+## Raw root-cause report
+
+````text
+No root-cause or prior-fix reintroduction findings. The split addresses cumulative work exceeding one test deadline while preserving all 56 audits, assertions and snapshot state. History retains the earlier fixes. Recorded runs show 29 targeted and 295 full browser cases passing.
+
+Limitation (confidence: 100): hosted confirmation remains pending. Local results do not establish equivalent runner performance.
+
+Review used the same OpenAI/Codex family as implementation. No files changed.
+
+VERDICT: APPROVED
+````
+
+## Raw minimalism report
+
+````text
+No bloat or duplication defects found. The shared helpers serve the four independently initialized test areas and preserve required state preparation. No files were added or changed during review.
+
+Author and reviewer share the OpenAI/Codex family, so family separation was absent.
+
+VERDICT: APPROVED
+````
+
+## Raw code-quality report
+
+````text
+No readability or local-consistency defects found in `e2e/database-files.spec.ts`. Compared with `e2e/files-preview.spec.ts`. Read-only review, no files changed or tests run.
+
+Review used the same OpenAI/Codex family as the author, without family separation.
+
+VERDICT: APPROVED
+````
+
+## Raw tests report
+
+````text
+No findings. Assertions, seven surfaces, 56 full-page Axe audits, snapshots and CI discovery remain preserved. The recorded source withdrawal makes the new hover test fail on contrast, confirming its regression sensitivity.
+
+Limitation: hosted timeout resolution remains unconfirmed. Local passes do not establish hosted CPU equivalence.
+
+Review and implementation share the OpenAI/Codex family. No files changed.
+
+VERDICT: APPROVED
+````
+
+## Raw error-handling report
+
+````text
+No error-handling defects found. Helper failures propagate to Playwright, browser errors fail fixture teardown, and soft snapshot assertions still fail the test.
+
+Read-only inspection only. Hosted confirmation remains pending. Author and reviewer share the OpenAI/Codex model family.
+
+VERDICT: APPROVED
+````
+
+## Raw persisted-state report
+
+````text
+No persistence findings. The extracted setup preserves both storage keys and their reader-compatible encodings. Each test initializes independently. Production persistence and tab lifecycle code are unchanged.
+
+Read-only review completed. No files changed or gates run.
+
+VERDICT: APPROVED
+````
+
+## Raw records report
+
+````text
+[should-fix] tasks/findings.md:19752 — f-20261030-18 identifies the failing composition as originating in f-20261030-05’s repair commit a5f260a6, but omits `**Follow-up of:** f-20261030-05`. The findings-ledger contract requires that field for repair-created defects. `Related` prose does not establish the lineage used by queue escalation. (confidence: 99)
+
+Historical process-identity checks and the prior installed SHA were not independently verified. No files changed or live services queried.
+
+VERDICT: REVISE
+````
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
+
 ## First complete gate, publication and hosted failure
 
 Canonical gate-push-gate.8WLbbA completed with 0 push-gate c0aad49e9883a117c618c9a107a84295a84c34fc. Wrapper wall was 1627.978 seconds. Unchanged full coverage passed 5847 tests in 241 files, every ratchet and area floor. All four full mutation packages passed 100 percent, followed by their exact-tree receipt checks and the complete frontend scheduler. Scheduler logs artifacts/gates/20261030T165437004Z-745712 show guard 0.2s, build 8.4s, contract 104.1s, coverage receipt 0.4s, bundle 0.4s, full browser 113.5s with 274 passing cases, mutation receipt 0.4s. Complete raw reports are retained outside the worktree in final-green-reports. No ratchet was edited by this run.
