@@ -443,6 +443,186 @@ for (const surface of [
     });
 }
 
+test("workspace-tabs: Train reaches Start Practice by wheel, focus, and pointer at 800×647", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}, testInfo) => {
+    const now = new Date("2026-10-21T12:00:00Z");
+    await page.clock.install({ time: now });
+    await page.setViewportSize({ width: 800, height: 647 });
+    await page.addInitScript(() => localStorage.setItem("auto-save", "false"));
+    const repertoireFile = {
+        ...filesWorkspaceFixture.pgnFile,
+        metadata: { type: "repertoire" as const, tags: [] },
+    };
+    const pgn =
+        '[Event "Practice feedback"]\n[White "Weiss"]\n[Black "Schwarz"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 *';
+    const game = {
+        pgn,
+        stamp: "c".repeat(64),
+        revision: "practice-feedback-revision",
+        present: true,
+    };
+    const cardFen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
+    const commands = filesWorkspaceCommands([[repertoireFile]], {
+        ...pgnFileCommands,
+        read_games: { result: [game] },
+        read_game: { result: game },
+        file_revision: { result: game.revision },
+        lex_pgn: {
+            result: [
+                { type: "Header", value: { tag: "Event", value: "Practice feedback" } },
+                { type: "Header", value: { tag: "White", value: "Weiss" } },
+                { type: "Header", value: { tag: "Black", value: "Schwarz" } },
+                { type: "Header", value: { tag: "Result", value: "*" } },
+                { type: "San", value: "e4" },
+                { type: "San", value: "e5" },
+                { type: "San", value: "Nf3" },
+                { type: "Outcome", value: "*" },
+            ],
+        },
+        load_practice_deck: {
+            result: {
+                positionsDocument: JSON.stringify({
+                    positions: [{ fen: cardFen, answer: "Nf3", card: createEmptyCard(now) }],
+                }),
+                revision: 1,
+                generation: 0,
+                migrated: false,
+                unappliedReviews: 0,
+                orphansAcknowledged: true,
+            },
+        },
+        record_practice_review: { result: 2 },
+    });
+    await mockScenario({ commands });
+    await page.goto("/library");
+    await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    await page.getByRole("button", { name: "Open game", exact: true }).click();
+    const train = page.getByRole("tabpanel", { name: "Train", exact: true });
+    const start = train.getByRole("button", { name: /Start Practice/ });
+    const geometry = () =>
+        start.evaluate((button) => {
+            const panel = button.closest<HTMLElement>('[role="tabpanel"]')!;
+            const panelBox = panel.getBoundingClientRect();
+            const buttonBox = button.getBoundingClientRect();
+            const top = panelBox.top + panel.clientTop;
+            const bottom = top + panel.clientHeight;
+            return {
+                clientHeight: panel.clientHeight,
+                scrollHeight: panel.scrollHeight,
+                scrollTop: panel.scrollTop,
+                top,
+                bottom,
+                buttonTop: buttonBox.top,
+                buttonBottom: buttonBox.bottom,
+                inside: buttonBox.top >= top && buttonBox.bottom <= bottom,
+            };
+        });
+    const measure = async (stage: string) => {
+        const result = await geometry();
+        console.log(`Train ${stage}: ${JSON.stringify(result)}`);
+        await testInfo.attach(`train-${stage}.json`, {
+            body: JSON.stringify(result, null, 2),
+            contentType: "application/json",
+        });
+        return result;
+    };
+    const expectInitiallyClipped = async () => {
+        await expect(start).toBeEnabled();
+        const initial = await measure("initial");
+        expect(initial.scrollTop).toBe(0);
+        expect(
+            initial.buttonBottom,
+            "Start Practice must initially extend below Train",
+        ).toBeGreaterThan(initial.bottom);
+        expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight);
+    };
+    const wheelToStart = async (stage: string) => {
+        const box = (await train.boundingBox())!;
+        const before = await geometry();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.wheel(0, 100);
+        await expect.soft
+            .poll(async () => (await geometry()).scrollTop, {
+                message: `${stage}: wheel must scroll Train`,
+                timeout: 1500,
+            })
+            .toBeGreaterThan(before.scrollTop);
+        await expect.soft
+            .poll(async () => (await geometry()).inside, {
+                message: `${stage}: wheel must reveal all of Start Practice`,
+                timeout: 1500,
+            })
+            .toBe(true);
+        await measure(stage);
+    };
+
+    await expectInitiallyClipped();
+    await wheelToStart("wheel");
+
+    // Reload the unchanged default mosaic so wheel scrolling cannot help keyboard focus.
+    await preserveStorageForReload(page);
+    await page.getByRole("tab", { name: "Practice", exact: true }).click();
+    await expectInitiallyClipped();
+    await page.getByRole("tab", { name: "Train", exact: true }).focus();
+    for (let tabs = 0; tabs < 30; tabs++) {
+        await page.keyboard.press("Tab");
+        if (await start.evaluate((button) => button === document.activeElement)) break;
+    }
+    await expect(start).toBeFocused();
+    await expect.soft
+        .poll(async () => (await geometry()).inside, {
+            message: "keyboard focus must reveal all of Start Practice",
+            timeout: 1500,
+        })
+        .toBe(true);
+    await measure("focus");
+
+    const mosaic = page.locator(".mosaic-root");
+    const resize = async (percentage: number) =>
+        dragMosaicDivider(page, {
+            root: mosaic,
+            split: mosaic.locator(".mosaic-split.-column"),
+            percentage,
+            direction: "column",
+            crossAxisRatio: 0.75,
+        });
+    // Reset only after measuring wheel and focus, then establish the resize control case.
+    await train.evaluate((panel) => {
+        panel.scrollTop = 0;
+    });
+    await resize(80);
+    await expect.poll(async () => (await geometry()).inside).toBe(true);
+    expect((await measure("tall")).scrollTop).toBe(0);
+    await resize(50);
+    const restored = await measure("restored");
+    expect(restored.scrollTop).toBe(0);
+    expect(restored.buttonBottom).toBeGreaterThan(restored.bottom);
+    expect(restored.scrollHeight).toBeGreaterThan(restored.clientHeight);
+    await wheelToStart("restored-wheel");
+    await assertNoHorizontalOverflow();
+    await assertNothingClipped(start, { mode: "reachable" });
+
+    const point = await start.evaluate((button) => {
+        const box = button.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        return { x, y, hitsButton: button.contains(document.elementFromPoint(x, y)) };
+    });
+    expect(point.hitsButton, "visible button center must hit Start Practice").toBe(true);
+    await page.mouse.click(point.x, point.y);
+    await expect(train.getByText("Make your move on the board...", { exact: true })).toBeVisible();
+    const board = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
+    await expect(board).toBeVisible();
+    await expect(board.getByRole("gridcell", { name: "e5, Black Pawn", exact: true })).toHaveCount(
+        1,
+    );
+    await assertNoHorizontalOverflow();
+});
+
 test("workspace-tabs: incorrect practice reveals the existing answer and its review log names the completed move", async ({
     page,
     mockScenario,

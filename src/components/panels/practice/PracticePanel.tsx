@@ -705,6 +705,8 @@ function PracticePanel() {
         }}
         style={{
           display: "flex",
+          minHeight: 0,
+          overflow: "hidden",
         }}
       >
         <Tabs.List>
@@ -712,7 +714,10 @@ function PracticePanel() {
           <Tabs.Tab value="build">{t("Board.Practice.Build")}</Tabs.Tab>
         </Tabs.List>
 
-        <Tabs.Panel value="train" style={{ overflow: compactTabs ? "auto" : "hidden" }}>
+        <Tabs.Panel
+          value="train"
+          style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}
+        >
           <Stack p="sm" gap="md">
             {deck.status === "loading" && (
               <Alert icon={<Info />}>{t("Board.Practice.Loading")}</Alert>
