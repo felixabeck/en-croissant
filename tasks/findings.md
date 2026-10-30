@@ -16692,7 +16692,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 
 ### Native large-file freshness apply check exceeded its budget once during opening proof
 
-* **ID:** f-20261010-41 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261010-41 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** origin-master-test-green
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs large-practice external-rewrite timing measurement, FILE_FRESHNESS_APPLY_BUDGET_MS, and the real file freshness renderer path.
 * **Defect:** The unchanged full native diagnostic run for f-20261001-08 reported FAIL for the freshness transition applies within 1000 ms of the measured read. Observed apply1186.0ms, native read47.0ms, total freshness2807.0ms, stateverified. The independent one-poll-interval-plus-measured-read-and-apply assertion passed. The immediately preceding baseline passed this1000ms check. No cause or repeatability is established. The only current verifier edits concern later GO9 geometry and GO14 diagnostics, which were not reached when this failure occurred.
@@ -16709,6 +16709,13 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 
 Reopened (records lens on the setup-findings triage, 2026-10-13): The entry records a second independent observation under load, which meets rule 4d's second-witness bar. It passes rule 4d, so the rejection above is void.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"ee64160f82c303d65906f98f318214d433b1ddc7534eed6b94731331ebc60f05","input_sha256":"64e878488e8c543fc3033f1ef5e1779706e510c58ab6e4541314503b8d6c5725","kind":"mutation-receipt","operation":"8a2b121c94a770b4d699be4da5abe813f2c46eaf9b4e9294f46b0411a9bbc751","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
+
+Push of f-20261010-41 is refused. The newest completed Test workflow on origin/master is run 41056249546 at 135c580404bfb156b445c195990497f55da83865, conclusion failure. Red jobs are test 124064403068 and rust-windows-test 124064403094. The local freshness commits do not repair those jobs. Filing the two failures does not authorize the push.
+
+Re-check from a branch checkout: pnpm ci:remote:check must print OK for every newest completed Test job. Then set Blocked back to none and resume the push. Before rebasing onto that master, renumber the local freshness decisions d-20261030-06, d-20261030-07 and d-20261030-08 through record-decision. Origin/master already published different decisions under those same ids. Do not edit the headings in place. Receipts hash the effect block.
+
+The conflicted rebase onto 135c5804 was aborted. Reviewed local head remains ea59a76d5a686e1848dabe237a93509d6f119e99, 13 commits ahead of 4bd75ea8a756a7d839089fd0421c0dee6c593f21. Frontend push gates on that head were green before master moved and are not evidence for 135c5804. Clean native verify:app on the pre-rebase binary reported mainThreadMs 522 and 565, both within the 1000 ms budget.
+<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"0f0883171dec316a7522faa558541ca03f6bae49a50d7051bfc702e9432c2be6","header_sha256":"9f317360496348a2d09857290e8ed7895ce2a677fd6b955e322e01d7b2e4e42d","header_status":"open","input_sha256":"e30274cde0e815fb915994be043f3db59b7fce145823b979f5f756b486c3c417","kind":"mutation-receipt","operation":"d91aefda3ec3d5f6e68c9fb640b51f07f69acc618208c0d354ed3731406dd7b1","options":{"headers":{"Blocked":"origin-master-test-green"},"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
 
 ---
 
