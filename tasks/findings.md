@@ -19470,7 +19470,7 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 
 ### Library card actions are visually detached and the type filter is blank
 
-* **ID:** f-20261030-05 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261030-05 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** library-redesign-library-visual-redesign-20261030-082735-27ae83b1
 * **Impact class:** ux
 * **Where:** `src/components/library/LibraryPage.tsx`, `src/components/databases/useDatabaseLibrary.tsx`, `src/components/files/DirectoryTree.tsx`.
@@ -19482,6 +19482,14 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Proof:** Focused Library/FileCard/DirectoryTree tests, canonical container screenshots at 1280/1440/1920, full frontend gates and pnpm verify:app.
 * **Found by:** Codex, following Felix's supplied Library screenshot and source tracing during this authorized redesign run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1e4f2546574e6805772470aca787f3b2dd1d67fd473ec089a6f85543997da9f6","input_sha256":"540250b12d7328872dddec3b9a350489b2e7de42cd10d9a78927f5df17c1dc21","kind":"mutation-receipt","operation":"04d009ff0dc568873948f8b980e4b1f2463b7c66741be38ee36e1fa140bc95ec","options":{"section":null},"request_id_sha256":"9ea0a1d4232cc277de9235afe55b1eff3bb531015b4fb6994030cfdff2dd1b98","results":["f-20261030-05"],"target":"f-20261030-05","v":1} -->
+
+The seven requested presentation problems are resolved in the Library presentation commits, including section counts, aligned quiet rows, the localized All types filter, structured unavailable recovery, contained database controls, bounded panes and creation-action hierarchy.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"73cbf52a83d68e21023f5ed3abf6800ce49ea703ab1ffe8867c78932a4308369","header_sha256":"350a24deca0b4da87b3bab3acf05eeebd3036cf6890fce9b3f4f5c74a84db7ac","header_status":"handled","input_sha256":"0212c2cc68fcb1863566731c671ecb6177f3365f74fa3fb854e32fff4237231a","kind":"mutation-receipt","operation":"5be8953344daceaa1d7d6ebb753bcb2869625175e4dc1b8b91b6a75ee5c5f310","options":{"section":null},"request_id_sha256":"62b1d836bd6e699cfe771b4570e862d71c678752814b91d02a2962000587eb8f","results":["f-20261030-05"],"target":"f-20261030-05","v":1} -->
 
 ---
 
