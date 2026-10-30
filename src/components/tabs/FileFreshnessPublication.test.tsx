@@ -200,6 +200,15 @@ function panels() {
               <section data-panel="inner-notation">
                 <GameNotation />
               </section>
+              <section data-panel="inner-info">
+                <InfoPanel />
+              </section>
+              <section data-panel="inner-repertoire">
+                <RepertoireInfo />
+              </section>
+              <section data-panel="inner-chart">
+                <EvalChart isAnalysing={false} startAnalysis={() => undefined} />
+              </section>
               {/* BoardsPage renders the board inside this gate. The probe has to be here too. */}
               <BoardProbe />
             </FileFreshnessGate>
@@ -213,7 +222,9 @@ function panels() {
             <section data-panel="repertoire">
               <RepertoireInfo />
             </section>
-            <EvalChart isAnalysing={false} startAnalysis={() => undefined} />
+            <section data-panel="chart">
+              <EvalChart isAnalysing={false} startAnalysis={() => undefined} />
+            </section>
           </TreeStateContext.Provider>
         </WorkspaceTabScope>
       </Provider>
@@ -253,6 +264,16 @@ afterEach(async () => {
   removeFileFreshness(tabId);
   vi.restoreAllMocks();
 });
+
+function commitWalkCalls() {
+  return (
+    vi.mocked(notation.buildNotationRows).mock.calls.length +
+    vi.mocked(chess.getPGN).mock.calls.length +
+    vi.mocked(treeReducer.treeIteratorMainLine).mock.calls.length +
+    vi.mocked(repertoire.getStats).mock.calls.length +
+    vi.mocked(treeReducer.getMemoizedBoardStateMap).mock.calls.length
+  );
+}
 
 function replacementWalks() {
   return {
@@ -304,7 +325,7 @@ test("the verified commit retains every named view, then rebuilds the replacemen
   hooks.__verifyAppRecordTreeApplied = () => {
     applied = replacementWalks();
     deferredAtApplied = deferredView.isTreeViewDeferred(store);
-    walksDuringCommit = vi.mocked(notation.buildNotationRows).mock.calls.length;
+    walksDuringCommit = commitWalkCalls();
   };
   const release = deferredView.releaseTreeView;
   vi.spyOn(deferredView, "releaseTreeView").mockImplementation((owner) => {
@@ -313,7 +334,7 @@ test("the verified commit retains every named view, then rebuilds the replacemen
     board = host.querySelector("[data-board-comment]")?.getAttribute("data-board-comment");
     release(owner);
     deferredAfterRelease = deferredView.isTreeViewDeferred(owner);
-    walksDuringCommit = vi.mocked(notation.buildNotationRows).mock.calls.length - walksDuringCommit;
+    walksDuringCommit = commitWalkCalls() - walksDuringCommit;
   });
 
   await install();
@@ -356,7 +377,7 @@ test("retained notation, chart, repertoire moves and comments-off Update refuse 
     stateCallsBefore = setState.mock.calls.length;
     parseCallsBefore = mocks.parse.mock.calls.length;
     button(host.querySelector('[data-panel="notation"]')!, "e4").click();
-    button(host, "chart point").click();
+    button(host.querySelector('[data-panel="chart"]')!, "chart point").click();
     const move = [
       ...host.querySelectorAll<HTMLButtonElement>('[data-panel="repertoire"] button'),
     ].find((element) =>
@@ -364,7 +385,7 @@ test("retained notation, chart, repertoire moves and comments-off Update refuse 
     );
     if (!move) throw new Error("Missing retained repertoire move");
     move.click();
-    button(host, "Common.Update").click();
+    button(host.querySelector('[data-panel="info"]')!, "Common.Update").click();
     clicks = 4;
     stateCallsAfter = setState.mock.calls.length;
     release(owner);
