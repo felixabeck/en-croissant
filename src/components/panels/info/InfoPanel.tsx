@@ -9,6 +9,7 @@ import { use, useEffect, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { useTreeView } from "@/state/deferredTreeView";
 import { type DatabaseHandle, type FileWorkspaceHandle } from "@/bindings";
 import GameInfo from "@/components/common/GameInfo";
 import { IconAction } from "@/components/common/IconAction";
@@ -60,7 +61,7 @@ type PageTreeSnapshot = Pick<ReturnType<TreeStore["getState"]>, "root" | "header
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
-  const stats = useStore(store, getStats);
+  const stats = getStats(useTreeView(store));
   const headers = useStore(store, (s) => s.headers);
   const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
   const [currentTab] = useOwnerTab();

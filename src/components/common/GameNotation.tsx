@@ -18,6 +18,7 @@ import { memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { useTreeView } from "@/state/deferredTreeView";
 import Comment from "@/components/common/Comment";
 import IconAction from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -95,9 +96,8 @@ export function scrollNotationToOffset(
 function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React.ReactNode }) {
   const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
-  const root = useStore(store, (s) => s.root);
+  const { root, headers } = useTreeView(store);
   const currentNode = useStore(store, (s) => s.currentNode());
-  const headers = useStore(store, (s) => s.headers);
   const copyPgn = useStore(store, (s) => s.copyPgn);
   const showComments = useAtomValue(useTabAtom(showCommentsFamily));
   const showVariations = useAtomValue(useTabAtom(showVariationsFamily));

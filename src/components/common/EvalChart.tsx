@@ -6,6 +6,7 @@ import { useCallback, useContext, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { CategoricalChartFunc } from "recharts/types/chart/types";
 import { useStore } from "zustand";
+import { useTreeView } from "@/state/deferredTreeView";
 import { reportTypeAtom } from "@/state/atoms";
 import { ANNOTATION_INFO, formatNagGlyphs, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { positionFromFen } from "@/utils/chessops";
@@ -59,7 +60,7 @@ function EvalChart(props: EvalChartProps) {
   const { t } = useTranslation();
 
   const store = useContext(TreeStateContext)!;
-  const root = useStore(store, (s) => s.root);
+  const { root } = useTreeView(store);
   const position = useStore(store, (s) => s.position);
   const goToMove = useStore(store, (s) => s.goToMove);
 
@@ -115,12 +116,13 @@ function EvalChart(props: EvalChartProps) {
 
   const onChartClick = useCallback<CategoricalChartFunc>(
     (e) => {
+      if (store.getState().root !== root) return;
       const match = data.find((point) => point.name === e.activeLabel);
       if (match) {
         goToMove(match.movePath);
       }
     },
-    [data, goToMove],
+    [data, goToMove, root, store],
   );
 
   const phases = useMemo(() => {

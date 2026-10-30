@@ -112,6 +112,7 @@ function CompleteMoveCell({
 
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
+    if (store.getState().root !== root) return;
     setOpen(true);
   };
 
@@ -128,7 +129,9 @@ function CompleteMoveCell({
       annotations={annotations}
       isStart={isStart}
       isCurrentVariation={isCurrentVariation}
-      onClick={() => store.getState().goToMove(path)}
+      onClick={() => {
+        if (store.getState().root === root) store.getState().goToMove(path);
+      }}
       onContextMenu={onContextMenu}
       fullWidth={tableLayout}
       rightAccessory={rightAccessory}
@@ -149,9 +152,10 @@ function CompleteMoveCell({
         }}
       >
         {hasNumber && <span className={classes.moveNumber}>{formatMoveNumber(halfMoves)}</span>}
-        {open && move ? (
+        {open && move && store.getState().root === root ? (
           <OpenMoveMenu
             store={store}
+            root={root}
             path={path}
             move={move}
             annotations={annotations}
@@ -165,7 +169,11 @@ function CompleteMoveCell({
           moveCell
         )}
         {transpositions.length > 0 && (
-          <TranspositionAction onClick={() => store.getState().goToMove(transpositions[0])} />
+          <TranspositionAction
+            onClick={() => {
+              if (store.getState().root === root) store.getState().goToMove(transpositions[0]);
+            }}
+          />
         )}
       </Box>
       {showComments && !tableLayout && comment && <Comment comment={comment} />}
@@ -188,6 +196,7 @@ function TranspositionAction({ onClick }: { onClick: () => void }) {
 
 function OpenMoveMenu({
   store,
+  root,
   path,
   move,
   annotations,
@@ -198,6 +207,7 @@ function OpenMoveMenu({
   onClose,
 }: {
   store: NonNullable<React.ContextType<typeof TreeStateContext>>;
+  root: TreeNode;
   path: number[];
   move: string;
   annotations: Annotation[];
@@ -220,7 +230,9 @@ function OpenMoveMenu({
           annotations={annotations}
           isStart={isStart}
           isCurrentVariation={isCurrentVariation}
-          onClick={() => actions.goToMove(path)}
+          onClick={() => {
+            if (store.getState().root === root) actions.goToMove(path);
+          }}
           onContextMenu={(event) => {
             event.preventDefault();
             onClose();
@@ -234,6 +246,7 @@ function OpenMoveMenu({
           <Menu.Item
             leftSection={<Flag size="0.875rem" />}
             onClick={() => {
+              if (store.getState().root !== root) return;
               actions.setStart(path);
               onClose();
             }}
@@ -244,6 +257,7 @@ function OpenMoveMenu({
         <Menu.Item
           leftSection={<ArrowUpRight size="0.875rem" />}
           onClick={() => {
+            if (store.getState().root !== root) return;
             actions.promoteToMainline(path);
             onClose();
           }}
@@ -253,6 +267,7 @@ function OpenMoveMenu({
         <Menu.Item
           leftSection={<ArrowUpRight size="0.875rem" />}
           onClick={() => {
+            if (store.getState().root !== root) return;
             actions.promoteVariation(path);
             onClose();
           }}
@@ -262,6 +277,7 @@ function OpenMoveMenu({
         <Menu.Item
           leftSection={<Copy size="0.875rem" />}
           onClick={() => {
+            if (store.getState().root !== root) return;
             actions.copyVariationPgn(path);
             onClose();
           }}
@@ -272,6 +288,7 @@ function OpenMoveMenu({
           color="danger"
           leftSection={<Trash2 size="0.875rem" />}
           onClick={() => {
+            if (store.getState().root !== root) return;
             actions.deleteMove(path);
             onClose();
           }}

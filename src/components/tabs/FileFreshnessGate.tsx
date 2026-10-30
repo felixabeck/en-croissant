@@ -1,6 +1,8 @@
 import { Button, Group, Loader, Stack, Text } from "@mantine/core";
 import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
+import { flushSync } from "react-dom";
+import { deferTreeView, releaseTreeView } from "@/state/deferredTreeView";
 import { useStore } from "zustand";
 import { normalizeError } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -171,12 +173,23 @@ function FileBackedGate({
 
   const installDiskTree = useCallback(
     (tree: Parameters<ReturnType<typeof store.getState>["setState"]>[0], revision: string) => {
-      store.getState().setState(tree);
-      const markApplied = (globalThis as { __verifyAppRecordTreeApplied?: () => void })
-        .__verifyAppRecordTreeApplied;
-      if (typeof markApplied === "function") markApplied();
-      setReloadCount((count) => count + 1);
-      setFileFreshness(tabId, "verified", { verifiedRevision: revision });
+      deferTreeView(store);
+      try {
+        store.getState().setState(tree);
+        const hooks = globalThis as {
+          __verifyAppRecordTreeApplied?: () => void;
+          __verifyAppStallFreshnessApply?: () => void;
+        };
+        hooks.__verifyAppRecordTreeApplied?.();
+        hooks.__verifyAppStallFreshnessApply?.();
+        flushSync(() => {
+          setReloadCount((count) => count + 1);
+          setFileFreshness(tabId, "verified", { verifiedRevision: revision });
+        });
+      } finally {
+        // Notify only after the freshness commit, with the replacement view released.
+        releaseTreeView(store);
+      }
     },
     [store, tabId],
   );

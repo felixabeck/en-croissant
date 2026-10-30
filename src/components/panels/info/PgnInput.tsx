@@ -16,6 +16,7 @@ import { useAtom } from "jotai";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { useTreeView } from "@/state/deferredTreeView";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
 import { closingTabsAtom, pgnOptionsFamily, tabsAtom } from "@/state/atoms";
@@ -33,8 +34,7 @@ function PgnInput() {
   const tabId = useOwnerTabId();
   const { workspace, getTab } = useTabActions();
   const mounted = useRef(false);
-  const root = useStore(store, (s) => s.root);
-  const headers = useStore(store, (s) => s.headers);
+  const { root, headers } = useTreeView(store);
   const setState = useStore(store, (s) => s.setState);
   const [options, setOptions] = useAtom(useTabAtom(pgnOptionsFamily));
   const { t } = useTranslation();
@@ -63,7 +63,9 @@ function PgnInput() {
     [root, headers, options],
   );
 
-  const [tmp, setTmp] = useState(pgn);
+  const [editor, setEditor] = useState({ text: pgn, root });
+  const tmp = editor.text;
+  const setTmp = (text: string) => setEditor({ text, root });
 
   useEffect(() => {
     mounted.current = true;
@@ -74,7 +76,7 @@ function PgnInput() {
 
   useEffect(() => {
     setTmp(pgn);
-  }, [pgn]);
+  }, [pgn, root]);
 
   const controls = (
     <>
@@ -111,6 +113,7 @@ function PgnInput() {
   );
 
   async function updatePgn() {
+    if (root !== store.getState().root || editor.root !== store.getState().root) return;
     const owner = getTab(tabId);
     if (!owner || getCachedTreeStore(tabId) !== store || workspace.get(closingTabsAtom).has(tabId))
       return;

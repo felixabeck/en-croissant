@@ -24,6 +24,7 @@ import { defaultTree } from "@/utils/treeReducer";
 import { getTabTreeKey, saveToFile, serializeStoreTree } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import FileFreshnessGate from "./FileFreshnessGate";
+import * as deferredView from "@/state/deferredTreeView";
 import TreeRecoveryGate from "./TreeRecoveryGate";
 
 const mocks = vi.hoisted(() => ({
@@ -331,6 +332,26 @@ afterEach(async () => {
   removeFileFreshness(sharedTabId);
   vi.restoreAllMocks();
 });
+
+test.each(["unchanged", "conflict", "unavailable"] as const)(
+  "%s reconciliation neither parses nor defers a replacement",
+  async (outcome) => {
+    const defer = vi.spyOn(deferredView, "deferTreeView");
+    await setup({
+      dirty: outcome === "conflict",
+      readResult: () =>
+        stampedGame(
+          outcome === "unchanged" ? originalStamp : changedStamp,
+          '[Event "Changed"]\n\n1. d4 *',
+          outcome !== "unavailable",
+        ),
+    });
+    expect(getFileFreshness(tabId).state).toBe(outcome === "unchanged" ? "verified" : outcome);
+    expect(mocks.parsePGN).not.toHaveBeenCalled();
+    expect(defer).not.toHaveBeenCalled();
+    expect(deferredView.isTreeViewDeferred(treeStore)).toBe(false);
+  },
+);
 
 test("unverified files withhold the board until an equal stamp verifies", async () => {
   const read = deferred<ReturnType<typeof stampedGame>>();

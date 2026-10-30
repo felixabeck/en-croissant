@@ -20,6 +20,7 @@ import { useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { useTreeView } from "@/state/deferredTreeView";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, referenceDbAtom } from "@/state/atoms";
@@ -55,11 +56,16 @@ function RepertoireInfo() {
   const commonErrorRef = useRef(t("Common.Error"));
   commonErrorRef.current = t("Common.Error");
   const store = useContext(TreeStateContext)!;
-  const root = useStore(store, (s) => s.root);
-  const headers = useStore(store, (s) => s.headers);
+  const view = useTreeView(store);
+  const { root, headers } = view;
   const position = useStore(store, (s) => s.position);
   const currentNode = useStore(store, (s) => s.currentNode());
-  const goToMove = useStore(store, (s) => s.goToMove);
+  const goToMove = useCallback(
+    (path: number[]) => {
+      if (store.getState().root === root) store.getState().goToMove(path);
+    },
+    [store, root],
+  );
   const makeMove = useStore(store, (s) => s.makeMove);
   const makeMoves = useStore(store, (s) => s.makeMoves);
   const setStart = useStore(store, (s) => s.setStart);
@@ -90,7 +96,7 @@ function RepertoireInfo() {
 
   const orientation = useMemo(() => headers.orientation || "white", [headers.orientation]);
 
-  const stats = useStore(store, getStats);
+  const stats = getStats(view);
 
   const [dbMovesMap, setDbMovesMap] = useState<
     Map<
@@ -334,13 +340,14 @@ function RepertoireInfo() {
 
   const handleMoveClick = useCallback(
     (move: PositionMove) => {
+      if (store.getState().root !== root) return;
       if (move.inRepertoire && move.path.length > 0) {
         goToMove(move.path);
       } else {
         makeMove({ payload: move.san });
       }
     },
-    [goToMove, makeMove],
+    [goToMove, makeMove, store, root],
   );
 
   const nextGap = useMemo(
