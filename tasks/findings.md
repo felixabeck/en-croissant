@@ -19321,7 +19321,7 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 
 ### Ordinary native verification never enters the first practice move after Start Practice
 
-* **ID:** f-20261030-03 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261030-03 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** tooling
 * **Where:** scripts/verify-app.mjs3806-3813 waits for Make your move after its Start Practice pointer action. The failure is rethrown at3920. Production start handling is in src/components/panels/practice/PracticePanel.tsx.
@@ -19339,6 +19339,15 @@ Canonical root control gate-native-start-root-control.22sUW5 and complete pre-re
 
 This header remains open only for the upcoming R7 substantive source closure. Final publication gates, exact-SHA hosted confirmation and reviewed installation are separate pending release obligations. Separate f-20261030-04 records the normal Train-pane clipping observation, not a completed product layout fix. No shared root with rejected f-20261011-05, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Current repair code and detection share xAI family, original feature and root use OpenAI.
 <!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"c764021d77f0420ad8fe7f3dc584006d8fa195416bb3d7ccb9106883d28c58fe","input_sha256":"cf030febf292f0b02d729044c7d5809c41c19124a4a90ea7201525443bd28e6c","kind":"mutation-receipt","operation":"e76d295cf056e862c03d940da400a22e64410e1fcb2f6ac56202197260b42409","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-03"],"target":"f-20261030-03","v":1} -->
+
+R7 explicitly CLOSED the native first-move targeting correction. Correctness confidence92, root-cause and tests traced the actual clipped-button miss to the former raw-center acquisition, confirmed reuse of reachableStableCoordinates removes that mechanism, and checked the real source-only reverse1/restored0 native evidence. All seven selected Grok read-only reports completed canonically, passed profile LEAF commands7 and returned APPROVED. Source remains verifier2a46dd44 in bba858ac, with original predicate, physical click, disabled handling,600000ms bounds and every assertion retained. Complete pre-review and1302 related tests passed0 before the repair commit.
+
+R7 adopted0 new Fix issues. DR19 is Skip for indentation-only style noise. DR20 is Skip because the existing helper's fail-closed transport behavior is not a breach of its DOM-readiness bound, with no observed transient failure at this target warranting a new retry policy. DR21 is Skip for speculative permanent geometry instrumentation, while existing target and first-move diagnostics remain. All17 prior unique lens Fix issues stay CLOSED. The raw reports and full root arbitration are retained under /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/code-r7-leaves and r7-arbitration.json, and will be included in the durable handoff before release.
+
+The actual initial800×647 practice geometry comes from the direct diagnostic. GO9's inherited resize/restore occurs later, after practice and before citation checks, and is not the source of that initial geometry. Root authored the operative record prose as Codex/OpenAI, while imported Grok reports remain xAI text. R7 detection and verifier repair share xAI family in separate sessions. Plan authorship and arbitration share root context. No whole-range family separation, provider quota or Codex writer rollover is claimed.
+
+This closes the reviewed and natively proven source obligation. Final UI proof acceptance, clean Rust/frontend publication gates, fresh preflight, exact-SHA hosted confirmation and reviewed installation remain release obligations. Broad f-20261011-03 and f-20261022-05 remain open. Separate product-layout observation f-20261030-04 remains open for its own build.
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"958f8aa00da6e83070882d4792335bdc7676f9f5fc72de047713868107c3581a","header_sha256":"a62dc34cc47118d9fe10fbfc2b2a0c0fa4701842b59c30c498415c6317eb9193","header_status":"handled","input_sha256":"862ce39598c26e932034b545b88b31c6f434fee8d430cbae4a3ed419046517ec","kind":"mutation-receipt","operation":"f99869123766fcfa7a03fd4d6bc44b5832784164e0e67993fd3b0bc1e7a1d123","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-03"],"target":"f-20261030-03","v":1} -->
 
 ---
 
