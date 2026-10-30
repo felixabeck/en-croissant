@@ -402,7 +402,7 @@ pub struct TempGame {
 }
 
 impl TempGame {
-    pub fn insert_to_db(&self, db: &mut SqliteConnection) -> Result<(), diesel::result::Error> {
+    pub fn insert_to_db(&self, db: &mut SqliteConnection) -> Result<i32, diesel::result::Error> {
         let pawn_home = get_pawn_home(self.position.board());
 
         let white_id = if let Some(name) = &self.white_name {
@@ -455,8 +455,7 @@ impl TempGame {
             pawn_home: pawn_home as i32,
         };
 
-        create_game(db, new_game)?;
-        Ok(())
+        Ok(create_game(db, new_game)?.id)
     }
 }
 
@@ -786,6 +785,8 @@ fn grant_pgn_file(
 mod acquisition_cancellation_tests;
 #[cfg(test)]
 mod conversion_cancellation_tests;
+#[cfg(test)]
+mod insert_db_game_tests;
 
 #[cfg(test)]
 static CONVERSION_BEFORE_REVISION: crate::infra::test_hooks::KeyedTestHooks<String> =
@@ -4032,6 +4033,87 @@ fn delete_db_game_transaction(db: &mut SqliteConnection, game_id: i32) -> Result
 
 #[tauri::command]
 #[specta::specta]
+pub async fn insert_db_game(
+    file: DatabaseHandle,
+    pgn: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<i32, Error> {
+    let operation = state.operations.accept("insert_db_game")?;
+    let cancellation = operation.token();
+    let authority = state.pgn_path_authority.clone();
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    crate::infra::operations::run_native_operation(operation, "insert_db_game", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                insert_db_game_blocking(&authority, &repository, &search_cache, file, pgn, token)
+            })
+            .await
+    })
+    .await
+}
+
+fn insert_db_game_blocking(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    pgn: String,
+    cancellation: &CancellationToken,
+) -> Result<i32, Error> {
+    insert_db_game_from_reader(
+        authority,
+        repository,
+        search_cache,
+        file,
+        pgn.as_bytes(),
+        cancellation,
+    )
+}
+
+fn parse_first_db_game(
+    input: impl std::io::Read,
+    cancellation: &CancellationToken,
+) -> Result<TempGame, Error> {
+    let mut importer = Importer::new(None);
+    BufferedReader::new(CancellableRead::new(input, cancellation))
+        .read_game(&mut importer)
+        .map_err(|error| map_read_error(error, cancellation))?
+        .flatten()
+        .ok_or(Error::NoMovesFound)
+}
+
+fn insert_db_game_from_reader(
+    authority: &crate::infra::path_authority::SharedPathAuthority,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    input: impl std::io::Read,
+    cancellation: &CancellationToken,
+) -> Result<i32, Error> {
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let game = parse_first_db_game(input, cancellation)?;
+    if iter_mainline_move_bytes(&game.moves).next().is_none() {
+        return Err(Error::NoMovesFound);
+    }
+    let mut inserted_id = None;
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        |db| {
+            inserted_id = Some(game.insert_to_db(db)?);
+            update_database_counts(db)
+        },
+    )?;
+    inserted_id.ok_or_else(|| Error::InvalidInput("Insert returned no game ID".into()))
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn write_db_game(
     file: DatabaseHandle,
     game_id: i32,
@@ -4074,12 +4156,7 @@ fn write_db_game_blocking(
     database_command_checkpoint("write_db_game", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    let mut importer = Importer::new(None);
-    let temp_game = BufferedReader::new(CancellableRead::new(pgn.as_bytes(), cancellation))
-        .read_game(&mut importer)
-        .map_err(|error| map_read_error(error, cancellation))?
-        .flatten()
-        .ok_or(Error::NoMovesFound)?;
+    let temp_game = parse_first_db_game(pgn.as_bytes(), cancellation)?;
     with_validated_mutation(
         repository,
         search_cache,

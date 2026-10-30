@@ -33,6 +33,8 @@ import { defaultPGN, getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
+import type { DatabaseHandle } from "@/bindings";
+import { databaseHandleKey } from "./db";
 import { getFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import type { Workspace } from "@/state/workspace";
 export { getTabTreeKey, tabSchema, type GameOrigin, type Tab };
@@ -653,7 +655,17 @@ function sameOrigin(left: GameOrigin, right: GameOrigin): boolean {
         return sameFileGameOrigin(left, right);
     }
     if (left.kind === "database") {
-        return right.kind === "database" && left.gameId === right.gameId;
+        return (
+            right.kind === "database" &&
+            left.gameId === right.gameId &&
+            databaseHandleKey(left.database) === databaseHandleKey(right.database)
+        );
+    }
+    if (left.kind === "databaseDraft") {
+        return (
+            right.kind === "databaseDraft" &&
+            databaseHandleKey(left.database) === databaseHandleKey(right.database)
+        );
     }
     return true;
 }
@@ -665,6 +677,252 @@ function sourceChanged(tabId: string): SaveResult {
 
 function failed(error: unknown): Extract<SaveResult, { status: "failed" }> {
     return { status: "failed", error: normalizeError(error) };
+}
+
+type SaveFlight = {
+    saves: Set<Promise<SaveResult>>;
+    storing?: Promise<SaveResult>;
+    storeTarget?: string;
+};
+// A live tab has one cached tree. Weak ownership lets a retired generation settle independently.
+const saveFlights = new WeakMap<StoreApi<TreeStoreState>, SaveFlight>();
+function saveFlight(store: StoreApi<TreeStoreState>): SaveFlight {
+    let flight = saveFlights.get(store);
+    if (!flight) {
+        flight = { saves: new Set() };
+        saveFlights.set(store, flight);
+    }
+    return flight;
+}
+function settleSave(store: StoreApi<TreeStoreState>, flight: SaveFlight) {
+    if (!flight.saves.size && !flight.storing) saveFlights.delete(store);
+}
+
+function withStoreFlight(
+    args: SaveArguments & { database: DatabaseHandle },
+    action: (tab: Tab) => Promise<SaveResult>,
+): Promise<SaveResult> {
+    const owner = args.tab;
+    if (!owner) return Promise.resolve(failed(new Error("There is no active tab to save.")));
+    const flight = saveFlight(args.store);
+    // A repeated submission belongs to the same pending attempt, never another native store.
+    const target = databaseHandleKey(args.database);
+    if (flight.storing && flight.storeTarget === target) return flight.storing;
+    const pending = [...flight.saves, ...(flight.storing ? [flight.storing] : [])];
+    const start = () => {
+        const current = args.getTab(owner.value);
+        if (
+            !sameTabOwner(current, owner) ||
+            (!pending.length && !sameOrigin(current.gameOrigin, owner.gameOrigin))
+        )
+            return Promise.resolve<SaveResult>("superseded");
+        return action(current);
+    };
+    const result = pending.length ? Promise.allSettled(pending).then(start) : start();
+    flight.storing = result;
+    flight.storeTarget = target;
+    const cleanup = () => {
+        if (flight.storing === result) {
+            flight.storing = undefined;
+            flight.storeTarget = undefined;
+        }
+        settleSave(args.store, flight);
+    };
+    void result.then(cleanup, cleanup);
+    return result;
+}
+
+function uncertainStore(): SaveResult {
+    return failed({
+        category: "applied-despite-error",
+        message: i18n.t("Board.Database.MayHaveBeenAdded"),
+    });
+}
+
+type SaveArguments = {
+    tab: Tab | undefined;
+    updateTab: UpdateTab;
+    getTab: (tabId: string) => Tab | undefined;
+    store: StoreApi<TreeStoreState>;
+    isUserSave?: boolean;
+};
+
+export function saveToDatabase(
+    args: SaveArguments & { database: DatabaseHandle },
+): Promise<SaveResult> {
+    return withStoreFlight(args, (tab) => storeToDatabase({ ...args, tab }));
+}
+
+async function storeToDatabase({
+    tab,
+    store,
+    database,
+    getTab,
+    updateTab,
+}: SaveArguments & {
+    tab: Tab;
+    database: DatabaseHandle;
+}): Promise<SaveResult> {
+    let completionOwner = tab;
+    const owns = () => {
+        const current = getTab(tab.value);
+        return (
+            sameTabOwner(current, completionOwner) &&
+            sameOrigin(current.gameOrigin, completionOwner.gameOrigin) &&
+            (!getCachedTreeStore(tab.value) || getCachedTreeStore(tab.value) === store)
+        );
+    };
+    let destination: string | undefined;
+    let attempted = false;
+    let inserting = false;
+    const clearAttempt = () => {
+        store
+            .getState()
+            .setStoreAttempts(
+                (store.getState().storeAttempts ?? []).filter((key) => key !== destination),
+            );
+        tabStorage.flush();
+    };
+    try {
+        if (!owns()) return "superseded";
+        const collection = await tauri.collectionForDatabase(database);
+        if (!owns()) return "superseded";
+        if (store.getState().root.children.length === 0)
+            return failed({ category: "validation", message: i18n.t("Board.Database.NoMoves") });
+        if (collection && collection.status !== "ready")
+            return failed({ category: "validation", message: i18n.t("Collections.Unavailable") });
+        destination = collection
+            ? `file:${fileWorkspaceKey(collection.file)}`
+            : `database:${databaseHandleKey(database)}`;
+        const attempts = store.getState().storeAttempts ?? [];
+        if (attempts.includes(destination) || attempts.length >= 100) return uncertainStore();
+        const pgn = serializeStoreTree(store);
+        store.getState().setStoreAttempts([...attempts, destination]);
+        const key = getTabTreeKey(tab);
+        const failedTabs = tabStorage.flush();
+        if (
+            failedTabs.includes(key) ||
+            !tabStorage.read<TreeState>(key)?.state.storeAttempts?.includes(destination)
+        ) {
+            clearAttempt();
+            return failed({
+                category: "unexpected",
+                message: i18n.t("FileFreshness.CouldNotPrepareAppend"),
+            });
+        }
+        if (!owns()) return "superseded";
+        if (collection) {
+            const numGames = await tauri.countPgnGames(collection.file);
+            if (!owns()) return "superseded";
+            attempted = true;
+            const result = await appendStoreGame({
+                tab,
+                store,
+                pgn,
+                getTab,
+                updateTab,
+                isCurrent: owns,
+                selected: {
+                    type: "file",
+                    handle: collection.file,
+                    name: collection.name,
+                    numGames,
+                    metadata: { type: "game", tags: [] },
+                    lastModified: Date.now(),
+                },
+                prepareMessage: i18n.t("FileFreshness.CouldNotPrepareAppend"),
+                storeAttempt: { clear: clearAttempt },
+                onAdmitted: (successor) => {
+                    completionOwner = successor;
+                },
+            });
+            if (result === "uncertain" || result === "refused") return uncertainStore();
+            return result === "edited" ? "superseded" : result;
+        }
+        attempted = true;
+        inserting = true;
+        const gameId = await tauri.insertDbGame(database, pgn);
+        if (!owns()) return "superseded";
+        const admitted = admitStoredGame({
+            tab,
+            getTab,
+            updateTab,
+            origin: { kind: "database", database, gameId },
+            onAdmitted: (successor) => {
+                completionOwner = successor;
+            },
+            finish: (ownsSuccessor) => {
+                store.getState().setLinkedSource(null);
+                if (!ownsSuccessor()) return;
+                store.getState().setSourceStamp(null);
+                if (!ownsSuccessor()) return;
+                clearAttempt();
+                if (!ownsSuccessor()) return;
+                if (serializeStoreTree(store) === pgn) store.getState().save();
+            },
+        });
+        if (admitted !== "admitted") return admitted === "refused" ? uncertainStore() : admitted;
+        return !store.getState().dirty && serializeStoreTree(store) === pgn
+            ? "saved"
+            : "superseded";
+    } catch (error) {
+        const failure = failed(error);
+        // These typed rejections precede a write or roll the transaction back. A transport or
+        // durability failure provides no such evidence and must retain its destination marker.
+        const noWrite =
+            ["chess-data", "parsing", "invalid-input", "permission", "stale-game"].includes(
+                failure.error.backendCategory ?? "",
+            ) ||
+            (inserting && failure.error.backendCategory === "conflict");
+        if (destination && (!attempted || noWrite)) clearAttempt();
+        if (!owns()) return "superseded";
+        if (destination && store.getState().storeAttempts?.includes(destination))
+            failure.error.message = `${i18n.t("Board.Database.MayHaveBeenAdded")} ${failure.error.message}`;
+        return failure;
+    }
+}
+
+/** Only the canonical acknowledgement can finalize a write, even when observers throw. */
+function admitStoredGame({
+    tab,
+    getTab,
+    updateTab,
+    origin,
+    onAdmitted,
+    finish,
+}: {
+    tab: Tab;
+    getTab: (id: string) => Tab | undefined;
+    updateTab: UpdateTab;
+    origin: GameOrigin;
+    onAdmitted?: (successor: Tab) => void;
+    finish: (ownsSuccessor: () => boolean) => void;
+}): "admitted" | "refused" | "superseded" {
+    let successor: Tab | undefined;
+    const ownsSuccessor = () => {
+        const current = getTab(tab.value);
+        return (
+            !!successor &&
+            sameTabOwner(current, successor) &&
+            sameOrigin(current.gameOrigin, successor.gameOrigin)
+        );
+    };
+    try {
+        const admitted = updateTab(
+            tab.value,
+            (previous) => ({ ...previous, gameOrigin: origin }),
+            (saved) => {
+                successor = saved;
+                onAdmitted?.(saved);
+                if (ownsSuccessor()) finish(ownsSuccessor);
+            },
+        );
+        if (!admitted) return "refused";
+    } catch (error) {
+        if (successor && !ownsSuccessor()) return "superseded";
+        throw error;
+    }
+    return ownsSuccessor() ? "admitted" : "superseded";
 }
 
 /** The durable marker is also the synchronous admission guard for concurrent submissions.
@@ -680,6 +938,7 @@ export async function appendStoreGame({
     getTab,
     prepareMessage,
     onAdmitted,
+    storeAttempt,
 }: {
     tab: Tab;
     store: StoreApi<TreeStoreState>;
@@ -690,26 +949,29 @@ export async function appendStoreGame({
     getTab: (tabId: string) => Tab | undefined;
     prepareMessage: string;
     onAdmitted?: (successor: Tab) => void;
+    storeAttempt?: { clear: () => void };
 }): Promise<"saved" | "edited" | "superseded" | "uncertain" | "refused"> {
     if (!isCurrent()) return "superseded";
-    if (store.getState().appendAttempted) return "uncertain";
-    store.getState().setAppendAttempted(true);
-    const treeKey = getTabTreeKey(tab);
-    const failedTabs = tabStorage.flush();
-    if (
-        failedTabs.includes(treeKey) ||
-        !tabStorage.read<TreeState>(treeKey)?.state.appendAttempted
-    ) {
-        store.getState().setAppendAttempted(false);
-        tabStorage.flush({ notify: true });
-        throw { category: "unexpected", message: prepareMessage };
+    if (!storeAttempt) {
+        if (store.getState().appendAttempted) return "uncertain";
+        store.getState().setAppendAttempted(true);
+        const treeKey = getTabTreeKey(tab);
+        const failedTabs = tabStorage.flush();
+        if (
+            failedTabs.includes(treeKey) ||
+            !tabStorage.read<TreeState>(treeKey)?.state.appendAttempted
+        ) {
+            store.getState().setAppendAttempted(false);
+            tabStorage.flush({ notify: true });
+            throw { category: "unexpected", message: prepareMessage };
+        }
     }
     let written;
     try {
         written = await writeFileGame(selected.handle, selected.numGames, pgn, { kind: "append" });
     } catch (error) {
         if (!isCurrent()) return "superseded";
-        if (normalizeError(error).backendCategory === "stale-game") {
+        if (!storeAttempt && normalizeError(error).backendCategory === "stale-game") {
             store.getState().setAppendAttempted(false);
             tabStorage.flush();
         }
@@ -723,52 +985,67 @@ export async function appendStoreGame({
         gameNumber: selected.numGames,
         file: { ...selected, numGames: selected.numGames + 1 },
     };
-    let successor: Tab | undefined;
-    const ownsSuccessor = () => {
-        const current = getTab(tab.value);
-        return (
-            !!successor &&
-            sameTabOwner(current, successor) &&
-            sameOrigin(current.gameOrigin, successor.gameOrigin)
-        );
-    };
-    try {
-        const admitted = updateTab(
-            tab.value,
-            (previous) => ({
-                ...previous,
-                gameOrigin: successorOrigin,
-            }),
-            (saved) => {
-                // The canonical workspace acknowledges admission before observers can throw.
-                // Reconcile only that acknowledged owner, never an inferred current tab.
-                successor = saved;
-                onAdmitted?.(saved);
+    const admitted = admitStoredGame({
+        tab,
+        getTab,
+        updateTab,
+        origin: successorOrigin,
+        onAdmitted,
+        finish: (ownsSuccessor) => {
+            const unchanged = serializeStoreTree(store) === pgn;
+            store.getState().setLinkedSource(written.linked ?? null);
+            if (!ownsSuccessor()) return;
+            storeAttempt?.clear();
+            if (!ownsSuccessor()) return;
+            if (unchanged) store.getState().save(stamp);
+            else {
+                store.getState().setSourceStamp(stamp);
                 if (!ownsSuccessor()) return;
-                const unchanged = serializeStoreTree(store) === pgn;
-                store.getState().setLinkedSource(written.linked ?? null);
-                if (!ownsSuccessor()) return;
-                if (unchanged) store.getState().save(stamp);
-                else {
-                    store.getState().setSourceStamp(stamp);
-                    if (!ownsSuccessor()) return;
-                    store.getState().setAppendAttempted(false);
-                }
-                if (ownsSuccessor())
-                    setFileFreshness(tab.value, "verified", { verifiedRevision: revision });
-            },
-        );
-        if (!admitted) return "refused";
-    } catch (error) {
-        if (successor && !ownsSuccessor()) return "superseded";
-        throw error;
-    }
-    if (!ownsSuccessor()) return "superseded";
+                store.getState().setAppendAttempted(false);
+            }
+            if (ownsSuccessor())
+                setFileFreshness(tab.value, "verified", { verifiedRevision: revision });
+        },
+    });
+    if (admitted !== "admitted") return admitted;
     // Workspace observers can edit after acknowledgement finalized the written snapshot.
     return !store.getState().dirty && serializeStoreTree(store) === pgn ? "saved" : "edited";
 }
 
-export async function saveToFile({
+export function saveToFile(args: SaveArguments): Promise<SaveResult> {
+    const owner = args.tab;
+    if (!owner) return Promise.resolve(failed(new Error("There is no active tab to save.")));
+    if (owner.gameOrigin.kind === "databaseDraft") {
+        if (args.isUserSave) {
+            const database = owner.gameOrigin.database;
+            return withStoreFlight({ ...args, database }, (tab) =>
+                storeToDatabase({ ...args, tab, database }),
+            );
+        }
+        if (!saveFlights.get(args.store)?.storing) return Promise.resolve("cancelled");
+    }
+    const flight = saveFlight(args.store);
+    const pendingStore = flight.storing;
+    const start = () => {
+        const current = args.getTab(owner.value);
+        if (
+            !sameTabOwner(current, owner) ||
+            (!pendingStore && !sameOrigin(current.gameOrigin, owner.gameOrigin))
+        )
+            return Promise.resolve<SaveResult>("superseded");
+        return saveToFileNow({ ...args, tab: pendingStore ? current : owner });
+    };
+    const result = pendingStore ? pendingStore.then(start, start) : start();
+    flight.saves.add(result);
+    const cleanup = () => {
+        flight.saves.delete(result);
+        settleSave(args.store, flight);
+    };
+    void result.then(cleanup, cleanup);
+    return result;
+}
+
+async function saveToFileNow({
     tab,
     updateTab,
     getTab,
@@ -797,6 +1074,16 @@ export async function saveToFile({
     let writingSaveAsDestination = false;
     try {
         if (!owns()) return "superseded";
+        if (currentOrigin.kind === "databaseDraft") {
+            if (!isUserSave) return "cancelled";
+            return storeToDatabase({
+                tab,
+                store,
+                getTab,
+                updateTab,
+                database: currentOrigin.database,
+            });
+        }
         const fileOrigin = isFileBackedTab(tab) ? tab.gameOrigin : undefined;
         const databaseOrigin = currentOrigin?.kind === "database" ? currentOrigin : undefined;
         const isTempFile = currentOrigin?.kind === "temp_file";

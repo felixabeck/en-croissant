@@ -4,6 +4,7 @@ import {
   Undo2,
   Camera,
   Save,
+  Database,
   Pencil,
   PencilOff,
   Eraser,
@@ -28,6 +29,7 @@ interface BoardControlsProps {
   toggleEditingMode: () => void;
   dirty: boolean;
   saveFile?: () => void;
+  saveDatabase?: () => void;
   canTakeBack?: boolean;
   onTakeBack?: () => void;
   takeBackPending?: boolean;
@@ -40,6 +42,7 @@ function BoardControls({
   toggleEditingMode,
   dirty,
   saveFile,
+  saveDatabase,
   canTakeBack,
   onTakeBack,
   takeBackPending,
@@ -139,6 +142,11 @@ function BoardControls({
           variant={dirty && !autoSave ? "default" : "transparent"}
         >
           <Save size="1.2rem" />
+        </IconAction>
+      )}
+      {saveDatabase && (
+        <IconAction label={t("Board.Database.Save")} onClick={saveDatabase}>
+          <Database size="1.2rem" />
         </IconAction>
       )}
       <IconAction

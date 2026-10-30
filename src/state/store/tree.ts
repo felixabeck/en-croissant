@@ -122,6 +122,7 @@ export interface TreeStoreState extends TreeState {
     save: (stamp?: string, revision?: string) => void;
     setSourceStamp: (stamp: string | null, revision?: string) => void;
     setAppendAttempted: (value: boolean) => void;
+    setStoreAttempts: (destinations: string[]) => void;
 }
 
 export type PuzzleSessionTransitionResult =
@@ -370,6 +371,7 @@ export const createTreeStore = (id?: string, initTree?: CompleteTreeState, treeK
         },
 
         setAppendAttempted: (value) => set({ appendAttempted: value }),
+        setStoreAttempts: (destinations) => set({ storeAttempts: destinations }),
         setSourceStamp: (stamp, revision) =>
             set((state) => ({
                 sourceStamp: stamp,

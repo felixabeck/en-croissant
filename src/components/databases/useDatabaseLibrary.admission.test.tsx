@@ -1,6 +1,7 @@
 import { act, useState, type ElementType, type MouseEvent, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Provider as JotaiProvider } from "jotai";
+import { Provider as JotaiProvider, createStore } from "jotai";
+import { tabsAtom } from "@/state/atoms";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import { deserializeStorageValue } from "@/state/store/debouncedStorage";
@@ -125,6 +126,33 @@ function Harness() {
 
 let host: HTMLDivElement;
 let root: Root;
+
+test("New game in database detail creates an analysis draft for the selected database", async () => {
+  const workspace = createStore();
+  await act(async () =>
+    root.render(
+      <JotaiProvider store={workspace}>
+        <Harness />
+      </JotaiProvider>,
+    ),
+  );
+  const button = [...host.querySelectorAll("button")].find(
+    (item) => item.textContent === "Databases.NewGame",
+  );
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+  expect(
+    workspace
+      .get(tabsAtom)
+      .some(
+        (tab) =>
+          tab.type === "analysis" &&
+          tab.gameOrigin.kind === "databaseDraft" &&
+          tab.gameOrigin.database.id.id === database.file.id.id,
+      ),
+  ).toBe(true);
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
+});
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();

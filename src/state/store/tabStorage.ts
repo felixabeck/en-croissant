@@ -189,6 +189,7 @@ function createPersistedTreeSchema() {
         sourceStamp: z.string().regex(STAMP_PATTERN).nullable(),
         linkedSource: linkedGameLocatorSchema.nullable().optional(),
         appendAttempted: z.boolean(),
+        storeAttempts: z.array(z.string().min(1).max(256)).max(100).optional(),
         report: z.object({
             inProgress: z.boolean(),
             operationId: z.string().nullable().optional(),

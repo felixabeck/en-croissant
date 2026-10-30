@@ -109,7 +109,7 @@ use crate::{
     chess::get_best_moves,
     db::{
         delete_duplicated_games, edit_db_info, get_db_info, get_games, get_latest_game_timestamp,
-        get_players, merge_players, write_db_game,
+        get_players, insert_db_game, merge_players, write_db_game,
     },
     fs::{
         cancel_download, cancel_download_for_progress, download_file, download_lichess_games,
@@ -2186,6 +2186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             edit_db_info,
             delete_db_game,
             write_db_game,
+            insert_db_game,
             delete_database,
             export_to_pgn,
             authenticate,

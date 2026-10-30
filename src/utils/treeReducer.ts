@@ -12,6 +12,7 @@ export interface TreeState {
     dirty: boolean;
     sourceStamp: string | null;
     appendAttempted: boolean;
+    storeAttempts?: string[];
     report: ReportState;
     puzzleSession?: PuzzleSession;
 }

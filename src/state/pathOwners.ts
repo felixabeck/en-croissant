@@ -151,7 +151,10 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
         for (const tab of tabs) {
             if (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file") {
                 ids.add(pathRefKey(tab.gameOrigin.file.handle.id));
-            } else if (tab.gameOrigin.kind === "database") {
+            } else if (
+                tab.gameOrigin.kind === "database" ||
+                tab.gameOrigin.kind === "databaseDraft"
+            ) {
                 ids.add(pathRefKey(tab.gameOrigin.database.id));
             }
         }

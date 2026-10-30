@@ -1,4 +1,5 @@
 import { LibraryTypeBadge, libraryButtonProps } from "@/components/library/presentation";
+import NewDatabaseGameButton from "@/components/boards/NewDatabaseGameButton";
 import { tauri } from "@/platform/tauri";
 import { listingFailure } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
@@ -479,6 +480,7 @@ export function useDatabaseLibrary(
         <Group justify="space-between">
           {selectedDatabase.type === "success" && (
             <Group>
+              <NewDatabaseGameButton database={selectedDatabase.file} />
               <Button
                 {...libraryButtonProps}
                 variant="default"

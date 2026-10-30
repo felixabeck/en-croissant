@@ -1,6 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
-import { referenceDbAtom } from "@/state/atoms";
+import { referenceDbAtom, tabsAtom } from "@/state/atoms";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SWRConfig } from "swr";
@@ -184,6 +184,39 @@ test("linked controls dispatch file-domain append, lossless export, bulk edits, 
     kind: "database",
   });
 });
+
+test("New game in ready linked detail creates the same database draft and does not append", async () => {
+  await render(<LinkedCollection collection={collection} workspace={workspace} files={[source]} />);
+  expect(button("Databases.NewGame").disabled).toBe(false);
+  await act(async () => button("Databases.NewGame").click());
+  expect(
+    jotai
+      .get(tabsAtom)
+      .some(
+        (tab) =>
+          tab.type === "analysis" &&
+          tab.gameOrigin.kind === "databaseDraft" &&
+          tab.gameOrigin.database.id.id === collection.database!.id.id,
+      ),
+  ).toBe(true);
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
+  expect(mocks.appendCollectionGames).not.toHaveBeenCalled();
+});
+
+test.each(["unavailable", "retired"] as const)(
+  "New game refuses a %s linked collection",
+  async (status) => {
+    mocks.collectionForDatabase.mockResolvedValue({ ...collection, status });
+    await render(
+      <LinkedCollection
+        collection={{ ...collection, status }}
+        workspace={workspace}
+        files={[source]}
+      />,
+    );
+    expect(button("Databases.NewGame").disabled).toBe(true);
+  },
+);
 
 test("Library recovery resumes the preserved native batch without selecting or substituting another input", async () => {
   const owned = { id: { id: "owned-pending-input" }, kind: "fileWorkspace" as const };

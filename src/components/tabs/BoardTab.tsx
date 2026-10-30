@@ -45,7 +45,7 @@ function TabIcon({ tab, tabType }: { tab: Tab; tabType: string }) {
   if (tabType === "play") {
     return <ChessKnight size="0.875rem" />;
   }
-  if (tab.gameOrigin.kind === "database") {
+  if (tab.gameOrigin.kind === "database" || tab.gameOrigin.kind === "databaseDraft") {
     return <Database size="0.875rem" />;
   }
   if (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file") {

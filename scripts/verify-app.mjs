@@ -2330,6 +2330,137 @@ async function verifyLinkedCollections(session, filesWorkspace, profileDirectory
   await showLibraryOverview(session);
 }
 
+async function verifyNewGameToDatabase(session) {
+  const invoke = async (command, args) => {
+    const result = await invokeJsonAndWait(
+      session,
+      command,
+      "__verifyNewGameIPC",
+      `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`,
+    );
+    if (result.value === undefined)
+      throw new Error(
+        result.result.rejected ??
+          result.result.error ??
+          result.error ??
+          `${command} returned no value`,
+      );
+    return result.value;
+  };
+  const wait = (label, probe) => waitFor(label, probe, { timeoutMs: FILES_PROBE_TIMEOUT_MS });
+  const pointer = (label, script, args = []) =>
+    reachableStableCoordinates(session, label, script, args);
+  const clickButton = async (name, icon = false) => {
+    const point = await pointer(
+      name,
+      `[...document.querySelectorAll('button')].find(node => !node.disabled && (arguments[1] ? (node.getAttribute('aria-label') || '').startsWith(arguments[0]) : node.textContent.trim() === arguments[0]))`,
+      [name, icon],
+    );
+    await clickAt(session, point.x, point.y);
+  };
+  const move = async (from, to) => {
+    for (const square of [from, to]) {
+      const point = await pointer(
+        `new-game square ${square}`,
+        `document.querySelector('cg-board')`,
+      );
+      const target = await session.execute(
+        `
+        const board = document.querySelector('cg-board');
+        if (!board) return false;
+        const box = board.getBoundingClientRect();
+        return { x: Math.round(box.left + (arguments[0].charCodeAt(0) - 96.5) * box.width / 8), y: Math.round(box.top + (8.5 - Number(arguments[0][1])) * box.height / 8) };
+      `,
+        [square],
+      );
+      if (!point || !target) throw new Error("new-game board is unavailable");
+      await clickAt(session, target.x, target.y);
+    }
+  };
+  try {
+    const source = (await listFixtureEntries(invoke)).find(
+      (entry) => entry.name === openingRowName,
+    )?.handle;
+    if (!source) throw new Error("new-game seed fixture is unavailable");
+    const root = await invoke("get_database_workspace", {});
+    const database = await invoke("create_workspace_database", {
+      root,
+      filename: "verify-new-game.db3",
+    });
+    const title = "verify new game database";
+    await invoke("convert_pgn", {
+      progressId: `verify-new-game:${randomUUID()}`,
+      files: [source],
+      database,
+      timestamp: null,
+      title,
+      description: "New game proof",
+    });
+    const read = () =>
+      invoke("get_games", {
+        file: database,
+        query: {
+          options: { page: 1, pageSize: 25, sort: "id", direction: "asc", skipCount: false },
+        },
+        ticket: null,
+      });
+    const before = await read();
+    const priorIds = new Set(before.data.map((game) => game.id));
+    await showLibraryOverview(session);
+    await wait("new-game database in Library", () =>
+      session.execute(
+        `window.dispatchEvent(new Event('focus')); return [...document.querySelectorAll('[role="treeitem"]')].some(node => node.getAttribute('aria-label') === arguments[0]);`,
+        [title],
+      ),
+    );
+    const row = await pointer(
+      "new-game database row",
+      `[...document.querySelectorAll('[role="treeitem"]')].find(node => node.getAttribute('aria-label') === arguments[0])`,
+      [title],
+    );
+    await clickAt(session, row.x, row.y);
+    await clickButton("New game");
+    await wait("new-game analysis board", () =>
+      session.execute("return location.pathname === '/' && !!document.querySelector('cg-board')"),
+    );
+    await move("e2", "e4");
+    await clickButton("Save PGN", true);
+    const first = await wait("new-game insert through native read", async () => {
+      const games = await read();
+      const added = games.data.filter((game) => !priorIds.has(game.id));
+      return (
+        games.count === before.count + 1 &&
+        added.length === 1 &&
+        added[0].moves.includes("e4") &&
+        added[0]
+      );
+    });
+    await move("e7", "e5");
+    await clickButton("Save PGN", true);
+    const edited = await wait("new-game edit updates its original native row", async () => {
+      const games = await read();
+      const added = games.data.filter((game) => !priorIds.has(game.id));
+      return (
+        games.count === before.count + 1 &&
+        added.length === 1 &&
+        added[0].id === first.id &&
+        added[0].moves.includes("e4 e5") &&
+        added[0]
+      );
+    });
+    check(
+      !!edited,
+      "NG1 New game inserts once and the next explicit save updates the same native database row",
+    );
+  } catch (error) {
+    check(
+      false,
+      "NG1 New game inserts once and the next explicit save updates the same native database row",
+      error.message,
+    );
+  }
+}
+
 async function verifyGameOpening(session, ownedRoot, filesWorkspace) {
   const assertion = async (message, action) => {
     try {
@@ -4761,6 +4892,7 @@ async function verifyFullApplication(profileDirectory, appEnvironment) {
   }
 
   await verifyGameOpening(session, ownedRoot, filesWorkspace);
+  await verifyNewGameToDatabase(session);
   await verifyLinkedCollections(session, filesWorkspace, profileDirectory);
   await verifyConversionCancellation(session, ownedRoot);
 

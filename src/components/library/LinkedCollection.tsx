@@ -27,6 +27,7 @@ import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import AppModal from "@/components/common/AppModal";
 import { wrappingButton } from "@/components/common/wrappingButton";
 import { libraryButtonProps } from "./presentation";
+import NewDatabaseGameButton from "@/components/boards/NewDatabaseGameButton";
 
 const playerFieldStyles = {
   label: { maxWidth: "100%", overflowWrap: "anywhere" },
@@ -125,6 +126,7 @@ export function LinkedCollection({
         </Alert>
       )}
       <Group wrap="wrap">
+        <NewDatabaseGameButton database={current.database} disabled={!ready || pending} />
         <Button
           {...libraryButtonProps}
           disabled={!ready || pending}

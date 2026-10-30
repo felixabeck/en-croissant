@@ -876,6 +876,14 @@ async writeDbGame(file: DatabaseHandle, gameId: number, pgn: string) : Promise<R
     else return { status: "error", error: e  as any };
 }
 },
+async insertDbGame(file: DatabaseHandle, pgn: string) : Promise<Result<number, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("insert_db_game", { file, pgn }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async deleteDatabase(file: DatabaseHandle) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_database", { file }) };
