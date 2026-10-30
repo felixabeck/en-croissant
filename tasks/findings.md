@@ -19553,6 +19553,8 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
 * **Fix:** Use the existing foreground token for the shared badge label while preserving its tint, full text and dimensions. No palette or checker change.
 * **Proof:** Keep the existing German journey. Source-only Git hunk removal must reproduce contrast failure, restoration must pass. Retain full pixel and native verification.
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"c2405e6ae31e5be4b458f76b61009d79b257b41e3e483522aea20e78a272770f","options":{"section":null},"request_id_sha256":"5f2f7acf4f8079e384f0b8693ecd1dfff7c0a69da4e188d0b916e5d587a1bd43","results":["f-20261030-12"],"target":"f-20261030-12","v":1} -->
 
 ### Library database opener is half a pixel clipped after native scrolling
 
