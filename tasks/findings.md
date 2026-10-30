@@ -19541,7 +19541,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### File detail metadata action clips its pencil at normal font size
 
-* **ID:** f-20261030-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-10 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Where:** `src/components/files/FileCard.tsx:116`, the Edit metadata IconAction with an unsized Pencil.
@@ -19552,6 +19552,14 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 * **Proof:** Preserve the new 100 percent mixed Library cases and observe them green after the source correction, with snapshots temporarily ignored only for diagnostic interaction proof. Remove only the correction through Git and reproduce the exact clipping assertion, then restore green. Final unfiltered snapshots, focused component tests, coverage and bundle gates remain required.
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"5c2a5093f07391dd17b5b3c72309aa878cdc04e92daf62445625ecf613d8f408","options":{"section":null},"request_id_sha256":"fce7dfe8df8485dfaf00625f57b21ce9082eb65557fdf60ffaf46e341f163e57","results":["f-20261030-10"],"target":"f-20261030-10","v":1} -->
+
+The existing small metadata IconAction now fits a 1rem Pencil. Source-only sizing removal reproduced the clipping failure and restoration passed in fix-1-proof/REPORT.md. The native and browser game-opening controls remain intact.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"489b58ad46e49470ce32b330880f47eb5875b51f143fd5d26b48fbdf1086c395","header_sha256":"51da7fcda28bb8db57cb5a8d20ff9eb3f0b052b6e5e40b71d1aca68e02058a2e","header_status":"handled","input_sha256":"dd16e2357619e9d12591d7a0d7a628cc1b78073ddd8f8135e916803408d626dd","kind":"mutation-receipt","operation":"7b470e22a5d38a0b53aeba48f1a3462920ab5bf45a6218fd7789ac4e20d99638","options":{"section":null},"request_id_sha256":"e87ff77aac829b5b0596f0e8525df118fa6bd846edc1e9b523048539642b195f","results":["f-20261030-10"],"target":"f-20261030-10","v":1} -->
 
 ### German Library tree content overflows its narrow container at 200 percent
 
