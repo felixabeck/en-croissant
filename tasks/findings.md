@@ -19480,3 +19480,114 @@ Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert
 * **Authority:** Felix requested a full-auto Library visual redesign on 2026-10-30, with grouping, aligned rows, visible all-types state, warning collection state, contained database controls and responsive split layout.
 * **Related:** f-20260829-02 is handled and covers prior narrow-screen layout work. This entry concerns the supplied current screenshot, not a claim that its prior repair failed.
 * **Proof:** Focused Library/FileCard/DirectoryTree tests, canonical container screenshots at 1280/1440/1920, full frontend gates and pnpm verify:app.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Library shows its empty message while an unavailable linked collection is listed
+
+* **ID:** f-20261030-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Where:** `src/components/library/LibraryPage.tsx` loadedEmpty condition and missing linked-collection peers.
+* **Defect:** loadedEmpty checks only the files array, standalone database array and unread database array. It ignores missing linked collections, which the same component renders as tree peers. The empty Library message can therefore contradict a visible recovery row.
+* **Failure scenario:** The selected workspace lists no files, the database list is empty, both listings succeed, and one persisted collection is unavailable with its source and index absent. The missing array and peer list contain that collection, but loadedEmpty remains true and renders Your library is empty below it.
+* **Related:** f-20261030-05 is the active Library presentation redesign. This is a separate pre-existing empty-state predicate defect in the same file, discovered while checking the required unavailable-collection state.
+* **Fix:** Preserve loading/failure/filter behavior and suppress the whole-library empty message whenever an unavailable linked collection remains listed. No new strings, data processing or action changes.
+* **Proof:** A LibraryPage rendering regression with zero files/databases and one unavailable collection must show its recovery row without the whole-library empty message. Keep the test, remove only the predicate correction via Git, observe the specific assertion fail, then restore green. Include the existing focused suite and container visual matrix.
+
+### Database card padding lost double-click opening in the Library redesign
+
+* **ID:** f-20261030-09 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Follow-up of:** f-20261030-05, introduced by the footer-containing card boundary in 49230bcbbf215904897403de24583e4a326f6a05.
+* **Where:** `src/components/common/GenericCard.tsx:65` footer branch, its database onDoubleClick consumer in `useDatabaseLibrary.tsx`, and the file-only treeitem double-click handler in `DirectoryTree.tsx`.
+* **Defect:** Before the redesign, GenericCard's bordered, padded button owned onDoubleClick across the entire card. The footer branch now puts that border and 1rem padding on a plain div, while the callback remains only on the inner selection button. The padding retains a pointer cursor but no longer invokes the open callback.
+* **Failure scenario:** A successful database card is visible in Library. The user double-clicks its existing padded area near a card edge, outside the inner selection button and footer controls. Click bubbling still selects the treeitem, but neither the wrapper nor the database treeitem opens the database. Before 49230bcb that same card padding belonged to the opening button.
+* **Fix:** Restore pointer selection and double-click opening on the card's own padding without duplicating inner-button callbacks or opening from favourite/footer controls. Preserve the footerless component path, one-tree selection, keyboard behavior and contained non-nested controls.
+* **Proof:** Keep an integration regression that double-clicks the actual padded card surface and expects the existing database navigation. Remove only the source correction through Git, observe that navigation assertion fail, then restore green. Exercise existing favourite/selection/open controls and a real Playwright padding click, retaining the standard focused, related, type, contract and pre-review proof.
+
+### File detail metadata action clips its pencil at normal font size
+
+* **ID:** f-20261030-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Where:** `src/components/files/FileCard.tsx:116`, the Edit metadata IconAction with an unsized Pencil.
+* **Defect:** The existing small icon-only action contains the default 24px Pencil. The new real-browser reachability assertions measure 22px of vertical content inside its 20px inner button area and an SVG beginning 2px before the button content origin.
+* **Failure scenario:** Select the ordinary populated file in the mixed Library fixture at 1280, 1440 or 1920px, 100 percent font size. The existing metadata action clips its SVG. Light and dark cases fail the unchanged reachable clipping checker at e2e/database-files.spec.ts:465. The same 200 percent cases pass.
+* **Related:** f-20261030-05 is the current Library redesign. FileCard was unchanged by 49230bcb, so this is a pre-existing nearby control-sizing defect exposed by the new browser coverage.
+* **Fix:** Fit the existing pencil inside the existing icon action using the project's normal icon sizing. Preserve its localized name, target, focus and metadata action. Do not enlarge or restyle every control, hide the icon, or relax the clipping checker.
+* **Proof:** Preserve the new 100 percent mixed Library cases and observe them green after the source correction, with snapshots temporarily ignored only for diagnostic interaction proof. Remove only the correction through Git and reproduce the exact clipping assertion, then restore green. Final unfiltered snapshots, focused component tests, coverage and bundle gates remain required.
+
+### German Library tree content overflows its narrow container at 200 percent
+
+* **ID:** f-20261030-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Follow-up of:** f-20261030-05, observed on the redesigned Library tree at 49230bcbbf215904897403de24583e4a326f6a05.
+* **Where:** `src/components/library/presentation.tsx` section headings and `src/components/files/DirectoryTree.module.css` tree content, surfaced by unchanged `e2e/async-errors.spec.ts:1121`.
+* **Defect:** The German 320px and 200 percent selected-file journey reports 185px of tree content inside a 158px tree and enclosing native scroll container. Whole-page reachability passes because the scroller absorbs the width. The unchanged stricter Files-column check exposes the internal overflow.
+* **Failure scenario:** Open Library in German at 320px and 200 percent, choose the supplied workspace and select Najdorf. assertNothingClipped(fileRow) fails with tree and enclosing-div x 185px greater than 158px. The selected row's own descendants are not reported, so trace the sibling section heading or other content contributing to the ancestor width instead of assuming a file-name defect.
+* **Fix:** Identify the actual min-content constraint using the existing scenario and trace, then let the shared presentation wrap within its container. Preserve complete headings, counts, names and actions across locales. No hidden text, truncation, locale-specific workaround, verifier exemption or tolerance change.
+* **Proof:** Keep the unchanged German journey. It must pass its exact internal-clipping assertion on the repaired source. Remove only the source correction through Git, reproduce that precise failure, then restore green. Preserve the existing narrow, dark and desktop matrix plus all ratchets.
+
+### Selected Library type badge fails contrast at 200 percent
+
+* **ID:** f-20261030-12 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Where:** src/components/library/presentation.tsx shared LibraryTypeBadge.
+* **Defect and failure scenario:** The unchanged German 320px/200 percent selected Najdorf journey reaches Axe after heading containment is repaired and reports Spiel text #c9a44e on #524738 at 3.84:1, below 4.5:1. Evidence is fix-1-proof/p3-positive.log. The gold light badge composites over the selected row accent.
+* **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
+* **Fix:** Use the existing foreground token for the shared badge label while preserving its tint, full text and dimensions. No palette or checker change.
+* **Proof:** Keep the existing German journey. Source-only Git hunk removal must reproduce contrast failure, restoration must pass. Retain full pixel and native verification.
+
+### Library database opener is half a pixel clipped after native scrolling
+
+* **ID:** f-20261030-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Where:** src/components/files/DirectoryTree.module.css native row-control scrolling.
+* **Defect and failure scenario:** The new mixed Library 1920px/100 percent journey reaches the first database opener and the unchanged checker measures viewport ratio 0.9861111044883728 for its 36px button. A 60vh native scroller leaves 0.5px against its lower edge after scrollIntoViewIfNeeded. Evidence is fix-1-proof/diagnostics.log and diagnostic-findings.md.
+* **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
+* **Fix:** Apply existing spacing as scroll margin at the tree control boundary, preserving visible geometry, focus, controls and checker tolerances.
+* **Proof:** Keep the 1920px journey. Source-only Git hunk removal must reproduce the exact clipped-edge failure and restore green. Full unfiltered pixel proof remains required.
+
+### Library file-detail Trash action fails dark text contrast
+
+* **ID:** f-20261030-14 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Where:** src/components/files/useFileWorkspace.tsx file-detail action group.
+* **Defect and failure scenario:** The mixed Library 1440px/100 percent dark journey reaches Axe and reports Trash text #e8e4dc on #c45c5c at 3.29:1, below 4.5:1 for 12px text. Evidence is fix-1-proof/diagnostics-results and diagnostics.log. The existing filled danger action causes this everyday dark-theme failure.
+* **Related:** f-20261030-05 is the active Library redesign. This issue was exposed during its responsive diagnostic and is recorded separately without asserting a shared cause.
+* **Fix:** Use an existing accessible danger control presentation locally for the file-detail Trash action, preserving the same localized label, action, focus and confirmation. No global palette or checker change.
+* **Proof:** Keep the dark mixed journey. Remove only the correction through Git and reproduce the precise contrast failure, then restore green. Retain focused, related, bundle and full pre-review proof.
+
+### Selected unavailable Library row has insufficient dark description contrast
+
+* **ID:** f-20261030-15 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Follow-up of:** f-20261030-05, the selected warning row introduced by 49230bcbbf215904897403de24583e4a326f6a05.
+* **Where:** src/components/library/LibraryPage.tsx missing linked-collection Alert description.
+* **Defect:** The first dark mixed journey that passes the earlier file-detail Trash contrast check reaches selected unavailable collection accessibility and reports its dimmed description at 4.48:1, below 4.5:1.
+* **Failure scenario:** At1440px and100percent dark, select the unavailable source. Axe sees #aaa8a5 text on the selected row's #453d36 surface at e2e/database-files.spec.ts:524. Evidence is fix-1-final-proof/trash-positive.log and its actual screenshot. This restored run passes the earlier Trash assertion and fails at this later recovery state.
+* **Related:** The pending selected type-badge contrast entry concerns gold badge labels. This is a different dimmed description surface. f-20260924-04 addressed existing file freshness recovery contrast, so retain its precedent rather than weakening checks.
+* **Fix:** Give the unavailable row's complete recovery description sufficient contrast in selected and unselected light/dark states using existing foreground semantics locally. Preserve warning tone, copy, actions and palette.
+* **Proof:** Keep the dark mixed journey. Source-only Git hunk removal must reproduce the exact description contrast failure and restoration must pass. Full unfiltered pixels, component tests, pre-review, coverage and bundle remain required.
+
+### Library file-count text inherits the low-contrast dark row hover pair
+
+* **ID:** f-20261030-16 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
+* **Impact class:** ux
+* **Follow-up of:** f-20261030-05, the new row hover background in49230bcbbf215904897403de24583e4a326f6a05.
+* **Where:** src/components/files/DirectoryTree.tsx:324 count Text cdimmed and DirectoryTree.module.css:27 .item:hover.
+* **Defect:** The file-count Text uses the same inherited --mantine-color-dimmed as the unavailable description, and the same .item:hover supplies --cf-interactive-hover. The real warning-description probe measured that pair #aaa8a5 on #453d36 at4.48:1. Applying the correction only to the warning paragraph leaves counts with that everyday hover pair.
+* **Failure scenario:** In dark mode at100percent font size, point at an ordinary Library file row with a game count. Its12px dimmed count sits on the same hover surface. The mixed journey currently tests hover action colour but moves the pointer away before Axe, so this state is not covered. The count-specific runtime counterexample is still pending and must be measured before any claim of a completed fix.
+* **Related:** Pending warning-description entry20261030-133203-639485-1793363523813639414-5.md recorded the same dimmed hover pair on another row child. Selected gold-badge contrast is a different label treatment. Root will obtain focused fresh mechanism judgment before further patching, preserving the previous local fix history.
+* **Fix:** Correct the shared row-hover text contrast boundary using existing semantic controls/tokens, preserving quiet metadata at rest, a visible hover state, selected and focus treatment, action semantics and global palette. Avoid another isolated child patch that leaves equivalent row text behind.
+* **Proof:** Keep an existing mixed-fixture Axe assertion while the pointer is actually over a counted file row. Measure red on unchanged source. On the settled correction remove only its Git hunk with no offsets and reproduce the exact count contrast failure, then restore green. Re-run selected/unselected light/dark row states, full mixed and affected diagnostics, source proof and all unchanged gates.
