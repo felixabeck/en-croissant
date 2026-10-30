@@ -16086,7 +16086,7 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 
 ### Consecutive PGN comments overwrite earlier prose and lose annotations on save
 
-* **ID:** f-20261010-12 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261010-12 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-1.jsonl
 * **Where:** src/utils/chess.ts consecutive comment tokens in parsePGN.
 * **Defect:** Each comment token assigns node.comment from that token's text. For 1. e4 {Keep this explanation} {[%clk 0:05:00]} e5 *, the clock-only second token erases the first token's prose. Saving serializes only the final comment and permanently loses that explanation.
@@ -16098,6 +16098,9 @@ Root corrected the initial frozen-phase disposition under push-review-policy sec
 * **Proof:** Root independently passed the exact eleven-suite 517-test command, separate 46-test parser suite, scoped checks/types/syntax, full pre-review and contract on the final R4 candidate. Workspace-storage and tree/path remain100%. Actual bundle1619967 is within unchanged1620000. Canonical completion0 is gate-root-r4-repair-proof-r2.1tnLMt, parent77ba474282f79d2bd1b17efcb64e6637cc83f6f1. Current source repairs are committed099bfa21, db6ac190 and4ee4ff12. Full source and fault history: tasks/handoffs/2026-10-10-game-opening-round4.md.
 * **Remaining:** Fresh cumulative source closure and root pixel/native verification remain pending. This finding stays open until those required stages complete. Plan authorship and arbitration shared one context. Detection ran on the code model family.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"e42218d505d8d4c778f96d022bf18e286b8a485fcc39c0a486066e52117cf5b1","input_sha256":"c553e3543e0e36d8b3a400154c23b63d690ae1cfac524c4b8ce0fbb750418c93","kind":"mutation-receipt","operation":"6013d8cef40c120d2c7825ab5e9236ba77b16f23b2d02dcaec649b95d30ca5d3","options":{"section":null},"request_id_sha256":"52f4cb4fabef193151fb5f3972ef50f1cbbc0535ca2e1ce47ef2bcf2daa61aef","results":["f-20261010-12"],"target":"f-20261010-12","v":1} -->
+
+* **Closed:** The overwrite no longer holds. `innerParsePGN` appends later prose instead of replacing `node.comment` (`src/utils/chess.ts:398-401`, commit `db6ac190`). A clock, evaluation, shape or unknown command on a following comment stays on its own field (`src/utils/chess.ts:368-408`). `src/utils/tests/chess.test.ts` covers `1. e4 {Keep this explanation} {[%clk 0:05:00]} e5 *` and the multi-comment save/reparse. Vitest on 2026-10-30 passed those 9 cases (92 others in the file skipped by the filter). The earlier sentence that this finding stays open until fresh cumulative source closure and root pixel/native verification is superseded: that sentence was the 2026-10-10 round's delivery gate, and the preservation itself is already on `master`.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"55e7411b6d3bc240058e67e3cf5d69d18b01f3a60ced2319582ecf2369779981","header_sha256":"ce25c14d2e5aff9f41fa461b8b68ca49ba77bf01a8e6e92727a48304a7ff19d7","header_status":"handled","input_sha256":"4366c36e3f7576bc69e308dc11995dbfad455d49a34d3ac2d8236bf558e6d211","kind":"mutation-receipt","operation":"d7fcac589ffa7f5fc0fa09da2c9c826ff754b163ab1bf95afb0a22ef07290baf","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-12"],"target":"f-20261010-12","v":1} -->
 
 ### Duplication reads release recovery without hydrating the original cached tree
 
