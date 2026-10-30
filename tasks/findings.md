@@ -19734,3 +19734,32 @@ Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb
 Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
 
 <!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"07479627261deee5793d75f2cbe4c848e22b64659e4e4474381408c9456b953f","header_sha256":"79f057d1db48a74dcc16e3507e6b35ccb89ec943f1c490d48c775570768fa08f","header_status":"handled","input_sha256":"67e1eb86338f6d740c09a8b1a3b73923d6dc63e6079a5906a6f672b58343384e","kind":"mutation-receipt","operation":"851b06ca3981a0a04f9d4a9d2f4bbdb29c383db04e723e332f6b3d7031bb3446","options":{"section":null},"request_id_sha256":"5a8453fca4751cfb5ef6022d7cb77b198e152b489ac1909707dd6945eee54d7d","results":["f-20261030-16"],"target":"f-20261030-16","v":1} -->
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Linked collection New game loses the Save PGN button after the file origin is set
+
+* **ID:** f-20261030-18 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** bba03ee4-dfe9-458d-a29c-87e57980831a
+* **Impact class:** behaviour
+* **Open question:** After a linked collection New game is saved and the tab origin is the appended PGN game, why is the Save PGN button absent from the accessibility tree?
+* **Where:** `e2e/new-game-to-database.spec.ts:137` on origin/master `135c580404bfb156b445c195990497f55da83865`
+* **Spotted outside diff:** GitHub Actions Test run 41056249546, job `test` 124064403068, on published master. The freshness commits at `ea59a76d` do not contain this spec.
+* **Failure scenario:** In the container e2e, open Library, choose the linked collection, click New game, play e2e4, and click Save PGN. The tab origin becomes `{ kind: "file", gameNumber: 2 }` for that collection file. The Save PGN button is then not in the accessibility tree, so the test cannot see `data-variant="transparent"`.
+* **Defect:** Job `test` failed once, at `e2e/new-game-to-database.spec.ts:82` ("linked collection New game appends to its PGN without inserting into the index"). `expect(page.getByRole("button", { name: /^Save PGN/ })).toHaveAttribute("data-variant", "transparent")` timed out at 8000ms with `element(s) not found`. The origin poll on the lines immediately above is the previous statement, and the failure stack is line 137, so that poll had already matched. Log `/tmp/build-bba03ee4-dfe9-458d-a29c-87e57980831a/ci-test.log` around the 12:47:33Z record. This is not f-20261011-08, which was the fresh-board save picker and is handled.
+* **Proof:** Re-run that spec in `pnpm test:e2e:container` (or the CI `test` job). It fails on the missing Save PGN button before a fix and passes after the button is present with `data-variant="transparent"` once the origin is the appended file game.
+* **Found by:** Grok drain session reading the failed `test` job log for run 41056249546.
+
+### Escaped-header database export test unwraps the Windows atomic-replacement refusal
+
+* **ID:** f-20261030-19 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** bba03ee4-dfe9-458d-a29c-87e57980831a
+* **Impact class:** tooling
+* **Where:** `src-tauri/src/db/insert_db_game_tests.rs:142` calls `export_to_pgn`, which returns at `src-tauri/src/db/mod.rs:3801` through `off_unix_refusal("PGN atomic replacement", cfg!(unix))`. Both lines are on origin/master `135c580404bfb156b445c195990497f55da83865`.
+* **Spotted outside diff:** GitHub Actions Test run 41056249546, job `rust-windows-test` 124064403094, on published master. The freshness commits at `ea59a76d` do not contain this test.
+* **Failure scenario:** The Windows test job runs `insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn`. After the insert assertions, the test writes a destination PGN and unwraps `export_to_pgn`. On Windows that command returns `Conflict("PGN atomic replacement is unsupported on this platform")`, the unwrap panics, and `rust-windows-test` is red. 1741 other tests passed, 7 ignored.
+* **Defect:** The new test treats export as infallible. Windows still refuses PGN atomic replacement before the export does any work, which d-20260918-13 and d-20260914-05 already require. The panic is the test ignoring that refusal, not a new product refusal. It is not f-20261011-03, which is a wall-clock Elapsed miss under I/O pressure. It is also not the separate header-decoder backslash loss already recorded on this master: this panic is raised before any exported-byte assertion.
+* **Proof:** On `windows-latest`, `cargo test --bin chessfable insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn -- --exact` panics at `insert_db_game_tests.rs:142`. After the test expects that Conflict on non-Unix and still checks the escaped header round trip where export exists, this test passes and the rest of the Windows suite stays green.
+* **Found by:** Grok drain session reading the failed `rust-windows-test` job log for run 41056249546. Log `/tmp/build-bba03ee4-dfe9-458d-a29c-87e57980831a/ci-windows.log` at the 12:40:59Z panic.
