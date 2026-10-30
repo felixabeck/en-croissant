@@ -19591,6 +19591,18 @@ Plan authorship and arbitration shared root context. Detection and code use the 
 
 <!-- ledger-meta {"command":"annotate","effect_lines":10,"effect_sha256":"b3b247e87574e7e023a2bd0ca11836226a127e7721efa6106324cf0fe6f99384","input_sha256":"37fb5f9c65e3ee8bd270b7ef99b060238aca0c445f45bc98c5afc5fe6dc609a7","kind":"mutation-receipt","operation":"20e27bc3ecf34268f5472eaa355a19ddfe00d2d6cb868512a8b3229c3dbafcda","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-15"],"target":"f-20261030-15","v":1} -->
 
+Evidence update after counted-hover measurement.
+
+The count-specific runtime counterexample is now measured, not inferred. On the unchanged hover CSS, the retained mixed dark1440/100 journey proves row.matches(':hover') and Axe then reports the unselected verify-game-opening count128 at4.48:1, foreground#aaa8a5 and background#453d36. The isolated Git removal of the new row-local dimmed foreground line reproduces that exact failure at exit1, restoration applies without offsets and the whole dark journey exits0. All96affected diagnostic cases pass, with selected/unselected hover and original unhovered checks retained. Exact receipts and production/test hunks are in /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/fix-1-hover-proof/REPORT.md and its companion logs.
+
+This direct unselected-row evidence corrects the earlier attribution in f-20261030-15. The background#453d36 is cf-interactive-hover, not the selected accent alone. f-20261030-15 and f-20261030-16 share the inherited dimmed-text/row-hover pair. Their Root headers remain -, because the requested set-header transaction was refused before writing. The shared cause is recorded by these cross-references. This supersedes the preceding annotation's claim that Root library-row-hover-contrast was active. That was the requested grouping, not an applied result. Their individual evidence and local warning paragraph correction remain preserved.
+
+Fresh read-only review-plan judgment approved the shared scoped boundary before the new source patch. The earlier warning-focused metadata W1 was separately corrected and closed. These judgments do not claim implementation or pixel acceptance. Source tests61focused619related, types,16locales, contract, build and bundle are green on the pre-rebase composition. Totalgzip1669086under1670000. The published upstream integration now requires fresh final proof. Both findings remain open until the combined repair commit, unfiltered pixels, formal review and real-product proof finish.
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
+
+<!-- ledger-meta {"command":"annotate","effect_lines":10,"effect_sha256":"5770211cb9e4dead2d0af13c1a6f5f03cf8877eeb37072c83f578b0d67bdfb29","input_sha256":"91f7732b37d7493c9ad37dca6abff8f2426b7ee3bb2665c6d5c87f77daca98dd","kind":"mutation-receipt","operation":"dcca918f4df15aa9214d06d9f21060f210b6db9cef165d3c59063450d25eb268","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-15"],"target":"f-20261030-15","v":1} -->
+
 ### Library file-count text inherits the low-contrast dark row hover pair
 
 * **ID:** f-20261030-16 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
