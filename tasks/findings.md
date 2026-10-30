@@ -19441,10 +19441,13 @@ Fixed by the new-game-to-database build, pushed to master as part of 135c5804 (c
 
 ### Hosted Test and rust-windows-test are red on master after the new-game-to-database push
 
-* **ID:** f-20261030-17 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-17 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Impact class:** tooling
 * **Where:** e2e/new-game-to-database.spec.ts (linked New game journey) and src-tauri/src/db/insert_db_game_tests.rs (escaped-header export test), pushed in 135c5804.
 * **Defect:** Two tests added by the new-game-to-database build failed only in hosted CI on 135c5804 (run 41056249546). Test job: after the linked append, the file-freshness poll read game 2, which the spec's read_game mock lacked, so the tab hit its error boundary ("Cannot read properties of undefined (reading 'linked')"); locally the poll never fired before the test ended. rust-windows-test: the escaped-header test exported through PGN atomic replacement, which Windows does not support ("PGN atomic replacement is unsupported on this platform").
 * **Failure scenario:** Every push to master shows the Test and rust-windows-test jobs red, and pnpm ci:remote:check refuses later pushes.
 * **Fix:** Give the spec's read_game mock the appended game and assert the tab stays verified past one poll interval; run the export round trip only on unix, keeping insert and read-back on every platform. Repairs are commits 73ae3ae4 and the following e2e commit on the build branch.
 * **Proof:** Container project run 3/3 green and the negative check fails without the mock; cargo test insert_db_game and pnpm rust:windows:check green; hosted Test and rust-windows-test green on the pushed SHA.
+
+Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert and read-back stay on every platform) and 766dd1d4 (the linked New game e2e spec's read_game mock returns the appended game and the test asserts the tab stays verified past one freshness poll). Hosted CI run 41063715985 on e34a0882: test, rust-windows-test, rust-macos-test and all three rust-platform jobs succeeded.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"254da8be76a8ef0ed96aab469675a373d47a3a74ad1a53ee5b8b245c0ea8dd8c","header_sha256":"d992b89551d088ae68630ba33cec85eccd9a127b9b04d70753b10c9101172a2d","header_status":"handled","input_sha256":"59afcf4ced7c51dd25e85092fb8d9dbb09305871c2e5fd174d50414d59406f46","kind":"mutation-receipt","operation":"a2de0df4a45e43d55a6c119cb094296ccbc450667aab5035e69a3afbffcac045","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-17"],"target":"f-20261030-17","v":1} -->
