@@ -1,6 +1,6 @@
 # Opening game references review evidence
 
-Current status additions are appended chronologically below the raw plan reports.
+Review status at the pre-gate checkpoint is appended chronologically below the raw plan reports. The later tasks/build-ledger.md row records the release outcome.
 
 Run: opening-game-references-20261029-064642-82fa88e8. User requested clickable ChessBase preparation citations and full-auto Codex execution in a separate worktree. This record owns that feature, its proof, task records and the bounded required-CI native-test repair described below. It does not claim to review published upstream changes.
 
@@ -8,7 +8,7 @@ Plan authorship and arbitration shared one context. Earlier implementation and d
 
 ## Plan review disposition
 
-Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. R4 explicitly closed original DR1. R5 explicitly CLOSED DR12 and nits DR13/14. R6 explicitly CLOSED all three records clarifications. The17 unique adopted code/records Fix issues are CLOSED, with one retained DR15 Skip and no lens Defer. A later runtime native-target defect was proved and corrected, with source closure awaiting R7. One separate runtime product-layout observation is deferred to its own build. Final publication gates, hosted confirmation and installation remain pending. Current publication aliases and the immutable private records are documented below.
+Ten completed rounds. Adoptions r1=1 r2=0 r3=1 r4=0 r5=0 r6=1 r7=0 r8=0 r9=0 r10=0. Three unique adopted plan-lens issues opened and closed, no Skip or Defer. Supplied mechanism corrections remain separate from independent adoption counts. All four r10 lenses approved at plan level. R4 explicitly closed original DR1. R5 explicitly CLOSED DR12 and nits DR13/14. R6 explicitly CLOSED all three records clarifications. R7 explicitly CLOSED the runtime native-target correction. All17 unique adopted code/records Fix issues are CLOSED. Four observations are retained as Skip, DR15 and DR19/20/21, with no lens Defer. Separate runtime product-layout finding f-20261030-04 is deferred to its own build. Final same-source UI proof is accepted. This pre-gate checkpoint awaits the final records review and publication gates, hosted confirmation and installation. Current publication aliases and the immutable private records are documented below.
 
 - PR-1, error-handling r1 finding 1, should-fix confidence90. Fix. Source discovery already retains safe localized failure distinctions. O2 was corrected to carry safe typed source-qualified reasons through failed and zero-result searches. Plan and error-handling r2 explicitly closed it.
 - PR-2, tests r3 finding 1, blocker confidence92. Fix. O4 requires candidate-retention through a query-sensitive source that excludes out-of-range dates. Plan and tests r4 explicitly closed the plan correction. Root later proved the implemented regression fails with only the production correction removed.
@@ -3613,4 +3613,240 @@ Log has no `verify:app cleanup failed` and no `cleanup did not finish before pro
 Product pane layout (f-20261030-04) is unchanged. No commit, stage, push, or pre-review. Intended verifier diff remains unstaged for root to reverse, re-check red, restore, then run ordinary final native and full pre-review.
 
 Plan authorship and arbitration stay with shared root context. This repair and detection are xAI, same family as recent repair code. Original feature and root are OpenAI. No provider quota appeared.
+````
+
+
+## R7 closure and final UI acceptance at the pre-gate checkpoint
+
+All seven R7 canonical selected Grok read-only leaves completed7/7 and each passed profile LEAF commands7. Provider end-record model metadata reports grok-4.6-build for all seven. Correctness, root-cause and tests explicitly CLOSED the actual first-move target correction. Every lens returned APPROVED, with three nonblocking observations subsequently Skipped by root. Full reports follow unchanged in substantive text.
+
+R7 adopted0 new Fix issues. Completed code/records counts are r1=9 r2=0 r3=2 r4=3 r5=3 r6=0 r7=0. All17 unique adopted Fix issues remain CLOSED. The four retained Skips are earlier DR15 plus new DR19/20/21. These are21 retained lens observations, not21 adopted Fix issues. Runtime f-20261030-03 source closure and product-layout Defer f-20261030-04 are separate from lens adoption counts. Plan10 rounds and3 unique closed issues remain unchanged.
+
+- DR19, code-quality report finding1, nit, confidence90. Skip. Style noise. Legacy indentation inside the JavaScript finder string changes neither predicate nor helper contract. Formatting passes. No misleading name, invariant or comment is introduced.
+- DR20, error-handling report finding1, should-fix, confidence90. Skip. False contract mismatch and unobserved tooling hazard. The 600000ms bound limits DOM readiness probes, not a guarantee to retry broken WebDriver transport. The reused helper consistently surfaces transport failure through renderer recovery and exit1. No transient transport failure at this target was observed or supplied. Historical rating6 abort is a different stage and remains recorded. A new caller-specific retry policy has no evidenced need.
+- DR21, error-handling report finding2, should-fix, confidence88. Skip. Speculative instrumentation. The pre-click target wait already reported through the same outer stage/state catch before this repair. The first-move button snapshot remains unchanged for first-move failures. Target timeout now names the rendered normal practice button. Permanent geometry capture is not required to resolve an outstanding failure and was explicitly temporary during diagnosis.
+
+
+The retained helper transport policy is fail-closed: a WebDriver failure keeps the underlying error, renderer recovery/state and native exit1. The600000ms readiness budget is not a promise to retry a broken transport for its whole duration. No actual transient transport failure at this new target was observed or supplied. Earlier rating6 abort evidence belongs to a different stage and remains unchanged. Reversal path for this local technical choice is an evidenced shared-helper error-policy correction if a recoverable target-probe fault is observed, retaining the reachable-coordinate mechanism. No new transport retry, gate or instrumentation was introduced.
+
+Root clarifies two raw-report statements. The initial800×647 practice geometry is proven directly by the diagnostic. Actual logs put GO9 resize/restore after practice and before citation checks, so the root-cause report's GO9 aside is not used as evidence for the initial practice viewport. Root authored operative record prose as Codex/OpenAI, while imported Grok report text stays xAI. The records report's same-family statement applies to its source repair, not all root-authored record edits. Current source repair and detection share xAI family in fresh sessions. Planning and arbitration share root context. No whole-range family separation is claimed.
+
+R7 measured wall was701.9s through the saved root arbitration snapshot. Active wall is unknown. Parallel reviewer durations are not summed. No quota wait or executor rollover occurred.
+
+
+Canonical f-20261030-03 now has a handled header and a new source-closure note explicitly recording R7 results. The seven feature findings f-20261029-10/11/12/13/14 and f-20261030-01/02 were already closed for reviewed source/native proof before R7. Broad f-20261011-03 and f-20261022-05 remain open, and f-20261030-04 remains open and pickable for its separate product-layout build. No manual handoff is required.
+
+Final typed Grok verify-ui acceptance completed canonically1/1 and passed profile LEAF commands7. It inspected actual source/binary identity and all four named images, then returned PASS for adopting existing same-source proof. It ran read-only Git/hash checks and image reads, with no new container, build, native, browser or WebDriver run. Both original typed native failures stay failures. The later Grok writer's ordinary native0 and the root's independently controlled ordinary fixed native0 are the actual successful native runs.
+
+The adopter's before/after HEAD was9f9aa195dc646b8c8f6d7bb7fcdd99a7c3758af3 and the source tree stayed clean. Git diff since fresh build source1da changes only the verifier and records. Verifier2a, all six frozen files and binarye66f remain exact. Thus the original hard2-test/all3-snapshot pinned container and fresh release build carry to the unchanged app, alongside both complete repaired native journeys. Root read the entire final UI report and accepted the proof boundaries.
+
+At320px the second choice card's button lies below the initial snapshot fold. This is a scrollable modal content region, with Mantine Modal.css overflow-y:auto and no override in AppModal or Modal.module.css. The unchanged hard spec focuses the last Open game button and presses Enter, then observes exact database gameId2 admission. No new wheel experiment is claimed. The native base PNG still shows later Add Engine permission guidance, not citations. Original PNGs and canonical TXT/JSONL remain unchanged. No Chrome or GTK-chrome verification or actual Mega Database availability is claimed.
+
+Root's final visual decision is PASS on the actual inspected notation, choice, missing-state and native guidance images, original pinned pixel comparisons and real native admission/shutdown proof. Full final gates, fresh final remote preflight, exact pushed-SHA required hosted jobs and reviewed installation remain pending at this pre-gate checkpoint. Their outcomes belong to the later build-ledger row. Final records review has not yet completed and no later round adoption count is predicted.
+
+### Complete report text: R7 correctness
+
+````text
+The class can occur. The delta changes how Start Practice click coordinates are chosen.
+
+The new call at `scripts/verify-app.mjs:3778` passes the same `button` finder into `reachableStableCoordinates`. On the diagnostic input the button box is `441,370.1875` by `248.39×42` inside an `800×647` viewport. Overflow clipping is empty (`top` `370.1875`, `bottom` `356.1875`). The old center `565,391` is therefore outside the button. `elementFromPoint` and the W3C click both hit a sibling `DIV`. The helper scrolls nearest, drops an empty intersection, and only returns a point whose `elementFromPoint` is the button or a descendant. `disabled`, `clickAt(..., "practice-start")`, `PRACTICE_RENDERER_TIMEOUT_MS` (`600000`), and the first-move assertion are unchanged.
+
+Fix-revert on that hunk: original bytes failed at the first-move wait with Start Practice still idle (`root-native-start-control/old-native.exit` `1`). Restored `2a46dd…` bytes passed, including fifty native ratings (`fixed-native.exit` `0`, `fixed-native.log` line `27`). Current `scripts/verify-app.mjs` hash is `2a46dd447c0d0e4179035ddcac70824f7c860879a5accbabef0be00de9ff25f3`.
+
+No caller/callee mismatch. The extra return fields are unused. There is one Start Practice click site. `PracticePanel.tsx:967` is a single idle `button`.
+
+**f-20261030-03 native-first-move-target correction: CLOSED** (confidence: 92)
+
+Earlier 17 unique CLOSED Fix issues and DR15 Skip keep their premises. This delta does not reopen them. Product clipping of Train at `800×647` (`f-20261030-04`) is outside this targeting contract.
+
+Limitation: this leaf did not re-run native verification. Judgment uses the named producer logs, the diagnostic geometry, and source execution of the helper.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 root-cause
+
+````text
+Native-first-move-target correction f-20261030-03 is CLOSED.
+
+The failed native runs died after `clickAt` at the unclipped Start Practice box center. Diagnostic geometry at 800×647 is button `top 370.1875 / bottom 412.1875`, ancestor clip `bottom 356.1875` with `empty: true`, cached point `565,391`, and `elementFromPoint` plus pointerdown/up/click all on an empty `DIV`. PracticePanel Train uses `overflow: hidden` in the non-compact pane (`src/components/panels/practice/PracticePanel.tsx:715`), so that center is outside the reachable viewport. `Start Practice` remains in the DOM, which is why the old wait succeeded and the first-move wait then expired.
+
+`scripts/verify-app.mjs:3778` now acquires that control through existing `reachableStableCoordinates` (`scripts/verify-app.mjs:1626`). That helper scrolls nearest, intersects ancestor overflow including `hidden`, refuses an empty clip or a miss from `elementFromPoint`, waits for stable geometry, and only then returns coordinates for the unchanged W3C `clickAt(..., "practice-start")`. Predicate, disabled check, physical click, `PRACTICE_RENDERER_TIMEOUT_MS`, and later assertions are the same. That is the coordinate-selection mechanism that produced the miss, removed at the call site.
+
+Producer-control evidence matches that chain. Reverse of only this hunk applied cleanly (`reverse.exit 0`). Restored original verifier bytes failed 1 at the same first-move timeout with `Start Practice` still showing (`old-native.exit 1`). Restored `2a46dd447c0d0e4179035ddcac70824f7c860879a5accbabef0be00de9ff25f3` completed full ordinary native 0 (`fixed-native.exit 0`, `results.txt`). Independent full journeys `gate-native-start-fixed.20261030-1.126D9u` and `gate-native-start-root-control.22sUW5` completed 0 at `27d10273b29489444882d90da7de28d518d089e3`, including fifty ratings, 12000-position retention, CR1–CR4, DS2, Library/linked, permission, recovery, and shutdown. GO9 still restores 800×647 before this stage.
+
+Git history of this block is the original raw-center wait from `e5080616`. The helper arrived later in `e40b569d` for files, metadata, and game-opening. This hunk reuses that helper and does not rewrite it. No prior fix of this exact Start Practice targeting is reintroduced. Earlier 17 unique CLOSED Fix issues and DR15 Skip keep their premises. Product Train-pane clipping remains the separate open finding f-20261030-04.
+
+Limitation: this Grok leaf reviews a Grok-written verifier repair, so family separation is absent. The judgment rests on the diagnostic records, helper source, and root reverse/restore logs, not on the writer’s report.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 minimalism
+
+````text
+The closure delta is a 10-line net deletion in `scripts/verify-app.mjs:3778`. Start Practice now calls existing `reachableStableCoordinates` (`scripts/verify-app.mjs:1626`) with the same finder, disabled check, W3C `clickAt`, and `PRACTICE_RENDERER_TIMEOUT_MS`. That helper already had three callers (`filesRowCoordinates`, `verifyGameOpening` `coordinates`, `clickMetadataControl`). No new file, interface, flag, pass-through, or settle/clip copy was added. The smallest diff that meets f-20261030-03 is this one-site swap.
+
+Remaining raw-center button lookups in the same file (`openFilesEntry` Open game at `scripts/verify-app.mjs:1736`, linked Save at `2091`, Reload from disk at `4143`, NAG/Annotate at `4807`/`4889`) stay on the old waitFor-center path. Those sites are outside this correction’s mandate and did not fail the observed first-move journey. Converting them here would enlarge the diff. Limitation only, not a finding (confidence: 72).
+
+Earlier 17 CLOSED Fixes and DR15 Skip have no changed premise in this targeting reuse.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 tests
+
+````text
+The native first-move targeting repair is **CLOSED** for this tests lens.
+
+The assertion that goes red if targeting is reverted is `scripts/verify-app.mjs:3796-3803`: `waitFor("the practice panel to enter its first move")` requires `document.body.innerText.includes('Make your move')` after the W3C `clickAt` on the Start Practice coordinates. Disabled check, 600000 ms bound, physical pointer click, and later fifty-rating / CR1–CR4 checks stay on that path.
+
+Producer revert evidence matches that assertion. Root reverse of only `target-selection.patch` applied cleanly (`root-native-start-control/reverse.log`). `old-native.exit` is `1`. `old-native.log` times out on that first-move wait with Start Practice still shown, 0 practiced / 0 due / 12000 unseen, stage `start practice`. Restore applied cleanly. `fixed-native.exit` is `0`. `fixed-native.log` has `ok  fifty renderer ratings land in the native practice review store`, CR1–CR4, DS2, and no `FAIL` lines. The same first-move timeout is in the original ordinary failures `gate-final-native-ui.20261030-0204.YEmAn7` and `gate-native-ui-repeat.20261030-0648.4sw3us`. Diagnostic `observations.json` shows the old raw center 565,391 hitting a DIV with `originalContainsTarget: false` at 800×647.
+
+This is the right verification level: `pnpm verify:app` drives the changed WebDriver gesture. Related 1302 tests, tsgo, lint, and mutation do not exercise GTK pointer hit-testing and were not used as the targeting proof. No mock replaces the click or the first-move wait. The observable is renderer text and native review rows, not helper call counts.
+
+f-20261030-04 remains an open product-layout question. The verifier now scrolls via existing `reachableStableCoordinates` (`1626-1697`, call at `3778-3786`). That does not prove a user can reach Start Practice without scrolling, and this repair does not claim that.
+
+Earlier 17 unique CLOSED Fix issues and DR15 Skip keep their premises. This runtime targeting repair is not a new lens adoption.
+
+Same-family disclosure: Grok/xAI wrote the verifier repair and this tests lens.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 code-quality
+
+````text
+The R7 source delta is a single call-site reroute onto `reachableStableCoordinates`. Names, comments, and helper contract stay readable against that helper and its in-file siblings.
+
+[nit] `scripts/verify-app.mjs:3781` — the Start Practice finder keeps the old nested `waitFor`/`execute` indent (`candidate` line, closing `)`), so the argument no longer matches the one-line `reachableStableCoordinates` button finder at `scripts/verify-app.mjs:2373` (confidence: 90)
+
+The binding `startPracticeButton` still names a `{ x, y, disabled }` payload, the same shape as `openButton` at 1736 and `reloadButton` at 4143. `clickMetadataControl` at 4990 uses `coordinates` because it is generic. Empty `[]` before `{ timeoutMs }` is required by the helper’s positional `args` parameter. No new magic numbers, dead paths, stale comments, or suppressions.
+
+Limitation: no project JS style rule was in RULE FILES. Convention is taken from `reachableStableCoordinates` callers in this file (`filesRowCoordinates`, game-opening `button()`, `clickMetadataControl`).
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 error-handling
+
+````text
+The Start Practice wait now uses `reachableStableCoordinates`, so driver, clip, and hit-test failures are in scope. Traced execute → `waitFor` → the practice `try`/`catch` → `main`.
+
+The helper refuses a click when `elementFromPoint` misses or the clip rectangle is empty. That wait then throws. `clickAt` still runs once. A targeting miss no longer looks like a successful pointer click. Gate outcome stays fail-closed: `verify:app could not run` and process exit 1.
+
+Earlier 17 closures and DR15 Skip keep their premises. This lens does not reopen them.
+
+[should-fix] scripts/verify-app.mjs:1639 — `reachableStableCoordinates` awaits `session.execute` with no probe-level catch. `waitFor` in scripts/app-driver.mjs:120–126 rethrows that error on the first tick. The new Start Practice caller at scripts/verify-app.mjs:3778 used to map execute failures to `false` and retry until `PRACTICE_RENDERER_TIMEOUT_MS` (600000). `fetchWithTimeout` aborts at 5000 ms (scripts/app-driver.mjs:35). Concrete outcome: a transient `AbortError` or `POST /execute/sync` HTTP failure becomes `verify:app could not run: ${error.message}; stage: open the large practice file; renderer state: …` from the catch at scripts/verify-app.mjs:3889–3912, then `main` sets `process.exitCode = 1` at scripts/verify-app.mjs:5617–5622. The remaining 600 s targeting budget is unused. Adjacent practice waits at 3771–3775 and 3798–3801 still retry those transients. (confidence: 90)
+
+[should-fix] scripts/verify-app.mjs:3778 — Clip, animation, missing node, and hit-test rejection all return `false` until `waitFor` throws `timed out waiting for the rendered normal practice button`. That throw happens before `practiceStage = "start practice"` (3793) and before the first-move catch at 3804–3810, which records the last eight buttons. The outer catch at 3889 reports `stage: open the large practice file` plus path, gates, and a text slice. Operators lose clip/hit geometry and the button snapshot that identified f-20261030-03. (confidence: 88)
+
+Limitation: this review did not execute the native verifier. Outcomes above are from the call chain in source.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: R7 records
+
+````text
+No genuine record defects in this delta. f-20261030-03 stays open for R7 source closure, f-20261030-04 stays a separate product-layout observation, and later release work is still pending.
+
+Checked claims against named proof: repair commit `bba858ac` is verifier-only and hashes to `2a46dd44…` from parent `7fbdbc95…`. Frozen matcher, tests, TournamentCard, docs, spec, and release binary hashes match. Failed natives `YEmAn7`/`4sw3us` and diagnostic `1g4QVJ` complete `1`. Fixed writer `126D9u`, root control `22sUW5`/`fixed-native`, and pre-review `IqqZhm` complete `0`. Diagnostic geometry `800×647`, clip `bottom 356.1875` versus button `top 370.1875`, and DIV miss match the log. CR1–CR4, DS2, fifty ratings, mutation floors, OOM `0`, and pre-review lane times match the named artifacts. Original wait site `scripts/verify-app.mjs:3806-3813` and rethrow `:3920` match source `1da`. Train overflow and Start Practice lines match `PracticePanel.tsx:715` and `:967-981`.
+
+Sealed earlier annotations that still say a header was open are frozen receipts. Later close notes and handled headers supersede them. Exact LEAF JSONL command counts, live hosted jobs, and `findings.py check` were not re-run.
+
+This records lens is the same xAI family as the verifier repair and these record edits. Plan authorship and arbitration stay with root Codex/OpenAI.
+
+VERDICT: APPROVED
+````
+
+### Complete report text: Final same-source UI proof acceptance
+
+````text
+**VERDICT: PASS**
+
+Existing same-source UI proof is accepted. This leaf ran no container, build, native, or `pnpm verify:app` command. Git/sha256 identity recording only. Both first typed native attempts failed before the later repair.
+
+## Identity (before and after, source clean)
+
+| Check | Value |
+| --- | --- |
+| HEAD | `9f9aa195dc646b8c8f6d7bb7fcdd99a7c3758af3` |
+| Branch | `build/opening-game-references-publication-20261029...origin/master [ahead 56]` |
+| Status | empty (clean) before and after |
+| R7 reviewed-through | `fecaca4b67ffa8c9af137dfdb851a2f5134773df` |
+
+`git diff --name-only 1da359cfc030582f278aee1c1f33c53bc75651fe..HEAD`:
+
+- `scripts/verify-app.mjs`
+- `tasks/findings.md`
+- `tasks/handoffs/2026-10-29-opening-game-references-review.md`
+
+Application source, assets, config, locale, and the hard spec did not change after the freshly built binary.
+
+Live hashes match `before-final-ui.sha256` and `native-ui-first-binary.sha256`:
+
+- verifier `scripts/verify-app.mjs` `2a46dd447c0d0e4179035ddcac70824f7c860879a5accbabef0be00de9ff25f3`
+- `src/utils/gameReferences.ts` `a8f256036e3640b5aac29ffa5a9d9a809c314f0ba9f5fac4ada7b7f5d7d14cee`
+- `src/utils/gameReferences.test.ts` `95873e1e3358175a378976539490bb0ff9a5cc4a43728fbfe4228ff4e08a1692`
+- `src/components/databases/TournamentCard.tsx` `8ec6e4f5a35e9141fdee5a704b7c19ec448a0084dfddc26270defa69ac637840`
+- `src/components/databases/TournamentCard.test.tsx` `0ff2cac2ed0b830d1a4bdd36a03c27bfdab97b964f019071628e5e7404f62a12`
+- `docs/game-references.md` `52bdc83eb37a33d45aae82220adb5b13e4e9dbd1f80659eefc25f834e50d9ffb`
+- `e2e/game-references.spec.ts` `158ef0c7c539c46effc83dab36b20f6de66be48069a5e946b926c42d31bad53b`
+- `src-tauri/target/release/chessfable` `e66f12e4f2427f7f4d736e5380e2cee3899de4234a1c56f90e73c738116f176b`
+
+## Evidence adopted (true exits)
+
+**Pixels/build, then native FAIL (do not call native PASS):**
+
+- `pnpm test:e2e:container --project=game-references` in `gate-final-native-ui.20261030-0204.YEmAn7/log`: 2 passed (10.7s), both hard specs green, all 3 committed snapshots kept.
+- `pnpm build` / `Finished release ... in 1m 05s` in the same log.
+- Same attempt then `pnpm verify:app --screenshot .../verify-ui/citations-final.png` failed. `completion.record` is `1 final-native-ui.20261030-0204 1da359cfc030582f278aee1c1f33c53bc75651fe`. Timeout: first-move wait, Start Practice still idle, 0/0/12000.
+
+**Second typed native also FAIL:**
+
+- `gate-native-ui-repeat.20261030-0648.4sw3us/completion.record` is `1` at `c11dc77a3e6f8d4ed04295819d3b54127c24e506`.
+- Diagnostic `gate-native-start-diag.20261030-1.1g4QVJ/completion.record` is `1` (diagnosis only).
+
+**Later ordinary native PASS, same binary and verifier 2a:**
+
+- `gate-native-start-fixed.20261030-1.126D9u/completion.record` is `0 native-start-fixed.20261030-1 27d10273b29489444882d90da7de28d518d089e3`. Full uninstrumented log ends `all checks passed`. No `FAIL` lines.
+- `gate-native-start-root-control.22sUW5/completion.record` is `0`. `root-native-start-control/old-native.exit` is `1` (source-only reverse of target selection; same first-move timeout, Start Practice idle). `fixed-native.exit` is `0`. `fixed-native.log` ends `all checks passed`. `results.txt`: `reverse0 old-native1 same first-move timeout restore0 exact source fixed-native0`.
+
+**Native assertions actually present in both fixed logs:**
+
+- `ok fifty renderer ratings land in the native practice review store`
+- `ok renderer ratings do not alter the large deck's 12,000 native positions`
+- `ok CR1 imported formatted citations preserve prose and expose accessible notation actions`
+- `ok CR2 citation native database lookup admits the exact full game and starting FEN`
+- `ok CR3 citation native linked lookup admits original annotations, variations and file occurrence`
+- `ok CR4 absent citation explains the ChessBase PGN Library prerequisite without admitting a tab`
+- `ok DS2 database explorer persists the successful selection with its exact decimal storage_size`
+- titlebar close, process gone, shutdown sequence, cleanup inside budget, sound-server shutdown
+
+No inspector, staging, fixture, timeout, or assertion changes in those positive runs.
+
+## R7
+
+All 7 lenses APPROVED: correctness, root-cause, tests, minimalism, code-quality, error-handling, records. Native first-move correction `f-20261030-03` CLOSED by correctness/root-cause/tests. Root skipped DR19/DR20/DR21. No new source repair pending.
+
+## Images actually seen
+
+Image Read succeeded on all four named files (no image-tool refusal). Pixel proof for citations is the container snapshot match; this leaf visually inspected the same committed PNGs. This is not a pixel-diff recompute.
+
+1. `e2e/game-references.spec.ts-snapshots/citations-notation-game-references.png` — light ChessFable shell, maple board, tab “Preparation - Citations”, Info selected. Comment citations as gold underlined links; `Beerdsen,T` bold inside the first citation; second Titled Tuesday citation present; notation toolbar and move controls visible.
+2. `e2e/game-references.spec.ts-snapshots/citations-choice-320-game-references.png` — 320 dialog “Find referenced game”, two “Beerdsen, Thomas – Bluebaum, Matthias” occurrences, “Local reference games (citations.db3)”, Open game on the first card. Second card’s Open game is cut at the bottom of the 320 viewport (vertical clip). Horizontal layout stays inside the dialog.
+3. `e2e/game-references.spec.ts-snapshots/citations-missing-320-game-references.png` — same dialog for Srinath/Deac, “No matching game was found.” plus ChessBase PGN Library export/add-to-Library guidance, Search again. Board remains behind; no admitted game tab.
+4. `/tmp/build-build-opening-game-references-20261029-064642-82fa88e8/verify-ui/citations-final.png` — overwritten later-stage native frame: dark Engines page, “Add Engine” (Stockfish 19 / RubiChess 20240817), puzzle-folder and engine-folder permission toasts. Not a citations image.
+
+Chrome MCP did not drive Tauri. No new browser or WebDriver was started. Native GTK chrome (menus, decorations, file dialogs) is unproven here. Mega2025 content availability is not claimed.
+
+## Limits still open
+
+- Broad `f-20261011-03` and `f-20261022-05` remain OPEN.
+- Product Train clipping `f-20261030-04` remains OPEN.
+- Full final gates, push, hosted CI, and reviewed install remain pending.
+- Root owns the final visual decision and release.
+
+**Provenance:** Root plan authorship/arbitration share Codex/OpenAI context. Original feature and early detection OpenAI. Recent repairs including verifier 2a and source detection Grok/xAI in fresh sessions share family. Root operative record prose is OpenAI; this imported Grok report text is xAI. No whole-range family separation, provider quota, or Codex writer rollover is claimed.
 ````
