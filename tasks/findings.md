@@ -19696,7 +19696,7 @@ Actual Tauri release build and pnpm verify:app passed with canonical completion0
 
 ### Library file-count text inherits the low-contrast dark row hover pair
 
-* **ID:** f-20261030-16 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-16 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48
 * **Impact class:** ux
 * **Follow-up of:** f-20261030-05, the new row hover background in49230bcbbf215904897403de24583e4a326f6a05.
@@ -19721,3 +19721,11 @@ Plan authorship and arbitration shared root context. Detection and code use the 
 
 * **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"84214c282706160161d25087786aa52cee277dd727bddf2a6768c960330b1191","options":{"section":null},"request_id_sha256":"45cd8a68cb43bf8a52b050e5bbeb976e235aa02e99223fb15e3a0dd81f3662b3","results":["f-20261030-16"],"target":"f-20261030-16","v":1} -->
+
+The DirectoryTree hover boundary gives inherited dimmed metadata semantic foreground. The retained actual-hover assertion measured the unselected128count at4.48, and removing only that production line reproduced the same red. Restoration passed the whole dark journey. See fix-1-hover-proof/REPORT.md. Tests retain unselected/selected-file/selected-warning hover checks and original unhovered assertions.
+
+Implemented by source phase1 1039c01a and repair/image31156a5bbee14f7605742ffcbb66b839bd87c101, with the naming-only test clarification3e51e583. Root independent implementation proof passed63focused/625related,16locales/types/fullcontract/build/bundle and274snapshot comparisons at the recorded pre-rebase input. The integrated post-rebase mixed matrix passed8/8 under both worker androot, including7desktop surfaces. Complete repair pre-review passed100percent mutation, canonical completion0 root-review-repair 664cd514f5f8fa24aa4540c02421ed2b5ecc6c10. Cumulative reviewer closuresC1andR1approved without new findings.
+
+Actual Tauri release build and pnpm verify:app passed with canonical completion0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Real Library selection, opening, keyboard and stationary-row checks passed. Root inspected the before/after1280/1440/1920canonical screenshots and all relevant diffs. Full evidence and historical limitations are preserved in tasks/handoffs/2026-10-30-library-redesign-review.md and /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/REPORT.md. No ratchet was changed by this run. The remaining clean-tree push gates and required hosted CI must still pass before release.
+
+<!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"07479627261deee5793d75f2cbe4c848e22b64659e4e4474381408c9456b953f","header_sha256":"79f057d1db48a74dcc16e3507e6b35ccb89ec943f1c490d48c775570768fa08f","header_status":"handled","input_sha256":"67e1eb86338f6d740c09a8b1a3b73923d6dc63e6079a5906a6f672b58343384e","kind":"mutation-receipt","operation":"851b06ca3981a0a04f9d4a9d2f4bbdb29c383db04e723e332f6b3d7031bb3446","options":{"section":null},"request_id_sha256":"5a8453fca4751cfb5ef6022d7cb77b198e152b489ac1909707dd6945eee54d7d","results":["f-20261030-16"],"target":"f-20261030-16","v":1} -->
