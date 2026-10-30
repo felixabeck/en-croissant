@@ -15,6 +15,7 @@ import {
     getGameStats,
     getPGN,
     hasMorePriority,
+    headersToPGN,
     parsePGN,
     parseStartHeader,
     replayUciMoves,
@@ -816,7 +817,9 @@ function mockCommentLexer() {
     // Only lexing is replaced. parsePGN, splitPgnComment and getPGN stay real on both passes.
     mocks.lexPgn.mockImplementation(async (source: string): Promise<Token[]> => {
         const result: Token[] = [];
-        const words = source.matchAll(/\[([\w]+) "([^"]*)"\]|\{([^}]*)\}|[^\s(){}]+|[()]/g);
+        const words = source.matchAll(
+            /\[([\w]+) "((?:\\.|[^"\\])*)"\]|\{([^}]*)\}|[^\s(){}]+|[()]/g,
+        );
         for (const [word, tag, value, text] of words) {
             if (tag) result.push({ type: "Header", value: { tag, value } });
             else if (text !== undefined) result.push(comment(text));
@@ -830,6 +833,69 @@ function mockCommentLexer() {
         return result;
     });
 }
+
+test.each([
+    { value: 'Open "A" Cup', escaped: String.raw`Open \"A\" Cup` },
+    { value: "Berlin\\Hall\\", escaped: String.raw`Berlin\\Hall\\` },
+    { value: 'Ada \\"Ace" \\ Labs', escaped: String.raw`Ada \\\"Ace\" \\ Labs` },
+    { value: "Müller \\\\ Club", escaped: String.raw`Müller \\\\ Club` },
+])("PGN header round trip preserves $value", async ({ value, escaped }) => {
+    mockCommentLexer();
+    const tree = defaultTree();
+    addMainlineMove(tree.root, "e4");
+    tree.headers = {
+        ...tree.headers,
+        event: value,
+        site: value,
+        white: value,
+        black: value,
+        round: value,
+        time_control: value,
+        white_time_control: value,
+        black_time_control: value,
+        eco: value,
+        variant: value,
+        other: { Annotator: value },
+    };
+    const expectedTags = [
+        "Event",
+        "Site",
+        "White",
+        "Black",
+        "Round",
+        "TimeControl",
+        "WhiteTimeControl",
+        "BlackTimeControl",
+        "ECO",
+        "Variant",
+        "Annotator",
+    ].map((tag) => `[${tag} "${escaped}"]`);
+    const headers = headersToPGN(tree.headers);
+    for (const tag of expectedTags) expect(headers).toContain(`${tag}\n`);
+
+    let written = getPGN(tree.root, { ...ALL_MARKUPS, headers: tree.headers });
+    for (let pass = 0; pass < 3; pass++) {
+        for (const tag of expectedTags) expect(written).toContain(`${tag}\n`);
+        const parsed = await parsePGN(written);
+        expect(parsed.headers).toMatchObject({
+            event: value,
+            site: value,
+            white: value,
+            black: value,
+            round: value,
+            time_control: value,
+            variant: value,
+            other: {
+                Annotator: value,
+                WhiteTimeControl: value,
+                BlackTimeControl: value,
+                ECO: value,
+            },
+        });
+        expect(parsed.root.children[0].san).toBe("e4");
+        written = getPGN(parsed.root, { ...ALL_MARKUPS, headers: parsed.headers });
+    }
+});
 
 const SIX_COLOR_SHAPES = [
     { orig: "a1", dest: "a3", brush: "green" },

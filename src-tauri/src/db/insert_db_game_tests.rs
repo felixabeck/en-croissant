@@ -10,12 +10,12 @@ fn insert(
     cancellation: &CancellationToken,
 ) -> Result<i32, Error> {
     let state = app.state::<AppState>();
-    insert_db_game_blocking(
+    insert_db_game_from_reader(
         &state.pgn_path_authority,
         &state.database_repository,
         &state.search_cache,
         file,
-        pgn.into(),
+        pgn.as_bytes(),
         cancellation,
     )
 }
@@ -79,6 +79,86 @@ fn insert_db_game_round_trip_then_update_keeps_one_row_and_updates_counts() {
             .first::<Option<String>>(&mut *db)
             .unwrap();
         assert_eq!(value.as_deref(), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn insert_db_game_escaped_headers_preserve_native_spelling_and_export_valid_pgn() {
+    let source = r#"[Event "Open \"A\" \\ Cup"]
+[Site "Hall \"B\" \\ Wing"]
+[White "Ada \"Ace\" \\ Labs"]
+[Black "Bob \\ \"B\""]
+[Result "*"]
+
+1. e4 e5 *
+"#;
+    // The renderer's lexer contract carries raw escapes for parsePGN to decode.
+    let tokens = crate::lexer::lex_pgn_sync(source).unwrap();
+    for (index, (tag, value)) in [
+        ("Event", r#"Open \"A\" \\ Cup"#),
+        ("Site", r#"Hall \"B\" \\ Wing"#),
+        ("White", r#"Ada \"Ace\" \\ Labs"#),
+        ("Black", r#"Bob \\ \"B\""#),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            tokens[index],
+            crate::lexer::Token::Header {
+                tag: tag.into(),
+                value: value.into(),
+            }
+        );
+    }
+    let (dir, app, handle, _) = blocking_database_case();
+    let token = CancellationToken::new();
+    let id = insert(&app, handle.clone(), source, &token).unwrap();
+    let state = app.state::<AppState>();
+    let read = || {
+        get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery::new(),
+            &token,
+        )
+        .unwrap()
+    };
+    let games = read();
+    assert_eq!(games.count, Some(1));
+    assert_eq!(games.data[0].id, id);
+    assert_eq!(games.data[0].event, r#"Open \"A\" \\ Cup"#);
+    assert_eq!(games.data[0].site, r#"Hall \"B\" \\ Wing"#);
+    assert_eq!(games.data[0].white, "Ada \"Ace\" \\ Labs");
+    assert_eq!(games.data[0].black, "Bob \\ \"B\"");
+    assert_eq!(games.data[0].moves, "1. e4 e5 *");
+
+    let path = dir.path().join("escaped.pgn");
+    std::fs::write(&path, b"old").unwrap();
+    let destination = grant_pgn_file(&app, &path, "escaped.pgn", vec![PathOperation::WritePgn]);
+    export_to_pgn_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        handle.clone(),
+        destination,
+        &token,
+    )
+    .unwrap();
+    let exported = std::fs::read_to_string(path).unwrap();
+    for line in source.lines().take(4) {
+        assert!(exported.contains(line), "{exported}");
+    }
+    let next_id = insert(&app, handle.clone(), &exported, &token).unwrap();
+    assert_ne!(next_id, id);
+    let roundtrip = read();
+    assert_eq!(roundtrip.count, Some(2));
+    for game in roundtrip.data {
+        assert_eq!(game.event, games.data[0].event);
+        assert_eq!(game.site, games.data[0].site);
+        assert_eq!(game.white, games.data[0].white);
+        assert_eq!(game.black, games.data[0].black);
+        assert_eq!(game.moves, games.data[0].moves);
     }
 }
 
@@ -245,12 +325,12 @@ fn insert_db_game_refuses_a_linked_index_without_changing_its_source() {
     let collection = fixture.list().pop().unwrap();
     let before = std::fs::read(fixture.path("games")).unwrap();
     let state = &fixture.state;
-    let result = insert_db_game_blocking(
+    let result = insert_db_game_from_reader(
         &state.pgn_path_authority,
         &state.database_repository,
         &state.search_cache,
         collection.database.unwrap(),
-        PGN.into(),
+        PGN.as_bytes(),
         &CancellationToken::new(),
     );
     assert!(matches!(result, Err(Error::Conflict(_))));

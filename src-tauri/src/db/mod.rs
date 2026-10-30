@@ -4046,29 +4046,18 @@ pub async fn insert_db_game(
     crate::infra::operations::run_native_operation(operation, "insert_db_game", async move {
         BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
-                insert_db_game_blocking(&authority, &repository, &search_cache, file, pgn, token)
+                insert_db_game_from_reader(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    file,
+                    pgn.as_bytes(),
+                    token,
+                )
             })
             .await
     })
     .await
-}
-
-fn insert_db_game_blocking(
-    authority: &crate::infra::path_authority::SharedPathAuthority,
-    repository: &DatabaseRepository,
-    search_cache: &SearchCache,
-    file: DatabaseHandle,
-    pgn: String,
-    cancellation: &CancellationToken,
-) -> Result<i32, Error> {
-    insert_db_game_from_reader(
-        authority,
-        repository,
-        search_cache,
-        file,
-        pgn.as_bytes(),
-        cancellation,
-    )
 }
 
 fn parse_first_db_game(

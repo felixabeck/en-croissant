@@ -1,4 +1,5 @@
 import type { DatabaseHandle, NormalizedGame } from "@/bindings";
+import { decodePgnTagValue } from "./chess";
 import type { createTab } from "./tabs";
 
 /** Keep all headers and the qualified linked occurrence on every database opening path. */
@@ -9,7 +10,12 @@ export function databaseGameSeed(
     return {
         tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
         pgn: game.moves,
-        headers: game,
+        // Event and Site retain PGN escapes in the database. Tree headers contain decoded text.
+        headers: {
+            ...game,
+            event: decodePgnTagValue(game.event),
+            site: decodePgnTagValue(game.site),
+        },
         gameOrigin: database
             ? {
                   kind: "database",

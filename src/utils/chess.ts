@@ -173,47 +173,55 @@ export function getVariationLine(root: TreeNode, position: number[]): string[] {
     return moves;
 }
 
+function pgnTag(name: string, value: string | number): string {
+    return `[${name} "${String(value).replace(/[\\"]/g, "\\$&")}"]\n`;
+}
+
+export function decodePgnTagValue(value: string): string {
+    return value.replace(/\\([\\"])/g, "$1");
+}
+
 export function headersToPGN(game: GameHeaders): string {
-    let headers = `[Event "${game.event || "?"}"]
-[Site "${game.site || "?"}"]
-[Date "${game.date || "????.??.??"}"]
-[Round "${game.round || "?"}"]
-[White "${game.white || "?"}"]
-[Black "${game.black || "?"}"]
-[Result "${game.result}"]
-`;
+    let headers =
+        pgnTag("Event", game.event || "?") +
+        pgnTag("Site", game.site || "?") +
+        pgnTag("Date", game.date || "????.??.??") +
+        pgnTag("Round", game.round || "?") +
+        pgnTag("White", game.white || "?") +
+        pgnTag("Black", game.black || "?") +
+        pgnTag("Result", game.result);
     if (game.time) {
-        headers += `[UTCTime "${game.time}"]\n`;
+        headers += pgnTag("UTCTime", game.time);
     }
     if (game.white_elo !== undefined && game.white_elo !== null) {
-        headers += `[WhiteElo "${game.white_elo === 0 ? "-" : game.white_elo}"]\n`;
+        headers += pgnTag("WhiteElo", game.white_elo === 0 ? "-" : game.white_elo);
     }
     if (game.black_elo !== undefined && game.black_elo !== null) {
-        headers += `[BlackElo "${game.black_elo === 0 ? "-" : game.black_elo}"]\n`;
+        headers += pgnTag("BlackElo", game.black_elo === 0 ? "-" : game.black_elo);
     }
     if (game.start && game.start.length > 0) {
-        headers += `[Start "${JSON.stringify(game.start)}"]\n`;
+        headers += pgnTag("Start", JSON.stringify(game.start));
     }
     if (game.orientation) {
-        headers += `[Orientation "${game.orientation}"]\n`;
+        headers += pgnTag("Orientation", game.orientation);
     }
     if (game.time_control) {
-        headers += `[TimeControl "${game.time_control}"]\n`;
+        headers += pgnTag("TimeControl", game.time_control);
     }
     if (game.white_time_control) {
-        headers += `[WhiteTimeControl "${game.white_time_control}"]\n`;
+        headers += pgnTag("WhiteTimeControl", game.white_time_control);
     }
     if (game.black_time_control) {
-        headers += `[BlackTimeControl "${game.black_time_control}"]\n`;
+        headers += pgnTag("BlackTimeControl", game.black_time_control);
     }
     if (game.eco) {
-        headers += `[ECO "${game.eco}"]\n`;
+        headers += pgnTag("ECO", game.eco);
     }
     if (game.variant) {
-        headers += `[Variant "${game.variant}"]\n`;
+        headers += pgnTag("Variant", game.variant);
     }
     for (const [key, value] of Object.entries(game.other ?? {})) {
-        headers += `[${key} "${value}"]\n`;
+        headers += pgnTag(key, value);
     }
     return headers;
 }
@@ -514,7 +522,7 @@ function getPgnHeaders(tokens: Token[]): GameHeaders {
     for (const token of tokens) {
         if (token.type === "Header") {
             const { tag, value } = token.value;
-            headersN.set(tag, value);
+            headersN.set(tag, decodePgnTagValue(value));
         } else if (token.type === "Outcome") {
             headersN.set("Result", token.value);
         }
