@@ -11066,8 +11066,8 @@ Former private decision identifier: d-20261029-14
 * **Rejected:** Deleting the record on trash (restore would lose collection identity and the reference selection). Clearing the reference preference on trash. Changing account sync semantics. A user-facing error for cleanup failure after a committed delete.
 * **Reason:** Observed orphan row for Beck-Müller-2026-10-22.pgn (f-20261030-06); restore already reconciles records back by handle.
 * **Reversal path:** Map `trashed` back to `unavailable` in reconciliation and drop the consumer filters; registry records are unchanged in shape.
-* **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database. · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"83e4b27c864e7d86f539b65c93d764fc462c0db019c31a4f28e10b347a0e38fc","input_sha256":"a294e6294e1ac97eeb752cb5e6e9d7013d94565458bc9eea91480db95db425a2","kind":"mutation-receipt","operation":"78da0378fe0da66f485de8da05709245a3d07a48982b4a5ab2047e00d671d64d","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-07"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Claude Code autonomously under full auto, build run new-game-to-database. · **Superseded-by:** d-20261030-09
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e7e36465283686c860dd82ca666e55c7b47d859a71040fdc7c3cc1a7ea5dbccd","input_sha256":"a294e6294e1ac97eeb752cb5e6e9d7013d94565458bc9eea91480db95db425a2","kind":"mutation-receipt","operation":"78da0378fe0da66f485de8da05709245a3d07a48982b4a5ab2047e00d671d64d","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-07"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261030-08 — How should direct game creation and the trashed-collection fix fit the total gzip budget?
 
