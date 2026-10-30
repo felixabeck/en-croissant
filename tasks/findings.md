@@ -19463,3 +19463,20 @@ Correction to the close note: the implementation commit titled "Hide linked coll
 
 Repaired by 73ae3ae4 (escaped-header export round trip runs only on unix; insert and read-back stay on every platform) and 766dd1d4 (the linked New game e2e spec's read_game mock returns the appended game and the test asserts the tab stays verified past one freshness poll). Hosted CI run 41063715985 on e34a0882: test, rust-windows-test, rust-macos-test and all three rust-platform jobs succeeded.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"254da8be76a8ef0ed96aab469675a373d47a3a74ad1a53ee5b8b245c0ea8dd8c","header_sha256":"d992b89551d088ae68630ba33cec85eccd9a127b9b04d70753b10c9101172a2d","header_status":"handled","input_sha256":"59afcf4ced7c51dd25e85092fb8d9dbb09305871c2e5fd174d50414d59406f46","kind":"mutation-receipt","operation":"a2de0df4a45e43d55a6c119cb094296ccbc450667aab5035e69a3afbffcac045","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-17"],"target":"f-20261030-17","v":1} -->
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Library card actions are visually detached and the type filter is blank
+
+* **ID:** f-20261030-05 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** library-redesign-library-visual-redesign-20261030-082735-27ae83b1
+* **Impact class:** ux
+* **Where:** `src/components/library/LibraryPage.tsx`, `src/components/databases/useDatabaseLibrary.tsx`, `src/components/files/DirectoryTree.tsx`.
+* **Defect:** The supplied real-app screenshot shows database favourite/open controls between cards, a blank all-types selector, ragged file metadata/actions, and an unstructured unavailable collection. Code confirms renderRow places the action Group after GenericCard, Select has a null value without a placeholder, and DirectoryTree uses a wrapping inline Group for every file row.
+* **Failure scenario:** Opening Library with multiple files and databases makes a database's actions appear attached to the following card. The active unfiltered state has no visible label. The detail pane is cut off in the supplied screenshot and requires viewport proof.
+* **Open question:** How should the authorized presentation redesign group rows and contain card controls while preserving all existing behavior?
+* **Authority:** Felix requested a full-auto Library visual redesign on 2026-10-30, with grouping, aligned rows, visible all-types state, warning collection state, contained database controls and responsive split layout.
+* **Related:** f-20260829-02 is handled and covers prior narrow-screen layout work. This entry concerns the supplied current screenshot, not a claim that its prior repair failed.
+* **Proof:** Focused Library/FileCard/DirectoryTree tests, canonical container screenshots at 1280/1440/1920, full frontend gates and pnpm verify:app.
