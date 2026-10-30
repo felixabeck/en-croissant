@@ -1,6 +1,6 @@
 # Library redesign review record
 
-Current checkpoint: both presentation phases and all 42 intentional snapshots are committed. Cumulative review round 1 completed with two should-fix findings about test geometry naming and finding attribution. Both corrections are implemented, their complete pre-review is green, and reviewer closure is next. Native verification, final finding closure, clean final gates, push, required CI, installation and the post-push build ledger remain pending. This record describes the review history and does not claim release completion.
+Current checkpoint: both presentation phases and all 42 intentional snapshots are committed. Both cumulative code-review findings are independently closed. Canonical browser proof and actual Tauri verification passed. All ten Library findings are canonically handled. Latest records review, clean final gates, push, required CI, installation and the post-push build ledger remain pending. This record does not claim release completion.
 
 Archived plans, source citations, decisions and checkpoint paragraphs below describe their frozen revisions. Their then-pending statements are historical and superseded by the current checkpoint and later entries. In particular, the original Library decision was d-20261030-05 in this unpublished branch. After an upstream ID collision, the identical original decision was re-recorded through the canonical writer as d-20261030-15. The current published d-20261030-05 governs freshness and is a different decision.
 
@@ -942,7 +942,103 @@ The test correction is committed as 3e51e5839d717870605f2ad5ac68c7eabe07314b. Al
 
 Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate sessions, without family separation.
 
-## Open completion obligations
+## Remaining completion obligations
 
-C1andR1require reviewer closure after the repair pre-review. Formal verify-ui still requires the actual release build and pnpm verify:app, with external before/after images at1280/1440/1920. Main05and08–16must close through the canonical writer after final evidence. The final known record changes must be committed and reviewed before the clean final gate. Release requires immediate upstream integration, complete frontend push gates, remote-red check, explicit ordinary master push, required CI success, installation from the verified pushed SHA, then the separately validated post-push build-ledger row and owned-worktree cleanup. No completion or passed pending gate is predicted here.
+The latest record changes require independent records review before the clean final gate. Completion requires immediate upstream integration, complete frontend push gates, remote-red check, explicit ordinary master push, required CI success, installation from the verified pushed SHA, then the separately validated post-push build-ledger row and owned-worktree cleanup. No passed pending gate or release completion is predicted here.
 
+## Completed review, native verification and finding closure
+
+Round 2 closed C1 and R1 with no new finding. Cumulative diff history is r1=2, r2=0, two unique issues opened and resolved. Source review is complete through 0bfe34ae7786800d76c4279cdbb27af08fea356a. Subsequent changes are records only. The native canonical completion record is 0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a. Root inspected the native image and all three exported desktop after images.
+
+All ten findings f-20261030-05 and f-20261030-08 through f-20261030-16 were closed by canonical writer transactions after browser and native proof. The final closure commit is 495893a0. Found-by attribution is retained. Optional Root grouping remains absent on 15 and 16, as the earlier grouping transaction failed before writing. Findings validation reports ok with 679 findings, 26 pickable and 3 blocked. Final push gates remain pending.
+
+## Preserved completed record: code-r2-review-history.md
+
+````text
+# Cumulative review round 2
+
+Closure delta31156a5bbee14f7605742ffcbb66b839bd87c101..0bfe34ae7786800d76c4279cdbb27af08fea356a, fullbase9a9fc303..HEADcontext. Canonical read-only code-quality, correctness and tests lenses usednormalgpt-6.1-sol/medium. Separate records closure usedmechanicalgpt-6.1-sol/medium. All4polledcompleted4/4 and root read everyreport.
+
+C1 CLOSED byitscode-qualitywitness, confidence99. The limit is named and conversion usesactualrootfont, preserving192px/384px limits on all7surfaces. No newsourcefinding. R1 CLOSED byrecords witness, all10correctFoundByfields verifiedand remainopenpendingproductverification. Records firstlookalsoapprovedthefulltrackedhandoffwithnofinding. Its independentauthorization/screenshotlimitremainsnamed, rootdirectlyreceivedthoseuserinputs andviewedscreenshot. No newapprovalrequirementiscreated.
+
+Rootacceptsbothclosures. diff_adopted_per_round r1=2r2=0, uniqueopened2resolved2, open0, Skip0Defer0inthislineage. OutsideownerDefer1remainsseparate. Mainfull-planr1=0,focusedwarningW1r1=1r2=0 andfocusedhoverr1=0unchanged. Wall122seconds includesorchestration/reportinspection, activewallunknown. No parallel durationssummed. REVIEWED_THROUGH=0bfe34ae7786800d76c4279cdbb27af08fea356a.
+
+Plan authorship and arbitration sharedrootcontext. Detection andcodeuse sameOpenAI/Codexfamilyin separatesessions, withoutfamilyseparation. Thetestclaritywriterwasdifferentmodelgpt-6-luna/maxwithinthatfamily. No runtimecausalregressionclaimfortheclarityrefactor. Nativeproofandfinalgatespendingatthischeckpoint.
+
+## Raw code-quality report
+
+```text
+C1 CLOSED — `e2e/database-files.spec.ts:297` names the 12rem limit, lines 335–337 read the computed root font size, and line 526 expresses the bound with explicit units. The unchanged 16px/32px assertions preserve the 192px/384px limits (confidence: 99).
+
+No new readability or local-consistency findings in the closure delta. Read-only review, no files changed.
+
+Reviewer and code author share the OpenAI/Codex family. Family separation was absent.
+
+VERDICT: APPROVED
+```
+
+## Raw correctness report
+
+```text
+No correctness defects found in the closure delta. The computed root font preserves the 192px and 384px limits across all seven surfaces.
+
+Limitation: source review only, no fresh browser execution (confidence: 99). Review and implementation share the OpenAI/Codex family.
+
+VERDICT: APPROVED
+```
+
+## Raw tests report
+
+```text
+No findings. The closure preserves the compact-stats assertion’s 192px/384px limits and its execution across all seven desktop surfaces. Reverting this naming-only correction should remain green.
+
+Limitation: source review only. Final native verification and clean gates remain pending (confidence: 100). Review shares the implementation’s OpenAI/Codex family.
+
+VERDICT: APPROVED
+```
+
+## Raw records report
+
+```text
+R1 CLOSED — all ten findings have accurate explicit attribution and remain open. Ledger validation passed with 679 findings.
+
+No records findings.
+
+Unverifiable independently: Felix’s original authorization and supplied screenshot. Archived pixel inspection claims were checked against retained records, without repeating visual inspection.
+
+VERDICT: APPROVED
+```
+
+
+
+````
+
+## Preserved completed record: verify-ui/REPORT.md
+
+````text
+# Library UI verification
+
+VERDICT: PASS
+
+The requested Library presentation is verified through canonical Chromium pixels and actual Tauri behavior. Root inspected the supplied before image, every emitted diff, all responsive mixed captures and the final three exported file-selection screenshots. The database and unavailable selections were also inspected and exported separately.
+
+Canonical pixel proof: phase-2-integrated-proof passed the complete274-test suite with snapshot comparison enabled and updates disabled. Root independently repeated274/274 before the prescribed rebase. After published freshness integration, the test-clarity worker and root each passed the8-case selected mixed-Library suite, including all7desktop surfaces with unchanged canonical images. This covers1280/1440/1920 at100and200percent plus1440dark100, file/database/unavailable selection, accurate filtered headings/counts, associated File type label and All types, aligned metadata/actions, quiet delete and actual hover/focus accessibility, contained card controls, keyboard order, recovery, bounded panes and stationary rows. Existing320/200percent journeys were preserved. No host-rendered baseline or checker/tolerance change.
+
+All42intentional baseline changes are committed,30existing and12new, exactnames in the source commit message and durable handoff. No unpredicted update occurred. Database-game-open320and the later new-game modal/board baselines were excluded from updates and passed exact comparisons. Root inspected84emitted diffpaths through23byte-identical representatives, then26updatedbaselines matched retained actualbytes and the16others were independently opened. Detail in phase-2-final-pixel-inspection.md andphase-2-updated-baseline-inspection.md.
+
+Native proof: existing release build followed by pnpm verify:app --screenshot /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/app-verification.png. Root canonical completion record is0 root-native 0bfe34ae7786800d76c4279cdbb27af08fea356a in gate-root-native.AUmZHh. pnpm build finishedrelease in3m19s, using existing rustBuildEnvironment allocation. The actual app ran offscreen through kwin_wayland, tauri-driver and WebKitWebDriver2.52.6 with matchingWebKitGTK2.52.6, disposableHOME andrealRust/IPC. Allchecks passed. LibraryLU1/LU2 andGO2–GO14 passed, including one sidebar/one mixed tree, selected detail switching, sibling labelled database opener inside itscard, preview-only singleclick, explicit andfixed-coordinate/Enter game opening, emptyPGN refusal andstationary file-row coordinates. Actual unselectedFilesrowdoubleclick openeditsgame. NewgameNG1insert-once/update andfreshness mainthread publication462ms against1000ms also passed as inherited product checks, not changes authored by this run.
+
+The retained native image is the verifier's last requested capture, an engine-dialog/permission-error journey. Root opened it. It is not represented as a Library after screenshot. Those visible errors are expected refusal cases in the successful verifier. NativeGTKmenus/dialogs/decorations are outside WebDriver and were not verified. This page-only change needs no additional GTK-specific check.
+
+Before: /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/library-before.png
+After files: /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/library-after-1280.png, library-after-1440.png, library-after-1920.png
+Additional1440states: library-after-databases-1440.png andlibrary-after-unavailable-1440.png
+Native product journey: /tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/verify-ui/app-verification.png
+The after exports are exact bytes from committed canonical baselines, with source paths/SHA256 in library-after-manifest.json. Finalclean-treefrontendgates andremoteCI remainpending. No release/push/install acceptance is predicted by this report.
+
+Plan authorship and arbitration sharedrootcontext. Detection andsourceimplementation used the sameOpenAI/Codexfamily in separatesessions, withoutfamilyseparation. Rootowned finalUI acceptance.
+
+
+````
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
