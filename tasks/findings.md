@@ -16692,7 +16692,7 @@ Obsolete (setup-findings triage 2026-10-13): GO14 real keyboard typing fixed (8a
 
 ### Native large-file freshness apply check exceeded its budget once during opening proof
 
-* **ID:** f-20261010-41 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** origin-master-test-green
+* **ID:** f-20261010-41 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Filed from:** e838b3a7-7402-4e53-a614-eb2da79f3765 · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-e838b3a7-7402-4e53-a614-eb2da79f3765-release-1.jsonl
 * **Where:** scripts/verify-app.mjs large-practice external-rewrite timing measurement, FILE_FRESHNESS_APPLY_BUDGET_MS, and the real file freshness renderer path.
 * **Defect:** The unchanged full native diagnostic run for f-20261001-08 reported FAIL for the freshness transition applies within 1000 ms of the measured read. Observed apply1186.0ms, native read47.0ms, total freshness2807.0ms, stateverified. The independent one-poll-interval-plus-measured-read-and-apply assertion passed. The immediately preceding baseline passed this1000ms check. No cause or repeatability is established. The only current verifier edits concern later GO9 geometry and GO14 diagnostics, which were not reached when this failure occurred.
@@ -16715,7 +16715,7 @@ Push of f-20261010-41 is refused. The newest completed Test workflow on origin/m
 Re-check from a branch checkout: pnpm ci:remote:check must print OK for every newest completed Test job. Then set Blocked back to none and resume the push. Before rebasing onto that master, renumber the local freshness decisions d-20261030-06, d-20261030-07 and d-20261030-08 through record-decision. Origin/master already published different decisions under those same ids. Do not edit the headings in place. Receipts hash the effect block.
 
 The conflicted rebase onto 135c5804 was aborted. Reviewed local head remains ea59a76d5a686e1848dabe237a93509d6f119e99, 13 commits ahead of 4bd75ea8a756a7d839089fd0421c0dee6c593f21. Frontend push gates on that head were green before master moved and are not evidence for 135c5804. Clean native verify:app on the pre-rebase binary reported mainThreadMs 522 and 565, both within the 1000 ms budget.
-<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"0f0883171dec316a7522faa558541ca03f6bae49a50d7051bfc702e9432c2be6","header_sha256":"9f317360496348a2d09857290e8ed7895ce2a677fd6b955e322e01d7b2e4e42d","header_status":"open","input_sha256":"e30274cde0e815fb915994be043f3db59b7fce145823b979f5f756b486c3c417","kind":"mutation-receipt","operation":"d91aefda3ec3d5f6e68c9fb640b51f07f69acc618208c0d354ed3731406dd7b1","options":{"headers":{"Blocked":"origin-master-test-green"},"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
+<!-- ledger-meta {"command":"set-header","effect_lines":5,"effect_sha256":"0f0883171dec316a7522faa558541ca03f6bae49a50d7051bfc702e9432c2be6","header_sha256":"2d6f587c81f9a4ae29b9ee06749e649eed257dc7f42f8a8f25c6df497a7caede","header_status":"handled","input_sha256":"e30274cde0e815fb915994be043f3db59b7fce145823b979f5f756b486c3c417","kind":"mutation-receipt","operation":"d91aefda3ec3d5f6e68c9fb640b51f07f69acc618208c0d354ed3731406dd7b1","options":{"headers":{"Blocked":"origin-master-test-green"},"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
 
 Rebase onto 135c580404bfb156b445c195990497f55da83865 completed at local head 2c289d5edd6ff2876ef8f7031044ca8971f33d31. The sentences above that say the conflicted rebase was aborted, and that the reviewed local head remains ea59a76d5a686e1848dabe237a93509d6f119e99, describe only that aborted attempt. They are not the current branch.
 
@@ -16725,6 +16725,15 @@ Push is still refused. The newest completed Test workflow on origin/master remai
 
 Range-diff of the pre-rebase range against this rebase pairs the product commits as equal, so their earlier review carries. The four decision commits are not equal. Their §4a closure is still required before gates and push. Frontend push gates recorded on ea59a76d are void for this tree. The review handoff cites d-20261030-12 for the lex ceiling (2c289d5edd6ff2876ef8f7031044ca8971f33d31).
 <!-- ledger-meta {"command":"annotate","effect_lines":7,"effect_sha256":"286413e32635cb5272b141d6960f611a0a812b2e7ed359c56314fa05a850e06d","input_sha256":"64899ab37df0136a32ecd64cca15951f18b175e3a25136a068d927acff963c5c","kind":"mutation-receipt","operation":"3148fbb46f154a7c2c7ee3dac990f57d76b992b6db29a49fc325e69f5d71990e","options":{"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
+
+The large-repertoire tab publishes file freshness inside the existing 1000 ms main-thread budget after readGame returns. mainThreadMs is the only apply assertion. Two clean pnpm verify:app runs on the publication binary reported mainThreadMs 522 and 565. applicationMs and observationGapMs were printed and have no separate ceiling.
+
+Landed on master as 54467f689e9a5c0f365800fa79505da9883fbc63. Test run 41072133449 concluded success, including the Linux test job 124118690106, rust-windows-test 124118690370, rust-macos-test 124118690249, rust-platform macos-26-intel aarch64-apple-darwin 124118690747, rust-platform macos-26-intel x86_64-apple-darwin 124118690211, and rust-platform windows-latest x86_64-pc-windows-msvc 124118690266.
+
+Rejected: holding the tree view unmounted through the flush, raising FILE_FRESHNESS_APPLY_BUDGET_MS, moving FILE_FRESHNESS_POLL_INTERVAL_MS, restoring cards.find in buildFromTree, and renumbering upstream decisions d-20261030-06, d-20261030-07 and d-20261030-08. Local freshness decisions are d-20261030-05, d-20261030-12, d-20261030-13 and d-20261030-14. d-20260925-11 stays in force.
+
+The origin-master-test-green precondition is met, and this header change clears it. f-20260920-14, f-20261008-15, f-20261011-03, f-20261017-04 and f-20261022-05 stay outside this finding.
+<!-- ledger-meta {"command":"set-header","effect_lines":7,"effect_sha256":"5aa4bc29f1ba4c1896fef278b5993a4e261a482aca5aae82fbe2089e8c8b809d","header_sha256":"2d6f587c81f9a4ae29b9ee06749e649eed257dc7f42f8a8f25c6df497a7caede","header_status":"handled","input_sha256":"9117dee1bc7a32c7752648e13bf3ef14901d60067d2ef4aa9f826c7f98fc0cb7","kind":"mutation-receipt","operation":"ceecbe0ad31e3c950fda4bb879e738161e9965af6b29b83897d7c17cad3d8db0","options":{"headers":{"Blocked":"none","Status":"handled"},"section":null},"request_id_sha256":null,"results":["f-20261010-41"],"target":"f-20261010-41","v":1} -->
 
 ---
 
