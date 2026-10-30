@@ -11142,3 +11142,13 @@ Former private decision identifier: d-20261029-14
 * **Reason:** The failing interval is in-page wall clock from the `readGame` hook until the freshness attribute mutates. It currently includes those mounted full-tree walks. Reversal: an idle diagnostic whose `applicationMs` is already above 1,000, or an idle `verify:app` whose `mainThreadMs` is still above 1,000 after the walks are deferred.
 * **Decided by:** drain planner 5d2cb8aa, recorded by session bba03ee4 under full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c0037398e3bc1985b2071b441cf33d5279583015fa89c3f43cb87fb223812fe6","input_sha256":"8320d51eb5b408c005e249f0792c62131b9541c6435c6f84ddad559885e4aed2","kind":"mutation-receipt","operation":"1c9c596f9ad6c2c0e6e8d137a6cf1a6dc56a26d49a477835f054012cec1ee07b","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-13"],"target":"decisions-ledger","v":1} -->
+
+### d-20261030-14 — When is the freshness split measured relative to the publication change?
+
+* **Question:** When is the freshness timing split measured relative to the publication change?
+* **Governs:** f-20261010-41
+* **Chosen:** Two idle diagnostic `verify:app` runs print `readGame`, `lexAwaitMs`, `applicationMs`, `observationGapMs`, and `mainThreadMs` on the unchanged publication path before any walk is deferred. `applicationMs` above 1,000 on either run stops red and does not move the parser. A miss of the old combined 1,000 ms check on those two runs does not fail the phase and does not edit a constant.
+* **Rejected:** Measuring the segments only after the deferral. That cannot show whether the original overrun was lexer wait, store application, or the commit.
+* **Reason:** The finding requires repeated ordinary runs and independently measured timing boundaries, and it says a later passing run does not erase the observation. The 1,000 ms pass/fail still applies to `mainThreadMs` after the publication change and to the native wedge.
+* **Decided by:** drain planner 5d2cb8aa, recorded by session bba03ee4 under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fdcd408cf0de5beb1c95e671152ba2e76551fe5d78558b19b81481cbb49f6cb8","input_sha256":"ae8903f4e6754fe032f10006962c4e62caa3ffda17728334318f76940f43a409","kind":"mutation-receipt","operation":"95caf1ce65b5622830c16c09c959ca3c553521a8a0148b2b190793972d4e0ce8","options":{"section":null},"request_id_sha256":null,"results":["d-20261030-14"],"target":"decisions-ledger","v":1} -->
