@@ -28,6 +28,8 @@ const MAX_TREE_DEPTH = 512;
 const MAX_NODE_NAGS = 1_024;
 const MAX_SHAPE_BRUSH_LENGTH = 64;
 const MAX_NODE_SHAPES = 10_000;
+export const MAX_STORE_ATTEMPTS = 100;
+const MAX_STORE_DESTINATION_LENGTH = 256;
 // Tree text comes out of a lexed PGN, which the backend caps at 10 MiB (`validate_pgn_len`), and
 // no parsed string — a header, a comment, its commands — is longer than its source. So any parsed
 // tree rehydrates; a lower bound once made a tab with one long comment unreadable.
@@ -189,7 +191,10 @@ function createPersistedTreeSchema() {
         sourceStamp: z.string().regex(STAMP_PATTERN).nullable(),
         linkedSource: linkedGameLocatorSchema.nullable().optional(),
         appendAttempted: z.boolean(),
-        storeAttempts: z.array(z.string().min(1).max(256)).max(100).optional(),
+        storeAttempts: z
+            .array(z.string().min(1).max(MAX_STORE_DESTINATION_LENGTH))
+            .max(MAX_STORE_ATTEMPTS)
+            .optional(),
         report: z.object({
             inProgress: z.boolean(),
             operationId: z.string().nullable().optional(),

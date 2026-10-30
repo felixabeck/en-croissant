@@ -6,7 +6,7 @@ import { tabsAtom, updateTabById } from "@/state/atoms";
 import { collectOriginalPathOwners } from "@/state/pathOwners";
 import { loadWorkspace, saveWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
-import { tabStorage } from "@/state/store/tabStorage";
+import { tabStorage, TREE_STORAGE_VERSION } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
 import { defaultTree } from "./treeReducer";
 import {
@@ -202,6 +202,95 @@ test("uncertain store survives ordinary saves and rehydration and refuses the sa
     expect(cold.getState().storeAttempts).toEqual(attempts);
 });
 
+test.each([
+    { linked: false, failure: "flush" },
+    { linked: false, failure: "read-back" },
+    { linked: true, failure: "flush" },
+    { linked: true, failure: "read-back" },
+])(
+    "store marker $failure failure blocks native writes for linked=$linked",
+    async ({ linked, failure }) => {
+        const f = fixture();
+        if (linked) {
+            native.collectionForDatabase.mockResolvedValue({
+                file,
+                name: "Linked",
+                status: "ready",
+            } as CollectionDescriptor);
+        }
+        if (failure === "flush") {
+            vi.spyOn(tabStorage, "flush").mockReturnValueOnce([f.id]);
+        } else {
+            vi.spyOn(tabStorage, "read").mockReturnValueOnce({
+                version: TREE_STORAGE_VERSION,
+                state: { ...f.store.getState(), storeAttempts: [] },
+            });
+        }
+        expect(await saveToFile(f.args())).toMatchObject({
+            status: "failed",
+            error: { category: "unexpected" },
+        });
+        expect(native.insertDbGame).not.toHaveBeenCalled();
+        expect(native.writeGame).not.toHaveBeenCalled();
+        expect(native.writeDbGame).not.toHaveBeenCalled();
+        expect(native.countPgnGames).not.toHaveBeenCalled();
+        expect(f.store.getState().storeAttempts).toEqual([]);
+        expect(tabStorage.read<{ storeAttempts: string[] }>(f.id)?.state.storeAttempts).toEqual([]);
+        expect(f.getTab(f.id)?.gameOrigin).toEqual({ kind: "databaseDraft", database });
+    },
+);
+
+test.each(["missing-stamp", "missing-revision", "transport"])(
+    "uncertain linked append (%s) survives an ordinary save and rehydration and blocks retry",
+    async (outcome) => {
+        const f = fixture({ kind: "database", database, gameId: 7 });
+        native.collectionForDatabase.mockImplementation(async (target) =>
+            target === otherDatabase
+                ? ({ file, name: "Linked", status: "ready" } as CollectionDescriptor)
+                : null,
+        );
+        if (outcome === "transport") {
+            native.writeGame.mockRejectedValueOnce(new Error("IPC disconnected"));
+        } else {
+            native.writeGame.mockResolvedValueOnce({
+                stamp: outcome === "missing-stamp" ? null : "b".repeat(64),
+                revision: outcome === "missing-revision" ? null : "saved",
+            });
+        }
+        expect(await saveToDatabase({ ...f.args(), database: otherDatabase })).toMatchObject({
+            status: "failed",
+        });
+        expect(native.writeGame).toHaveBeenCalledExactlyOnceWith(
+            file,
+            3,
+            expect.stringContaining("e4"),
+            { kind: "append" },
+        );
+        const attempts = ["file:linked-file"];
+        expect(f.store.getState().storeAttempts).toEqual(attempts);
+        expect(f.getTab(f.id)?.gameOrigin).toEqual({ kind: "database", database, gameId: 7 });
+        f.store.getState().makeMove({ payload: "e5" });
+        expect(await saveToFile(f.args())).toBe("saved");
+        expect(native.writeDbGame).toHaveBeenCalledExactlyOnceWith(
+            database,
+            7,
+            expect.stringContaining("e5"),
+        );
+        expect(f.store.getState().storeAttempts).toEqual(attempts);
+        tabStorage.flush();
+        closeTreeStore(f.id);
+        const cold = createTreeStore(f.id);
+        expect(cold.getState().storeAttempts).toEqual(attempts);
+        expect(
+            await saveToDatabase({ ...f.args(), store: cold, database: otherDatabase }),
+        ).toMatchObject({ status: "failed", error: { category: "applied-despite-error" } });
+        expect(native.writeGame).toHaveBeenCalledOnce();
+        expect(native.countPgnGames).toHaveBeenCalledOnce();
+        expect(native.insertDbGame).not.toHaveBeenCalled();
+        expect(cold.getState().storeAttempts).toEqual(attempts);
+    },
+);
+
 test("overlapping store submissions perform exactly one native insert and rebind", async () => {
     const f = fixture({ kind: "database", database, gameId: 7 });
     const pending = deferred<number>();
@@ -300,6 +389,51 @@ test("concurrent different destinations wait for one another and each rebinds to
         database: otherDatabase,
         gameId: 99,
     });
+});
+
+test("draft save A, store B, draft save A inserts each once then updates the current admitted row", async () => {
+    const f = fixture();
+    const firstInsert = deferred<number>();
+    const secondInsert = deferred<number>();
+    const finalWrite = deferred<void>();
+    native.insertDbGame
+        .mockReturnValueOnce(firstInsert.promise)
+        .mockReturnValueOnce(secondInsert.promise);
+    native.writeDbGame.mockReturnValueOnce(finalWrite.promise);
+    const first = saveToFile(f.args());
+    expect(saveToFile(f.args())).toBe(first);
+    await vi.waitFor(() => expect(native.insertDbGame).toHaveBeenCalledOnce());
+    const second = saveToDatabase({ ...f.args(), database: otherDatabase });
+    expect(saveToDatabase({ ...f.args(), database: otherDatabase })).toBe(second);
+    const final = saveToFile(f.args());
+    expect(native.insertDbGame).toHaveBeenCalledExactlyOnceWith(
+        database,
+        expect.stringContaining("e4"),
+    );
+    expect(native.writeDbGame).not.toHaveBeenCalled();
+    firstInsert.resolve(42);
+    expect(await first).toBe("saved");
+    await vi.waitFor(() => expect(native.insertDbGame).toHaveBeenCalledTimes(2));
+    expect(native.insertDbGame).toHaveBeenNthCalledWith(2, otherDatabase, expect.any(String));
+    expect(f.getTab(f.id)?.gameOrigin).toEqual({ kind: "database", database, gameId: 42 });
+    expect(native.writeDbGame).not.toHaveBeenCalled();
+    secondInsert.resolve(99);
+    expect(await second).toBe("saved");
+    await vi.waitFor(() => expect(native.writeDbGame).toHaveBeenCalledOnce());
+    expect(native.insertDbGame).toHaveBeenCalledTimes(2);
+    expect(native.writeDbGame).toHaveBeenCalledExactlyOnceWith(
+        otherDatabase,
+        99,
+        expect.stringContaining("e4"),
+    );
+    finalWrite.resolve();
+    expect(await final).toBe("saved");
+    expect(f.getTab(f.id)?.gameOrigin).toEqual({
+        kind: "database",
+        database: otherDatabase,
+        gameId: 99,
+    });
+    expect(f.store.getState().storeAttempts).toEqual([]);
 });
 
 test("acknowledged insert finalizes its exact successor before a workspace observer throws", async () => {

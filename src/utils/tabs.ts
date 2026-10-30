@@ -5,7 +5,7 @@ import { useSetAtom, useStore, type getDefaultStore } from "jotai";
 import type { StoreApi } from "zustand";
 import { createContext, startTransition, useCallback } from "react";
 import type { FileMetadata } from "@/components/files/file";
-import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
+import { MAX_STORE_ATTEMPTS, persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
 import {
     getTabTreeKey,
@@ -795,7 +795,8 @@ async function storeToDatabase({
             ? `file:${fileWorkspaceKey(collection.file)}`
             : `database:${databaseHandleKey(database)}`;
         const attempts = store.getState().storeAttempts ?? [];
-        if (attempts.includes(destination) || attempts.length >= 100) return uncertainStore();
+        if (attempts.includes(destination) || attempts.length >= MAX_STORE_ATTEMPTS)
+            return uncertainStore();
         const pgn = serializeStoreTree(store);
         store.getState().setStoreAttempts([...attempts, destination]);
         const key = getTabTreeKey(tab);
@@ -1018,9 +1019,8 @@ export function saveToFile(args: SaveArguments): Promise<SaveResult> {
     if (owner.gameOrigin.kind === "databaseDraft") {
         if (args.isUserSave) {
             const database = owner.gameOrigin.database;
-            return withStoreFlight({ ...args, database }, (tab) =>
-                storeToDatabase({ ...args, tab, database }),
-            );
+            // A queued draft save follows the current origin after an earlier store rebinds it.
+            return withStoreFlight({ ...args, database }, (tab) => saveToFileNow({ ...args, tab }));
         }
         if (!saveFlights.get(args.store)?.storing) return Promise.resolve("cancelled");
     }
