@@ -116,6 +116,14 @@ struct Record {
         deserialize_with = "deserialize_locator"
     )]
     locator: Vec<OsString>,
+    // Retain the last verified trash binding for cleanup after authority removes the handle.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "serialize_locator",
+        deserialize_with = "deserialize_locator"
+    )]
+    trash_locator: Vec<OsString>,
     file: FileWorkspaceHandle,
     identity: (u64, u64),
     #[serde(default)]
@@ -153,6 +161,17 @@ impl SourceBinding {
 }
 
 impl Record {
+    fn is_trashed(&self) -> bool {
+        !self.trash_locator.is_empty()
+    }
+
+    fn source_is_trashed(&self, authority: &SharedPathAuthority) -> bool {
+        match relative_locator(authority, &self.workspace, &self.file) {
+            Ok(locator) => crate::file_workspace::is_trash_locator(&locator),
+            Err(_) => self.is_trashed(),
+        }
+    }
+
     fn binding(&self) -> SourceBinding {
         SourceBinding {
             id: self.id,
@@ -293,7 +312,9 @@ impl Registry {
                     (record.id == creation.id
                         || record.file == *file
                         || record.identity == identity
-                        || record.workspace == *workspace && record.locator == locator
+                        || record.workspace == *workspace
+                            && !record.is_trashed()
+                            && record.locator == locator
                         || record.account.as_ref() == Some(&creation.account))
                         && !(record.id == creation.id
                             && record.workspace == *workspace
@@ -448,6 +469,7 @@ pub(crate) enum CollectionStatus {
     Retired,
     PreservedOriginal,
     Unavailable,
+    Trashed,
 }
 
 #[derive(Clone, Serialize, Type)]
@@ -540,7 +562,14 @@ impl CollectionService {
     }
 
     fn require_active(&self, id: Uuid, token: &CancellationToken) -> Result<(), Error> {
-        if Self::state(&mut *self.lock(token)?)?.inactive_migration_index(id) {
+        let mut guard = self.lock(token)?;
+        let registry = Self::state(&mut guard)?;
+        if registry.inactive_migration_index(id)
+            || registry
+                .records
+                .iter()
+                .any(|record| record.id == id && record.is_trashed())
+        {
             return Err(Error::StaleGame);
         }
         Ok(())
@@ -567,32 +596,28 @@ impl CollectionService {
         }
     }
 
-    fn maintain(&self, cancellation: &CancellationToken) -> Result<(), Error> {
-        let mut done = crate::infra::cancellable_lock::lock_std_cancellable(
-            &self.maintenance_done,
-            cancellation,
-            "collection maintenance lock was poisoned",
-        )?;
-        if *done {
-            return Ok(());
-        }
-        let registry = Self::state(&mut *self.lock(cancellation)?)?.clone();
+    fn retained_files(registry: &Registry) -> HashSet<String> {
         let mut retained = HashSet::new();
         for id in registry
             .records
             .iter()
             .map(|record| record.id)
             .chain(registry.creations.iter().map(|intent| intent.id))
+            .chain(registry.migrations.iter().flat_map(|intent| {
+                [intent.collection, intent.original_collection]
+                    .into_iter()
+                    .flatten()
+            }))
         {
             let leaf = format!("{id}.db3");
             for suffix in ["", "-wal", "-shm", "-journal", ".ecsi", ".integrity"] {
                 retained.insert(format!("{leaf}{suffix}"));
             }
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                retained.insert(format!("{id}-identity.db3{suffix}"));
+            }
         }
         for record in &registry.records {
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                retained.insert(format!("{}-identity.db3{suffix}", record.id));
-            }
             if let Some(pending) = &record.pending {
                 retained.insert(format!("{}-batch.pgn", pending.id));
             }
@@ -609,6 +634,125 @@ impl CollectionService {
                 retained.insert(format!("{}{suffix}", intent.id));
             }
         }
+        retained
+    }
+
+    fn remove_record_files(
+        &self,
+        record: &Record,
+        candidate: &Registry,
+        token: &CancellationToken,
+    ) -> Result<(), Error> {
+        let owned = Self::retained_files(&Registry {
+            records: vec![record.clone()],
+            ..Registry::default()
+        });
+        let retained = Self::retained_files(candidate);
+        let primary = format!("{}.db3", record.id);
+        let mut names = owned.difference(&retained).collect::<Vec<_>>();
+        names.sort_by_key(|name| (*name == &primary, *name));
+        for name in names {
+            cancellation_check(token)?;
+            let leaf = OsStr::new(name);
+            let identity = match entry_identity_at(self.root.descriptor(), leaf, false) {
+                Ok(identity) => identity,
+                Err(error) if error.is_missing_entry() => continue,
+                Err(error) => return Err(error),
+            };
+            remove_entry_at(self.root.descriptor(), leaf, identity, false)?;
+        }
+        self.root.descriptor().sync_all()?;
+        Ok(())
+    }
+
+    fn remove_trashed_records(
+        &self,
+        authority: &SharedPathAuthority,
+        workspace: &FileWorkspaceHandle,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        let records = Self::state(&mut *self.lock(cancellation)?)?
+            .records
+            .iter()
+            .filter(|record| record.workspace == *workspace && record.is_trashed())
+            .cloned()
+            .collect::<Vec<_>>();
+        for record in records {
+            let absent = || {
+                if relative_locator(authority, workspace, &record.file).is_ok() {
+                    return Ok(false);
+                }
+                crate::file_workspace::workspace_locator_exists(
+                    authority,
+                    workspace,
+                    &record.trash_locator,
+                )
+                .map(|exists| !exists)
+            };
+            let remove = || {
+                let _workspace = crate::infra::cancellable_lock::lock_std_cancellable(
+                    &self.workspace_mutation,
+                    cancellation,
+                    "workspace mutation lock was poisoned",
+                )?;
+                let mut guard = self.lock(cancellation)?;
+                let mut candidate = Self::state(&mut guard)?.clone();
+                if !candidate.records.iter().any(|current| current == &record)
+                    // Migration recovery requires these record identities at registry load.
+                    || candidate.migrations.iter().any(|intent| intent.collection == Some(record.id) || intent.original_collection == Some(record.id))
+                    || !absent()?
+                {
+                    return Ok(());
+                }
+                candidate.records.retain(|prior| prior.id != record.id);
+                self.remove_record_files(&record, &candidate, cancellation)?;
+                self.save(&mut guard, candidate)
+            };
+            // Database retirement precedes workspace and registry ownership, as in migration.
+            // Keep the primary until its companions are gone so an interrupted cleanup retries.
+            let result = (|| {
+                if !absent()? {
+                    return Ok(());
+                }
+                match self.target(&record) {
+                    Ok(target) => {
+                        self.repository
+                            .delete_exclusive_cancellable(&target, cancellation, || {
+                                self.search_cache.invalidate_database(&target);
+                                let result = remove();
+                                self.search_cache.invalidate_database(&target);
+                                result
+                            })
+                    }
+                    Err(error) if error.is_missing_entry() => remove(),
+                    Err(error) => Err(error),
+                }
+            })();
+            if let Err(error) = result {
+                if matches!(error, Error::Cancellation) {
+                    return Err(error);
+                }
+                log::warn!(
+                    "trashed collection {} cleanup will retry: {}",
+                    record.id,
+                    error.diagnostic()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn maintain(&self, cancellation: &CancellationToken) -> Result<(), Error> {
+        let mut done = crate::infra::cancellable_lock::lock_std_cancellable(
+            &self.maintenance_done,
+            cancellation,
+            "collection maintenance lock was poisoned",
+        )?;
+        if *done {
+            return Ok(());
+        }
+        let registry = Self::state(&mut *self.lock(cancellation)?)?.clone();
+        let retained = Self::retained_files(&registry);
         let entries = read_directory_entries_at(
             self.root.descriptor(),
             cancellation,
@@ -635,6 +779,10 @@ impl CollectionService {
                     ".db3.ecsi",
                     ".db3.integrity",
                     "-batch.pgn",
+                    "-identity.db3",
+                    "-identity.db3-wal",
+                    "-identity.db3-shm",
+                    "-identity.db3-journal",
                 ]
                 .iter()
                 .any(|suffix| name.get(36..) == Some(*suffix));
@@ -1409,6 +1557,7 @@ impl CollectionService {
             id: collection,
             workspace: intent.workspace.clone(),
             locator,
+            trash_locator: vec![],
             file,
             identity: snapshot.identity.pair(),
             source_epoch: registry
@@ -1460,6 +1609,7 @@ impl CollectionService {
                         id,
                         workspace: intent.workspace.clone(),
                         locator: original_locator,
+                        trash_locator: vec![],
                         file: source.clone(),
                         identity: original_snapshot.identity.pair(),
                         source_epoch: 0,
@@ -1562,12 +1712,19 @@ impl CollectionService {
         for record in &registry.records {
             if !ids.insert(record.id)
                 || !sources.insert(record.file.path_ref().id.clone())
-                || !locators.insert((
-                    record.workspace.path_ref().id.clone(),
-                    record.locator.clone(),
-                ))
+                || !record.is_trashed()
+                    && !locators.insert((
+                        record.workspace.path_ref().id.clone(),
+                        record.locator.clone(),
+                    ))
                 || record.locator.is_empty()
                 || record.locator.iter().any(|part| single_leaf(part).is_err())
+                || record.is_trashed()
+                    && (!crate::file_workspace::is_trash_locator(&record.trash_locator)
+                        || record
+                            .trash_locator
+                            .iter()
+                            .any(|part| single_leaf(part).is_err()))
                 || record
                     .database
                     .as_ref()
@@ -1670,6 +1827,9 @@ impl CollectionService {
         record: &Record,
         authority: &SharedPathAuthority,
     ) -> Result<authority::PgnSnapshot, Error> {
+        if record.is_trashed() {
+            return Err(Error::StaleGame);
+        }
         if relative_locator(authority, &record.workspace, &record.file)? != record.locator {
             return Err(Error::StaleGame);
         }
@@ -1765,10 +1925,17 @@ impl CollectionService {
         )?;
         let (mut listing, missing) =
             crate::file_workspace::collect_tree_entries(authority, workspace, cancellation)?;
-        let records = self.reconcile_owned(authority, workspace, &mut listing, cancellation)?;
+        self.reconcile_owned(authority, workspace, &mut listing, cancellation)?;
         // Migration takes its database owner before workspace publication. Index refresh must
         // therefore run after releasing workspace ownership, as well as the registry owner.
         drop(workspace_guard);
+        self.remove_trashed_records(authority, workspace, cancellation)?;
+        let records = Self::state(&mut *self.lock(cancellation)?)?
+            .records
+            .iter()
+            .filter(|record| record.workspace == *workspace)
+            .cloned()
+            .collect::<Vec<_>>();
         let collections = records
             .iter()
             .map(|record| self.describe(authority, record, cancellation))
@@ -1782,14 +1949,30 @@ impl CollectionService {
         workspace: &FileWorkspaceHandle,
         listing: &mut WorkspaceListing,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<Record>, Error> {
+    ) -> Result<(), Error> {
         if !supported() {
-            return Ok(vec![]);
+            return Ok(());
         }
         let mut entries = vec![];
         visit_file_entries(&listing.entries, &mut |entry| entries.push(entry.clone()));
         let mut guard = self.lock(cancellation)?;
         let mut registry = Self::state(&mut guard)?.clone();
+        for record in registry
+            .records
+            .iter_mut()
+            .filter(|record| record.workspace == *workspace)
+        {
+            if let Ok(locator) = relative_locator(authority, workspace, &record.file) {
+                record.trash_locator = if crate::file_workspace::is_trash_locator(&locator) {
+                    locator
+                } else {
+                    vec![]
+                };
+            }
+        }
+        if *Self::state(&mut guard)? != registry {
+            self.save(&mut guard, registry.clone())?;
+        }
         for entry in entries {
             cancellation_check(cancellation)?;
             let Some(mut metadata) = entry.metadata else {
@@ -1846,10 +2029,17 @@ impl CollectionService {
                     "source already belongs to a different library workspace".into(),
                 ));
             }
-            let position = registry.records.iter().position(|record| {
-                record.workspace == *workspace
-                    && (record.file == entry.handle || record.locator == locator)
-            });
+            let position = registry
+                .records
+                .iter()
+                .position(|record| record.workspace == *workspace && record.file == entry.handle)
+                .or_else(|| {
+                    registry.records.iter().position(|record| {
+                        record.workspace == *workspace
+                            && !record.is_trashed()
+                            && record.locator == locator
+                    })
+                });
             let preserved_intent = registry.migrations.iter().position(|intent| {
                 intent.collection.is_some()
                     && intent.choice == MigrationChoice::Database
@@ -1871,6 +2061,7 @@ impl CollectionService {
                         .map_or_else(Uuid::new_v4, |intent| intent.id),
                     workspace: workspace.clone(),
                     locator: locator.clone(),
+                    trash_locator: vec![],
                     file: entry.handle.clone(),
                     identity: (0, 0),
                     source_epoch: 0,
@@ -1891,6 +2082,7 @@ impl CollectionService {
             }
             let record = &mut registry.records[position];
             record.locator = locator;
+            record.trash_locator.clear();
             record.file = entry.handle;
             record.purpose = metadata.file_type;
             record.identity = Self::snapshot(record, authority)?.identity.pair();
@@ -1904,13 +2096,7 @@ impl CollectionService {
         if *Self::state(&mut guard)? != registry {
             self.save(&mut guard, registry)?;
         }
-        let records = Self::state(&mut guard)?
-            .records
-            .iter()
-            .filter(|record| record.workspace == *workspace)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(records)
+        Ok(())
     }
 
     fn descriptor(record: &Record) -> CollectionDescriptor {
@@ -1954,6 +2140,11 @@ impl CollectionService {
         let Some(record) = record else {
             return Ok(None);
         };
+        if record.source_is_trashed(authority) {
+            let mut descriptor = Self::descriptor(&record);
+            descriptor.status = CollectionStatus::Trashed;
+            return Ok(Some(descriptor));
+        }
         if let Some(status) = self.inactive_status(&record, cancellation)? {
             let mut descriptor = Self::descriptor(&record);
             descriptor.status = status;
@@ -2000,6 +2191,10 @@ impl CollectionService {
         cancellation: &CancellationToken,
     ) -> Result<CollectionDescriptor, Error> {
         let mut descriptor = Self::descriptor(record);
+        if record.source_is_trashed(authority) {
+            descriptor.status = CollectionStatus::Trashed;
+            return Ok(descriptor);
+        }
         if let Some(status) = self.inactive_status(record, cancellation)? {
             descriptor.status = status;
             descriptor.database = None;
@@ -2068,6 +2263,9 @@ impl CollectionService {
             .cloned()
             .ok_or_else(|| Error::InvalidInput("unknown linked collection".into()))?;
         drop(guard);
+        if record.source_is_trashed(authority) {
+            return Err(Error::StaleGame);
+        }
         if Self::snapshot(&record, authority).is_err() {
             let captured = record.binding();
             let (listing, _) = crate::file_workspace::collect_tree_entries(
@@ -2270,6 +2468,7 @@ impl CollectionService {
                 id: Uuid::new_v4(),
                 workspace: source.clone(),
                 locator: vec![OsString::from("retired.pgn")],
+                trash_locator: vec![],
                 file: source,
                 identity: (0, 0),
                 source_epoch: 0,
@@ -3557,6 +3756,7 @@ pub(crate) async fn reselect_linked_collection(
                     record.file = source;
                     record.workspace = workspace;
                     record.locator = locator;
+                    record.trash_locator.clear();
                     record.identity = CollectionService::snapshot(&record, &authority)?
                         .identity
                         .pair();

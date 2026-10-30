@@ -297,6 +297,30 @@ test("composed file selection refuses a mismatched second target and opens a sub
   expect(rows().map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
 });
 
+test.each([null, { provider: "lichess" as const, account: "player" }])(
+  "a trashed collection has no missing peer row, including an account source",
+  async (account) => {
+    mocks.files = [];
+    mocks.collections = [
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        name: "Trashed games",
+        file: file.handle,
+        database: database.file,
+        account,
+        status: "trashed",
+        generation: "",
+        omitted: 0,
+        retiredDatabase: null,
+        fetchSinceMs: null,
+      },
+    ];
+    await render();
+    expect(host.textContent).not.toContain("Trashed games");
+    expect(host.textContent).not.toContain("The search index is unavailable");
+  },
+);
+
 test("a linked collection composes one Library row and opens the existing explorer and reference routes", async () => {
   const linked: import("@/bindings").CollectionDescriptor = {
     id: "22222222-2222-4222-8222-222222222222",

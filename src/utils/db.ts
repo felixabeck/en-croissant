@@ -23,7 +23,11 @@ import { loadSignedCatalog } from "@/utils/signedCatalog";
 import { logFailureSafely, normalizeError, safeFailureContext } from "@/platform/errors";
 import i18n from "i18next";
 import { getDefaultStore } from "jotai";
-import { fileWorkspaceAtom } from "@/state/atoms";
+import {
+    fileWorkspaceAtom,
+    referenceDbAtom,
+    reconcileReferenceCollectionAtom,
+} from "@/state/atoms";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }> & {
     collection?: import("@/bindings").CollectionDescriptor;
@@ -258,11 +262,19 @@ function databaseReadErrorMessage(permission: boolean, missing: boolean): string
     return i18n.t("Databases.LoadError.Title");
 }
 
+let latestReferenceListing: object | undefined;
+
 export async function getDatabases(options: { signal?: AbortSignal } = {}): Promise<DatabaseList> {
+    const referenceListing = {};
+    latestReferenceListing = referenceListing;
+    const store = getDefaultStore();
+    const workspace = store.get(fileWorkspaceAtom);
+    const reference = store.get(referenceDbAtom);
     const root = await tauri.getDatabaseWorkspace();
     const databases = await tauri.listWorkspaceDatabases(root, options);
-    const collections = (await tauri.linkedCollectionsSupported())
-        ? await tauri.listLinkedCollections(getDefaultStore().get(fileWorkspaceAtom), options)
+    const linkedSupported = await tauri.linkedCollectionsSupported();
+    const collections = linkedSupported
+        ? await tauri.listLinkedCollections(workspace, options)
         : [];
     const retired = new Set(
         collections.flatMap((collection) =>
@@ -275,6 +287,7 @@ export async function getDatabases(options: { signal?: AbortSignal } = {}): Prom
         { signal: options.signal, operation: "getDatabases metadata" },
     );
     for (const collection of collections) {
+        if (collection.status === "trashed" && !collection.account) continue;
         if (collection.status === "retired" || !collection.database) continue;
         if (collection.status !== "ready") {
             values.push({
@@ -297,6 +310,13 @@ export async function getDatabases(options: { signal?: AbortSignal } = {}): Prom
             options.signal,
         );
         values.push({ ...database, collection });
+    }
+    if (
+        linkedSupported &&
+        !options.signal?.aborted &&
+        latestReferenceListing === referenceListing
+    ) {
+        store.set(reconcileReferenceCollectionAtom, { workspace, reference, collections });
     }
     return {
         databases: values,

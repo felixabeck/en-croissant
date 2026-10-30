@@ -117,6 +117,7 @@ export default function LibraryPage() {
       : undefined;
   const missing = databases.collections.filter(
     (collection) =>
+      collection.status !== "trashed" &&
       collection.status !== "retired" &&
       collection.status !== "preservedOriginal" &&
       collection.status !== "ready" &&

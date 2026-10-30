@@ -1311,7 +1311,7 @@ export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: st
 export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigint; whiteTime: bigint | null; blackTime: bigint | null }
 export type CollectionDescriptor = { id: string; name: string; file: FileWorkspaceHandle; database: DatabaseHandle | null; account: AccountIdentity | null; status: CollectionStatus; generation: string; omitted: number; retiredDatabase: DatabaseHandle | null; fetchSinceMs: string | null; pendingBatch?: FileWorkspaceHandle | null }
 export type CollectionEdit = { kind: "delete"; games: LinkedGameLocator[] } | { kind: "cleanup"; empty: boolean; duplicates: boolean } | { kind: "renamePlayer"; from: string; to: string }
-export type CollectionStatus = "ready" | "stale" | "missing" | "retired" | "preservedOriginal" | "unavailable"
+export type CollectionStatus = "ready" | "stale" | "missing" | "retired" | "preservedOriginal" | "unavailable" | "trashed"
 /**
  * Persistence result paired with a committed path identifier. `DurabilityUncertain` means the
  * replacement happened but syncing its parent directory failed; callers must not retry.

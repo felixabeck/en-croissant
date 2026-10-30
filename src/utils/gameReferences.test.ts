@@ -1376,6 +1376,30 @@ test("empty Library is a complete no-match", async () => {
     expect(await search()).toEqual({ candidates: [], failures: [], complete: true });
 });
 
+test("trashed non-account sources do not produce reference failures", async () => {
+    const { library, search } = setup();
+    library.collections = [
+        {
+            id: "trashed",
+            name: "Trashed",
+            file: { id: { id: "pgn" }, kind: "fileWorkspace" },
+            database: null,
+            account: null,
+            status: "trashed",
+            generation: "",
+            omitted: 3,
+            retiredDatabase: null,
+            fetchSinceMs: null,
+        },
+    ];
+    expect((await search()).failures).toEqual([]);
+    library.collections![0].account = { provider: "lichess", account: "player" };
+    expect((await search()).failures).toContainEqual({
+        source: "Trashed",
+        category: "unavailable",
+    });
+});
+
 test("preserves unread, unavailable and omitted source guidance alongside successful candidates", async () => {
     const { library, search } = setup();
     library.unread.push({ filename: "Unread", error: "Select this source again" });

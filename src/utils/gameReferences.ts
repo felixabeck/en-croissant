@@ -367,6 +367,7 @@ export async function lookupGameReference(
     for (const unread of library.unread)
         addFailure({ source: unread.filename, category: "unavailable", message: unread.error });
     for (const collection of library.collections ?? []) {
+        if (collection.status === "trashed" && !collection.account) continue;
         if (collection.status === "retired") continue;
         if (!collection.database) addFailure({ source: collection.name, category: "unavailable" });
         if (collection.omitted > 0) addFailure({ source: collection.name, category: "omitted" });

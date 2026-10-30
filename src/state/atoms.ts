@@ -7,6 +7,7 @@ import type {
     EngineTerminalSnapshot,
     GameResult,
     DatabaseHandle,
+    CollectionDescriptor,
     FileWorkspaceHandle,
     GoMode,
     OpeningBookHandle,
@@ -621,13 +622,93 @@ export const addRecentFileAtom = atom(null, (get, set, file: Omit<RecentFile, "l
 
 // Database
 
-export const referenceDbAtom = initializeBeforeUse(
+const storedReferenceDbAtom = initializeBeforeUse(
     atomWithStorage<DatabaseHandle | null>(
         "reference-database",
         null,
         createZodStorage(databaseHandleSchema.nullable(), localStorage),
     ),
     initializeRendererState,
+);
+
+const referenceCollectionOwnerAtom = documentPreferences.atomWithStorage(
+    "reference-collection-owner",
+    null as {
+        database: DatabaseHandle;
+        workspace: FileWorkspaceHandle;
+        collection: string;
+    } | null,
+    createZodStorage(
+        z
+            .object({
+                database: databaseHandleSchema,
+                workspace: fileWorkspaceHandleSchema,
+                collection: z.string().uuid(),
+            })
+            .nullable(),
+        localStorage,
+    ),
+);
+
+export const referenceDbAtom = atom(
+    (get) => get(storedReferenceDbAtom),
+    (get, set, update: SetStateAction<DatabaseHandle | null>) => {
+        const previous = get(storedReferenceDbAtom);
+        const next = typeof update === "function" ? update(previous) : update;
+        if (previous?.id.id !== next?.id.id) set(referenceCollectionOwnerAtom, null);
+        set(storedReferenceDbAtom, next);
+    },
+);
+
+/** Retain one selected collection owner across reloads, so only its removal clears the preference. */
+export const reconcileReferenceCollectionAtom = atom(
+    null,
+    (
+        get,
+        set,
+        listing: {
+            workspace: FileWorkspaceHandle | null;
+            reference: DatabaseHandle | null;
+            collections: readonly CollectionDescriptor[];
+        },
+    ) => {
+        const reference = get(referenceDbAtom);
+        const workspace = get(fileWorkspaceAtom);
+        if (
+            !reference ||
+            !workspace ||
+            reference.id.id !== listing.reference?.id.id ||
+            fileWorkspaceKey(workspace) !==
+                (listing.workspace ? fileWorkspaceKey(listing.workspace) : null)
+        )
+            return;
+        const collection = listing.collections.find(
+            (item) =>
+                item.database?.id.id === reference.id.id ||
+                item.retiredDatabase?.id.id === reference.id.id,
+        );
+        const owner = get(referenceCollectionOwnerAtom);
+        if (collection) {
+            if (
+                owner?.collection !== collection.id ||
+                owner.database.id.id !== reference.id.id ||
+                fileWorkspaceKey(owner.workspace) !== fileWorkspaceKey(workspace)
+            ) {
+                set(referenceCollectionOwnerAtom, {
+                    database: reference,
+                    workspace,
+                    collection: collection.id,
+                });
+            }
+            return;
+        }
+        if (
+            owner?.database.id.id === reference.id.id &&
+            fileWorkspaceKey(owner.workspace) === fileWorkspaceKey(workspace) &&
+            !listing.collections.some((item) => item.id === owner.collection)
+        )
+            set(referenceDbAtom, null);
+    },
 );
 
 export const selectedPuzzleDbAtom = initializeBeforeUse(

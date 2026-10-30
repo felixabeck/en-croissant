@@ -33,6 +33,38 @@ use crate::infra::path_authority::{CapabilityDirectory, PreparedEntry};
 use std::ffi::OsStr;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
+
+pub(crate) fn is_trash_locator(locator: &[std::ffi::OsString]) -> bool {
+    locator
+        .first()
+        .is_some_and(|part| part == OsStr::new(TRASH_DIRECTORY))
+}
+
+pub(crate) fn workspace_locator_exists(
+    authority: &SharedPathAuthority,
+    workspace: &FileWorkspaceHandle,
+    locator: &[std::ffi::OsString],
+) -> Result<bool, Error> {
+    let root = mutation_target(authority, workspace)?;
+    let Some((leaf, parents)) = locator.split_last() else {
+        return Err(Error::StaleGame);
+    };
+    let result = (|| {
+        let mut directory = root.directory()?.try_clone()?;
+        for parent in parents {
+            crate::infra::fs::single_leaf(parent)?;
+            directory = crate::infra::fs::open_directory_at(&directory, parent, true)?;
+        }
+        crate::infra::fs::single_leaf(leaf)?;
+        crate::infra::fs::entry_identity_at(&directory, leaf, false)?;
+        Ok::<_, Error>(())
+    })();
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.is_missing_entry() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 const MAX_WORKSPACE_METADATA_BYTES: usize = 1024 * 1024;
 const METADATA_LIMIT_MESSAGE: &str = "PGN metadata exceeds the supported size limit";
 
@@ -2180,7 +2212,7 @@ pub async fn trash_workspace_entry(
     .await
 }
 
-fn trash_entry(
+pub(crate) fn trash_entry(
     pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
@@ -2281,7 +2313,7 @@ pub async fn restore_workspace_entry(
     .await
 }
 
-fn restore_entry(
+pub(crate) fn restore_entry(
     pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
@@ -2491,12 +2523,184 @@ fn permanently_delete_entry_blocking(
         );
         Ok(removal)
     })();
+    if result.is_ok() {
+        if let Err(error) = reconcile_workspace_collections(pgn_path_authority, workspace) {
+            log::warn!(
+                "collection cleanup after permanent delete will retry: {}",
+                error.diagnostic()
+            );
+        }
+    }
     (dropped_engine_executables, result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_collections_purging_trashed_directory_removes_descendant_records() {
+        use crate::db::linked_collections::{tests::Fixture, CollectionStatus};
+        let fixture = Fixture::new();
+        let (_, folder) = registered_child_directory(&fixture.state, &fixture.workspace, "games");
+        create_workspace_file_blocking(
+            fixture.workspace.clone(),
+            folder.clone(),
+            "child".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Game,
+                tags: vec![],
+            },
+            WorkspaceFileContent::Text {
+                pgn: "[Event \"Game\"]\n\n1. e4 e5 *".into(),
+            },
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.state.pgn_repository,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(fixture.list().len(), 1);
+        trash_entry(
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.workspace,
+            &folder,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        let (_, result) = permanently_delete_entry_blocking(
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.workspace,
+            &folder,
+            &CancellationToken::new(),
+        );
+        result.unwrap().finish().unwrap();
+        assert!(fixture.list().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_collections_permanent_delete_retries_cache_failure_without_failing_delete() {
+        use crate::db::linked_collections::{tests::Fixture, CollectionStatus};
+        #[derive(Default)]
+        struct FailCache {
+            source_removed: std::sync::atomic::AtomicBool,
+            cleanup_failures: std::sync::atomic::AtomicUsize,
+        }
+        impl crate::infra::fs::RemovalInjector for FailCache {
+            fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+                // The PGN's counted unlink syncs before collection cleanup starts. Sidecar
+                // removal and SQLite retirement do not have a fixed number of unlink hooks.
+                if point == RemovalFaultPoint::ParentSync {
+                    self.source_removed
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if point == RemovalFaultPoint::BeforeTopOpen
+                    && self
+                        .source_removed
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    self.cleanup_failures
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err(std::io::Error::other("cache cleanup fault"));
+                }
+                Ok(None)
+            }
+        }
+        let fixture = Fixture::new();
+        let file = fixture.create(
+            "games",
+            "[Event \"Game\"]\n\n1. e4 e5 *",
+            WorkspaceFileType::Game,
+        );
+        let original = fixture.list().remove(0);
+        trash_entry(
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.workspace,
+            &file,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        let injector = Arc::new(FailCache::default());
+        let fault = crate::infra::fs::scoped_test_removal_injector(injector.clone());
+        let (_, result) = permanently_delete_entry_blocking(
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.workspace,
+            &file,
+            &CancellationToken::new(),
+        );
+        result.unwrap().finish().unwrap();
+        assert!(
+            injector
+                .cleanup_failures
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 0
+        );
+        assert_eq!(fixture.registered_ids(), vec![original.id.clone()]);
+        assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        assert_eq!(fixture.registered_ids(), vec![original.id.clone()]);
+        drop(fault);
+        assert!(fixture.list().is_empty());
+        assert!(fixture.registered_ids().is_empty());
+        assert!(!fixture
+            .directory
+            .path()
+            .join("app/collections")
+            .join(format!("{}.db3", original.id))
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_collections_trashed_account_preparation_stays_non_ready() {
+        use crate::db::linked_collections::{
+            prepare_account_collection, tests::Fixture, AccountIdentity, CollectionStatus,
+        };
+        let fixture = Fixture::new();
+        let file = fixture.create(
+            "account",
+            "[Event \"Game\"]\n\n1. e4 e5 *",
+            WorkspaceFileType::Game,
+        );
+        let original = fixture.list().remove(0);
+        fixture.account(&original.id, "lichess");
+        trash_entry(
+            &fixture.state.pgn_path_authority,
+            &fixture.state.workspace_mutation,
+            &fixture.workspace,
+            &file,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        fixture.list();
+        let app = tauri::test::mock_builder()
+            .manage(fixture.state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let prepared = prepare_account_collection(
+            fixture.workspace,
+            AccountIdentity {
+                provider: "lichess".into(),
+                account: "player".into(),
+            },
+            None,
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let collection = prepared.collection.unwrap();
+        assert_eq!(collection.id, original.id);
+        assert_eq!(collection.status, CollectionStatus::Trashed);
+        assert_eq!(collection.database, original.database);
+    }
     use crate::engine::EngineKey;
     use crate::infra::fs::AtomicFileFaultPoint;
     #[cfg(unix)]

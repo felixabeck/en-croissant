@@ -154,3 +154,20 @@ test("a registered canonical collection without a listed index cannot fall back 
         ),
     ).toEqual({ type: "unavailable", filenames: [registered.name] });
 });
+
+test.each(["lichess", "chesscom"] as const)(
+    "trashed %s account retains its canonical error or unavailable result",
+    (provider) => {
+        const collection = { ...linkedAccount(provider, "felix"), status: "trashed" as const };
+        const linked = { ...legacy(collection.name, "index"), collection };
+        const listing = { databases: [linked], unread: [], collections: [collection] };
+        expect(findAccountDatabase(listing, provider, "Felix")).toBe(linked);
+        expect(
+            findAccountDatabase(
+                { ...listing, databases: [], collections: [{ ...collection, database: null }] },
+                provider,
+                "Felix",
+            ),
+        ).toEqual({ type: "unavailable", filenames: [collection.name] });
+    },
+);

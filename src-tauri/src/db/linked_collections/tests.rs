@@ -19,7 +19,235 @@ mod native_tests {
         format!("[Event \"Collection fixture\"]\n[Site \"https://www.chess.com\"]\n[Date \"2026.10.01\"]\n[UTCTime \"12:00:00\"]\n[White \"Player\"]\n[Black \"Opponent\"]\n[Result \"1-0\"]\n{}[Custom \"keep this tag\"]\n\n1. {moves} {{{note}}} 1-0\n\n", id.map(|id| format!("[Link \"https://www.chess.com/game/live/{id}\"]\n")).unwrap_or_default())
     }
 
+    #[test]
+    fn trashed_source_keeps_identity_across_same_name_recreation_restart_and_restore() {
+        let mut fixture = Fixture::new();
+        let source = fixture.create(
+            "games",
+            &game(None, "e4 e5", "original"),
+            WorkspaceFileType::Game,
+        );
+        let original = fixture.list().remove(0);
+        fixture.trash(&source);
+        let trashed = fixture.list().remove(0);
+        assert_eq!(trashed.status, CollectionStatus::Trashed);
+        assert_eq!(trashed.id, original.id);
+        assert_eq!(trashed.database, original.database);
+        assert_eq!(
+            fixture
+                .service
+                .record(
+                    Uuid::parse_str(&original.id).unwrap(),
+                    &CancellationToken::new()
+                )
+                .unwrap()
+                .locator,
+            vec![OsString::from("games.pgn")]
+        );
+        assert_eq!(
+            fixture
+                .service
+                .metadata_for_database(
+                    &fixture.state.pgn_path_authority,
+                    original.database.as_ref().unwrap(),
+                    &CancellationToken::new()
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+            CollectionStatus::Trashed
+        );
+        assert!(fixture
+            .service
+            .current_record(
+                &fixture.state.pgn_path_authority,
+                Uuid::parse_str(&original.id).unwrap(),
+                &CancellationToken::new()
+            )
+            .is_err());
+        let replacement = fixture.create(
+            "games",
+            &game(None, "d4 d5", "new"),
+            WorkspaceFileType::Game,
+        );
+        let records = fixture.list();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|record| record.id != original.id
+            && record.file == replacement
+            && record.status == CollectionStatus::Ready));
+        assert!(records.iter().any(|record| record.id == original.id
+            && record.file == source
+            && record.status == CollectionStatus::Trashed));
+        fixture.restart();
+        assert_eq!(
+            fixture
+                .list()
+                .iter()
+                .find(|record| record.id == original.id)
+                .unwrap()
+                .status,
+            CollectionStatus::Trashed
+        );
+        assert_eq!(
+            fixture
+                .service
+                .record(
+                    Uuid::parse_str(&original.id).unwrap(),
+                    &CancellationToken::new()
+                )
+                .unwrap()
+                .locator,
+            vec![OsString::from("games.pgn")]
+        );
+        fixture.trash(&replacement);
+        fixture.restore(&source);
+        let restored = fixture
+            .list()
+            .into_iter()
+            .find(|record| record.id == original.id)
+            .unwrap();
+        assert_eq!(restored.status, CollectionStatus::Ready);
+        assert_eq!(restored.file, source);
+        assert_eq!(restored.database, original.database);
+    }
+
+    #[test]
+    fn trashed_source_removal_retries_and_respects_other_cache_owners() {
+        let mut fixture = Fixture::new();
+        let source = fixture.create(
+            "games",
+            &game(None, "e4 e5", "original"),
+            WorkspaceFileType::Game,
+        );
+        let original = fixture.list().remove(0);
+        let id = Uuid::parse_str(&original.id).unwrap();
+        let evidence = format!("{id}-identity.db3");
+        std::fs::write(fixture.service.root.path().join(&evidence), b"evidence").unwrap();
+        fixture.trash(&source);
+        fixture.list();
+        let locator = fixture
+            .service
+            .record(id, &CancellationToken::new())
+            .unwrap()
+            .trash_locator;
+        let trash_path = locator
+            .iter()
+            .fold(fixture.directory.path().join("library"), |path, leaf| {
+                path.join(leaf)
+            });
+        std::fs::remove_file(trash_path).unwrap();
+        let cache = fixture.service.root.path().join(format!("{id}.db3"));
+        let token = CancellationToken::new();
+        // A pending creation with this identity still owns the cache and identity evidence.
+        let mut guard = fixture.service.lock(&token).unwrap();
+        let mut registry = CollectionService::state(&mut guard).unwrap().clone();
+        let record = registry.records[0].clone();
+        registry.creations.push(CreationIntent {
+            id,
+            workspace: fixture.workspace.clone(),
+            name: "other".into(),
+            account: AccountIdentity {
+                provider: "lichess".into(),
+                account: "player".into(),
+            },
+            identity: None,
+        });
+        let mut candidate = registry.clone();
+        candidate.records.clear();
+        fixture
+            .service
+            .remove_record_files(&record, &candidate, &token)
+            .unwrap();
+        assert!(cache.exists());
+        assert!(fixture.service.root.path().join(&evidence).exists());
+        candidate.creations.clear();
+        let batch_id = Uuid::new_v4();
+        let mut batch_record = record.clone();
+        batch_record.pending = Some(
+            serde_json::from_value(serde_json::json!({
+                "id": batch_id, "source": source, "owned_source": null, "source_revision": "batch",
+                "identity": null, "completed": false, "coverage": null
+            }))
+            .unwrap(),
+        );
+        let shared_batch = format!("{batch_id}-batch.pgn");
+        std::fs::write(fixture.service.root.path().join(&shared_batch), b"batch").unwrap();
+        let mut other = batch_record.clone();
+        other.id = Uuid::new_v4();
+        candidate.records.push(other);
+        candidate.migrations.push(MigrationIntent {
+            id: Uuid::new_v4(),
+            workspace: fixture.workspace.clone(),
+            database: original.database.clone().unwrap(),
+            database_identity: (0, 0),
+            database_revision: 0,
+            source: Some(source.clone()),
+            source_revision: None,
+            choice: MigrationChoice::Database,
+            account: None,
+            destination_name: "migration".into(),
+            archive_identity: None,
+            archive_ready: false,
+            source_archive_identity: None,
+            export_identity: None,
+            destination: None,
+            destination_identity: None,
+            collection: Some(id),
+            original_collection: None,
+        });
+        fixture
+            .service
+            .remove_record_files(&batch_record, &candidate, &token)
+            .unwrap();
+        assert!(cache.exists());
+        assert!(fixture.service.root.path().join(&evidence).exists());
+        assert!(fixture.service.root.path().join(&shared_batch).exists());
+        registry.creations.clear();
+        registry.migrations = candidate.migrations;
+        fixture.service.save(&mut guard, registry).unwrap();
+        drop(guard);
+        assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        fixture.restart();
+        assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        let mut guard = fixture.service.lock(&token).unwrap();
+        let mut registry = CollectionService::state(&mut guard).unwrap().clone();
+        registry.migrations.clear();
+        fixture.service.save(&mut guard, registry).unwrap();
+        drop(guard);
+        {
+            let _fault = fs::scoped_test_removal_injector(Arc::new(fs::RemovalFault(
+                fs::RemovalFaultPoint::BeforeTopOpen,
+            )));
+            assert_eq!(fixture.list()[0].status, CollectionStatus::Trashed);
+        }
+        assert!(fixture.list().is_empty());
+        assert!(!cache.exists());
+        assert!(!fixture.service.root.path().join(&evidence).exists());
+    }
+
     impl Fixture {
+        fn trash(&self, file: &FileWorkspaceHandle) {
+            crate::file_workspace::trash_entry(
+                &self.state.pgn_path_authority,
+                &self.state.workspace_mutation,
+                &self.workspace,
+                file,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        }
+
+        fn restore(&self, file: &FileWorkspaceHandle) {
+            crate::file_workspace::restore_entry(
+                &self.state.pgn_path_authority,
+                &self.state.workspace_mutation,
+                &self.workspace,
+                file,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        }
+
         pub fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
             let workspace_path = directory.path().join("library");
@@ -103,6 +331,15 @@ mod native_tests {
             self.service
                 .reconcile(&self.state.pgn_path_authority, &self.workspace, &token)
                 .unwrap()
+        }
+
+        pub fn registered_ids(&self) -> Vec<String> {
+            CollectionService::state(&mut self.service.lock(&CancellationToken::new()).unwrap())
+                .unwrap()
+                .records
+                .iter()
+                .map(|record| record.id.to_string())
+                .collect()
         }
 
         pub fn path(&self, name: &str) -> PathBuf {
@@ -6341,6 +6578,7 @@ mod native_tests {
             id,
             workspace: fixture.workspace.clone(),
             locator: vec![filename.clone()],
+            trash_locator: vec![],
             file,
             identity: snapshot.identity.pair(),
             source_epoch: 0,
