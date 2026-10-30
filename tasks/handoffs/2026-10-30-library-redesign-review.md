@@ -1,5 +1,7 @@
 # Library redesign review record
 
+Current identity map: the Library CI deadline finding previously allocated as unpublished f-20261030-18 is now canonically f-20261030-20. Published f-20261030-18 concerns linked New game and f-20261030-19 concerns Windows export, both unrelated and handled. Every archived Library CI18 reference below identifies the old unpublished entry. Its repair commit 65b81d3f maps identically to d09f7a42. The main Library decision mapping d-20261030-05 to d-20261030-15 remains unchanged.
+
 Frozen checkpoint before CI-repair closure review: the Library redesign is pushed as c0aad49e, and its five required hosted platform/native jobs passed. The broader Linux job failed all seven compound mixed Library cases at the unchanged 45-second test deadline. Follow-up f-20261030-18 remains open for hosted confirmation. Test-only repair 65b81d3f preserves all checks and images and passes local worker and root proof. Independent closure, fresh clean final gates, repair push, hosted confirmation, installation and final records remain pending. Any later actual completion in the Library row of tasks/build-ledger.md supersedes this frozen checkpoint.
 
 Archived plans, source citations, decisions and checkpoint paragraphs below describe their frozen revisions. Their then-pending statements are historical and superseded by the current checkpoint and later entries. In particular, the original Library decision was d-20261030-05 in this unpublished branch. After an upstream ID collision, the identical original decision was re-recorded through the canonical writer as d-20261030-15. The current published d-20261030-05 governs freshness and is a different decision.
@@ -1042,6 +1044,30 @@ Plan authorship and arbitration sharedrootcontext. Detection andsourceimplementa
 ````
 
 Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
+
+## Records closure round 6 and canonical ID reallocation
+
+R6 explicitly closed R2 with no new findings. All three unique lens issues are resolved. Root-read limitations are covered by the root directly receiving authorization and checking process and installed VERSION evidence. Source review remains valid.
+
+````text
+# Records closure round 6
+
+No findings.
+
+R2 CLOSED — tasks/findings.md:19761 adds the required `Follow-up of: f-20261030-05` under f-20261030-18 through the retained annotate transaction. Prior bytes remain intact. All eight raw R5 reports match the handoff.
+
+Historical process checks, original authorization and prior installed SHA remain independently unverifiable. No files changed, gates run or live services queried.
+
+VERDICT: APPROVED
+Arbitration: R2 CLOSED, no new findings, r6=0. All three unique lens issues are resolved. Cumulative r1=2 r2=0 r3=0 r4=0 r5=1 r6=0. Root-retained CI18 still awaits hosted confirmation. Round launcher-to-record wall 132 seconds including root review, active wall unknown. Root directly received authorization and checked the historical process identity and installed VERSION. Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate sessions.
+
+````
+
+The immediate pre-gate fetch added only three published records commits through ad65cd4f, introducing their own findings18 and19 and closing both as duplicates of17. The initial rebase conflicted with the unpublished Library CI finding18. Root preserved the complete authoritative upstream ledger, built a complete pending entry from the original Library filing plus its local-proof and Follow-up annotations, and invoked the canonical writer. It allocated20. The writer refused its automatic commit only because HEAD was detached, while retaining the exact written bytes in /tmp/findings-ledger-file-58_dwicl-findings.md. Root compared those bytes with the ledger, validated682 findings, committed only canonical output as104396a1, and continued the rebase. The old two annotation commits were replaced by those same semantic annotations inside the canonical20 filing. No receipt was hand-edited. Canonical finalize-claims completed and the content-derived file status reports merged.
+
+Git range-diff in upstream-rebase-7.range-diff shows the code repair65b81d3f equals d09f7a42, and all handoff patches carry unchanged. Only the finding-record transactions are replaced. The complete old range and reports remain historical. Canonical20 retains Found by, Follow-up of main05, every proof claim and open status pending successful hosted Test on the repair SHA. Published18/19 bytes are preserved. A single records closure covers the replaced transactions and this identity map. No production or image bytes changed and no source review is discarded.
+
+Final clean repair gates, repair push, successful hosted Linux confirmation, installation and post-push completion records remain pending. Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
 
 ## CI repair review round 5 and lineage correction
 
