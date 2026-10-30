@@ -19246,7 +19246,7 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 
 ### Citation initials matching changes identity with database name capitalization and order
 
-* **ID:** f-20261029-14 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261029-14 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** behaviour
 * **Where:** src/utils/gameReferences.ts:108-116, matchesReferencePlayer.
@@ -19261,6 +19261,13 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 ```text
 Former private finding identifier: f-20261029-06
 ```
+
+Source closure, 2026-10-30. Initials matching uses normalized name identity while preserving ordered players. Case and supported stored-name order do not change the citation identity, and substring surnames remain insufficient. The retained unit and lookup coverage passed. The ordinary native journey also matched the screenshot-style abbreviated citation against the actual full-name local game fixture.
+
+The seven feature findings close their reviewed source obligations after the current ordinary native acceptance, not the subsequent release workflow. Original pinned game-references container proof passed both tests and all three hard snapshots. Its fresh release build and six frozen source/test/doc/spec hashes are preserved. After the separate verifier target repair, two uninstrumented full native journeys passed CR1–CR4, DS2, fifty practice ratings and shutdown on the same frozen release binary. Root independently reversed only that target repair, reproduced the first-move failure1, restored exact verifier2a46dd44 and completed native0. Complete native-start pre-review and the related26 files/1302 tests passed0. Exact canonical attempt paths and source hashes are retained in tasks/handoffs/2026-10-29-opening-game-references-review.md and the run archive.
+
+Full clean Rust/frontend publication gates, ordinary verified push, exact pushed-SHA required hosted jobs and reviewed installation remain subsequent obligations at this closure. Broad f-20261011-03 and f-20261022-05 remain open. The separate normal Train-pane layout observation f-20261030-04 remains open for its own product-layout build. No actual Mega Database availability, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Recent repair code and detection used xAI in separate sessions, original feature and root used OpenAI. No whole-range family separation is claimed.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"693eb6507b341517b0095d3b637533a4233f4237fa034ab11af05fc22ad17845","header_sha256":"d0ddcce074cbca1789c388cf72f9b301ac29e7cb66a874685331151d4398fcce","header_status":"handled","input_sha256":"4da7b7309a1eb67284bd131970bdf38b6d200d955079d89dc09628d626a9f5a6","kind":"mutation-receipt","operation":"e254ee01ae2f9eef6743e7869857d37ef738a5214960e6a7a6fb28b6290f982e","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-14"],"target":"f-20261029-14","v":1} -->
 
 ---
 
