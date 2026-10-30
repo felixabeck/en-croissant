@@ -19265,3 +19265,21 @@ Former private finding identifier: f-20261029-06
 * **Proof:** Query-sensitive lookup and rendered action regression must fail on71e915f5 and pass after repair. Include dated-round and round-only ambiguous combined prefixes, no automatic admission, explicit selected occurrence identity and unambiguous single-reading controls. Root independently reverse only the production repair with retained tests, restore exact hashes and run full related and pre-review proof before closure review.
 * **Follow-up of:** f-20261029-13. Correction-created DR12 in its28e4b71a repair, a new false-certainty regression while the supplied DR1 contradictions are closed. No shared Root is asserted for different local causes.
 * **Found by:** Correctness code R4 at70199ec1, confidence93, selected Executor Grok. Root traced the new early-return exception and final verified result. Plan authorship and arbitration share root context. This detection and the R3 repair author share xAI family. Final review remains incomplete and no publication is claimed.
+
+---
+
+## 2026-10-30 — filed through the inbox spool
+
+### Ordinary native verification never enters the first practice move after Start Practice
+
+* **ID:** f-20261030-03 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
+* **Impact class:** tooling
+* **Where:** scripts/verify-app.mjs3806-3813 waits for Make your move after its Start Practice pointer action. The failure is rethrown at3920. Production start handling is in src/components/panels/practice/PracticePanel.tsx.
+* **Defect:** Standard pnpm verify:app on clean1da359cfc030582f278aee1c1f33c53bc75651fe failed1 before any citation CR1–CR4 assertion. Startup, actual Rust IPC,12000 native practice positions, paging and migration checks passed. After the practice-start action, the existing600000ms wait expired while the renderer still showed Start Practice,0 practiced/0due/12000unseen, path / and freshness gate verified:0. No first practice move was reached. Whether the pointer activated its intended target or production refused/retired the session is not established.
+* **Failure scenario:** The ordinary full native gate blocks citation end-to-end acceptance after the pinned2-test container and fresh release build have passed. This observation does not establish an application regression, host-load cause or shared cause with prior practice failures.
+* **Open question:** Does the native pointer activate the intended Start Practice control, does its production action publish the intended practice state, and where does that differ from the verifier's first-move wait?
+* **Proof:** Preserve the raw failure and exact cleanup/exit, reproduce once using the unchanged standard verifier and same release binary, then trace the actual action/consumer before editing. Any repair must retain600000ms and every native assertion, show the real failed producer or gesture before correction and ordinary full native0 after exact restoration. No selector predicate weakening, staging inspector or skipped assertion in the final positive.
+* **Evidence:** /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/gate-final-native-ui.20261030-0204.YEmAn7/completion.record is1 final-native-ui.20261030-0204 1da359cfc030582f278aee1c1f33c53bc75651fe. Its full log and canonical Grok FAIL report /tmp/build-build-opening-game-references-20261029-064642-82fa88e8/final-ui-leaf/verify-ui.txt preserve the renderer state and unchanged source hashes. Named final PNG was not produced.
+* **Related:** f-20261011-05 is rejected for a single rating25 failure that passed an immediate retry, and also records a separate rating6 witness. This occurrence fails before the first move at start practice, with no shared root cause evidenced. Keep those original decisions and observations unchanged.
+* **Found by:** Standard real Tauri verifier driven by selected Executor Grok,2026-10-30. Plan authorship and arbitration share root context. Current source repairs and detection share xAI family, original feature/root are OpenAI. No quota or Codex writer rollover occurred.
