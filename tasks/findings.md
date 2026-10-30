@@ -19408,7 +19408,7 @@ Keyboard focus already revealed the button on the unchanged overflow-hidden pane
 
 ### Trashing a game PGN leaves its linked collection listed as "search index is unavailable"
 
-* **ID:** f-20261030-06 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20261030-06 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Impact class:** behaviour
 * **Open question:** Should a trashed source hide, retire or delete its linked collection, given that restore must keep working and permanent delete must clean up?
 * **Where:** src-tauri/src/db/linked_collections.rs reconciliation of registry records whose source was trashed; src/components/library/LibraryPage.tsx missing-peer list.
@@ -19416,6 +19416,9 @@ Keyboard focus already revealed the button on the unchanged overflow-hidden pane
 * **Failure scenario:** Observed 2026-10-30 in Felix's Library: `Beck-Müller-2026-10-22.pgn` was trashed (file under Repertoire/.en-croissant-trash/e93eb7b1-…), registry record 422bb80e-e75e-45d1-b797-7e3206c80956 remains, and the Library shows the file name followed by "The search index is unavailable. Retry, or select the collection's source file again."
 * **Fix:** Planned in tasks/plans/2026-10-30-new-game-to-database.md Approach E: distinct `trashed` status hidden from Library, database lists, game references and save targets; handle-only matching for trashed records; reconciliation-driven removal once the trashed source is gone; reference preference preserved while trashed; account flows unchanged.
 * **Proof:** Native tests for trash, same-name recreate, restore, permanent delete and injected removal failure; renderer tests for each consumer.
+
+Fixed by the new-game-to-database build, pushed to master as part of 135c5804 (commit "Hide linked collections whose source PGN is in the trash") and verified on e34a0882. Reconciliation reports a trashed status derived from where the source handle is bound and keeps the original locator; the Library, database lists, game references and save targets hide a trashed non-account collection; restore brings it back; once the trashed source is gone, reconciliation removes the record and the cache files only it owns, retrying on failure. Account flows are unchanged. Decisions d-20261030-07, superseded by d-20261030-09, -10 and finally d-20261030-11 (downgrade conditions). Proof: native linked_collections (87) and file_workspace (168) tests, renderer tests for each consumer, full final gates on 766dd1d4 (12 lanes green) and hosted CI green on e34a0882 (run 41063715985). The observed orphan Beck-Müller-2026-10-22.pgn is hidden by this rule once the installed build e34a0882 reconciles. Review record: tasks/handoffs/2026-10-30-new-game-to-database-review.md.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"20c477c3fc53b2060aa405b8c89ac99e9d53c5809b2faa5801a37b83588a0d1a","header_sha256":"1d8d24786a523e91b769969b9a5c237166939d0d0cff4e66cc12038e0cf4114e","header_status":"handled","input_sha256":"c86a8228214bdd103c99827483b5818cf45e431f1441d86e5e4da09745ed3260","kind":"mutation-receipt","operation":"c30400da05c79dd9a2f3f94abadc9c45125c80d07bf3a50bb9980763f03ba4f8","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-06"],"target":"f-20261030-06","v":1} -->
 
 ---
 
