@@ -1,6 +1,6 @@
 # Library redesign review record
 
-Current checkpoint: both presentation phases and all 42 intentional snapshots are committed. Both cumulative code-review findings are independently closed. Canonical browser proof and actual Tauri verification passed. All ten Library findings are canonically handled. Records round 3 approved with no findings. The first final gate was deliberately interrupted after two unrelated coverage timeouts. The existing reviewed receipt sequence will be used for a new full gate. Latest operational records review, green final gates, push, required CI, installation and the post-push build ledger remain pending. This record does not claim release completion.
+Frozen checkpoint before CI-repair closure review: the Library redesign is pushed as c0aad49e, and its five required hosted platform/native jobs passed. The broader Linux job failed all seven compound mixed Library cases at the unchanged 45-second test deadline. Follow-up f-20261030-18 remains open for hosted confirmation. Test-only repair 65b81d3f preserves all checks and images and passes local worker and root proof. Independent closure, fresh clean final gates, repair push, hosted confirmation, installation and final records remain pending. Any later actual completion in the Library row of tasks/build-ledger.md supersedes this frozen checkpoint.
 
 Archived plans, source citations, decisions and checkpoint paragraphs below describe their frozen revisions. Their then-pending statements are historical and superseded by the current checkpoint and later entries. In particular, the original Library decision was d-20261030-05 in this unpublished branch. After an upstream ID collision, the identical original decision was re-recorded through the canonical writer as d-20261030-15. The current published d-20261030-05 governs freshness and is a different decision.
 
@@ -1038,6 +1038,194 @@ The after exports are exact bytes from committed canonical baselines, with sourc
 
 Plan authorship and arbitration sharedrootcontext. Detection andsourceimplementation used the sameOpenAI/Codexfamily in separatesessions, withoutfamilyseparation. Rootowned finalUI acceptance.
 
+
+````
+
+Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
+
+## First complete gate, publication and hosted failure
+
+Canonical gate-push-gate.8WLbbA completed with 0 push-gate c0aad49e9883a117c618c9a107a84295a84c34fc. Wrapper wall was 1627.978 seconds. Unchanged full coverage passed 5847 tests in 241 files, every ratchet and area floor. All four full mutation packages passed 100 percent, followed by their exact-tree receipt checks and the complete frontend scheduler. Scheduler logs artifacts/gates/20261030T165437004Z-745712 show guard 0.2s, build 8.4s, contract 104.1s, coverage receipt 0.4s, bundle 0.4s, full browser 113.5s with 274 passing cases, mutation receipt 0.4s. Complete raw reports are retained outside the worktree in final-green-reports. No ratchet was edited by this run.
+
+Remote CI guard was green, latest fetch remained at 8ec4d7aa, and ordinary master push landed c0aad49e. Local HEAD, upstream and live remote matched. Test run 41094617831 subsequently passed all five required platform/native jobs: Windows tests 124197040141, macOS tests 124197040503, Apple ARM 124197040465, Apple x86 124197040656 and Windows MSVC 124197040486. However Linux job 124197040498 completed failure, so no successful whole-workflow or installation outcome is claimed. Its 5847 unit tests and coverage ratchets passed. All seven newly added compound mixed Library cases timed out at 45000ms, often at the last warning Axe audit, while 267 other browser cases passed. Full actual job logs are source-ci-linux-failed.log. No retry of that unchanged run is claimed as a repair.
+
+Root filed f-20261030-18 through the canonical writer and delegated the bounded composition correction. This is separate from the prior state-module coverage timeout observation on f-20261029-16. The repair changes only e2e/database-files.spec.ts. All seven surfaces, 56 full-page Axe audits, actions, geometry, snapshot names and selection/reference-star/scroll state remain. Each surface has four independently initialized areas through shared setup. The complete assertion mapping and timings below are the worker evidence, not a hosted success claim.
+
+Root independently inspected the complete changed source. gate-root-fix-3.Vp1iy9 completed 0 at 41ce8096 with the owned test repair dirty, passing all 29 targeted cases, types, pre-review and complete contract. Root withdrew only the existing hover foreground CSS line using its original Git hunk. Removal and restoration applied cleanly without offset. The new unselected-row hover case failed with exit 1 and the exact count 128 contrast ratio 4.48. Source/test SHA-256 inventories match after restoration, and the full targeted matrix passed. Production source and native behavior are unchanged, so the prior real Tauri PASS remains applicable. Fresh whole-tree final gates and hosted confirmation remain required.
+
+The actual installer SHA guard was staged with a mismatched external input and refused with exit 1 and the message Installer HEAD differs from verified pushed SHA before invoking the installer. The input was restored. The old installation remained e34a0882. That negative case is not an installation result.
+
+## Preserved CI-repair record: code-r4-review-history.md
+
+````text
+# Operational records review round 4
+
+No findings. Interruption claims match retained logs, continuation matches the existing receipt procedure, and f-20261029-16 remains open.
+
+Unverifiable independently: root’s historical process-identity checks and cleanup observations. No files changed or gates run.
+
+VERDICT: APPROVED
+Arbitration: APPROVED, no findings, r4=0. Root directly inspected owned scheduler process identity and cleanup. Round launcher-to-root-read wall 93 seconds, active wall unknown. Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate sessions.
+
+````
+
+## Preserved CI-repair record: fix-3.txt
+
+````text
+Changed only [e2e/database-files.spec.ts](/home/felixb/Projekte/chessfable.worktrees/library-redesign-library-visual-redesign-20261030-082735-27ae83b1/e2e/database-files.spec.ts:311), unstaged.
+
+Each of seven surfaces now has four independently initialized cases. All original assertions, 56 full-page Axe audits, snapshot names, selection/scroll states and reference-star gestures remain covered.
+
+All proof commands exited 0:
+
+- Formatting, TypeScript and whitespace checks passed.
+- Targeted browser proof: **29 passed in 33.27s**, repaired cases **1.989–7.741s**.
+- Complete browser suite: **295 passed in 103.98s**, repaired cases **1.996–6.650s**.
+- All **138 tracked baselines** match committed HEAD, including the required 42. No actual/diff images appeared.
+
+[Exact preservation mapping](/tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/fix-3-proof/preservation-mapping.md) and [verification results with per-case timings](/tmp/build-library-redesign-resumed-library-visual-redesign-20261030-083937-ad4bfc48/fix-3-proof/verification-results.md) accompany complete logs, reports and traces.
+
+No production changes or specification deviations. Hosted CI remains unverified by this leaf.
+````
+
+## Preserved CI-repair record: fix-3-proof/preservation-mapping.md
+
+````text
+# Library CI composition repair evidence
+
+Owned repository path: `e2e/database-files.spec.ts`. The initial tracked working tree was clean. Changes remain unstaged. Production code, fixture outputs, global verifier policy, Playwright configuration and baselines are unchanged.
+
+This is behavior-preserving browser-test decomposition for f-20261030-18, not a production behavior fix.
+
+## Old-to-new obligation mapping
+
+Every original `mixed Library at WIDTHpx SCALE% SCHEME` compound case becomes four independently initialized cases with the same width, font scale and scheme. Surfaces remain 1280/100/light, 1440/100/light, 1920/100/light, 1280/200/light, 1440/200/light, 1920/200/light and 1440/100/dark. All names retain `mixed Library`.
+
+| Original obligation | New owner and preserved observable |
+| --- | --- |
+| Scheme, root font size, exactly one Library tree, ordered eight rows, exactly two section headings, two panes | `openMixedLibrary`, called afresh by a local fixture for all four cases. Existing `mixedDesktopLibraryFixture` and native answers are unchanged. |
+| Section headings and counts 6/2, search result 1/0, database filter 0/2, reset 6/2 | files/filter/layout/selection, using the same `assertCounts` helper, search fill, type option and clear button gestures |
+| Type accessible name, placeholder and native associated label text | files/filter/layout/selection, same three assertions |
+| Split/stack pane coordinates and split panes fully in viewport | files/filter/layout/selection, same bounds and tolerances |
+| Search, type, all Add New buttons and Change collection reachable | files/filter/layout/selection, shared `reachable` retains scroll, full viewport ratio and reachable clipping assertion |
+| Four per-file actual unselected-row hover full-page Axe audits | unselected-row hover accessibility, all four files in original order, shared `hoverUnselectedMixedRow` moves pointer away, focuses row, checks absent tooltips, performs real hover and asserts `:hover` before unchanged `assertAccessible` |
+| Quiet Delete matches count color at rest, Delete hover changes color, Shift+Tab from Move focuses Delete, focused color changes, enabled Delete | files/filter/layout/selection, all original pointer and focus gestures remain. It also reuses the same actual-hover preparation before quiet-control measurements |
+| Count, type badge, Delete and Move reachability and x-column alignment independent of name length | files/filter/layout/selection, same four bounds per file and <=1px tolerance |
+| Folder selected, Entries: 0, file selected, enabled Open game, distinct detail heights, unchanged row coordinates in split layout | files/filter/layout/selection, shared `selectMixedDirectory` and `selectMixedFile` retain original selection checks. Same positions function, height comparison and selection-geometry.json attachment |
+| Every file-detail button reachable, list/detail clipping, page overflow | files/filter/layout/selection, unchanged checks |
+| Selected-file actual hover and rest full-page Axe | files/filter/layout/selection, same selected first file, pointer hover and `:hover` assertion, then pointer to width/2,0 |
+| File snapshot capture and comparison | files/filter/layout/selection, same explicit name template and 100% comparison condition, shared `fileSnapshotPosition` retains search scroll and stacked detail scroll |
+| Both database cards have containing painted border, one selection and title, contained sibling opener and favourite, no nested interactive controls, positive and contained control bounds | databases/contained controls, unchanged `assertDatabaseCardBoundary` |
+| Exact games/storage values, Games/Storage x gap <=12rem computed from root font size | databases/contained controls, unchanged values, bounds and tolerance |
+| Each favourite reachable, keyboard focus and Space select its radio, checked state, URL stays /library | databases/contained controls, same ordered first-then-second database gestures |
+| Each database selection, reachable Explore link, detail clipping, no horizontal overflow | databases/contained controls, unchanged checks |
+| Database snapshot | databases/contained controls, same explicit name and final second database selected |
+| Unavailable row warning and Select text, linked collection id, detail alert, disabled Explore, Rebuild search index/Source PGN/Use selected source reachable | unavailable recovery/keyboard, all original assertions and controls |
+| Warning list/detail clipping, no overflow, actual hover and rest full-page Axe | unavailable recovery/keyboard, same selected unavailable row and real pointer hover with `:hover` check, then width/2,0 |
+| Unavailable snapshot | unavailable recovery/keyboard, same warning scroll and stacked detail scroll, same explicit name |
+| Single cross-kind arrow sequence excludes section headings | unavailable recovery/keyboard, last file focus → ArrowDown warning → ArrowDown first database → ArrowUp warning, with every original focus assertion |
+
+The unchanged `assertAccessible` fixture still audits the entire page with wcag2a, wcag2aa and wcag21aa. Per surface, the original eight audits are distributed 2 + 4 + 0 + 2, totaling the same 56 audits across the seven surfaces. Database control assertions are also reused during unavailable-state preparation, rather than introducing a second implementation of reference-star and database-selection state.
+
+## Snapshot state preservation
+
+The file case retains the original filter reset, quiet/focus row measurements, folder-to-file selection, reachable detail controls, selected hover/rest and capture scroll sequence. It captures the first file, Beck-Kuckling-2026-10-11, with no reference database selected.
+
+The database and unavailable cases use `prepareMixedFile` to replay folder-to-file selection, detail-control reachability, selected row hover, pointer withdrawal and file-capture scroll preparation. `exerciseMixedDatabases` then replays the original opener/favourite reachability, keyboard reference-star changes, database selections and Explore reachability in the original database order. Database capture selects Meine Partien, with its reference star selected after OMCORR202609's star. Unavailable capture then selects Beck-Müller-2026-10-22.pgn while retaining Meine Partien as reference. Its original warning/detail scroll sequence remains before capture. No mock return or local-storage reference-star seed was introduced.
+
+The exact snapshot name template remains `library-mixed-${width}-${scale}-${scheme}-${selection}.png`, with selection `file`, `database` or `unavailable`. All seven surfaces retain all three captures. As before, only the four 100% surfaces perform baseline comparisons. Twelve mixed baseline names are unchanged:
+
+- library-mixed-1280-100-light-file.png
+- library-mixed-1280-100-light-database.png
+- library-mixed-1280-100-light-unavailable.png
+- library-mixed-1440-100-light-file.png
+- library-mixed-1440-100-light-database.png
+- library-mixed-1440-100-light-unavailable.png
+- library-mixed-1920-100-light-file.png
+- library-mixed-1920-100-light-database.png
+- library-mixed-1920-100-light-unavailable.png
+- library-mixed-1440-100-dark-file.png
+- library-mixed-1440-100-dark-database.png
+- library-mixed-1440-100-dark-unavailable.png
+
+The existing Playwright snapshot path template appends `-database-files` before `.png`, independent of test names. Pre/post SHA-256 inventories cover all 39 database-files baselines, including twelve mixed and 27 earlier files. The three earlier database baselines under font-scaled-breakpoints bring the required total to 42. A separate SHA-256 comparison against committed HEAD covers every tracked e2e baseline, including those three.
+
+## Existing failing-before evidence and timing limits
+
+Hosted Linux Test 41094617831 at c0aad49e failed all seven old compounds at the unchanged 45000ms body timeout. The supplied log's final failure section shows warning Axe call sites at original lines 560/562 for several cases and reports 267 other browser cases passing. This repair does not claim every Axe call exceeds 45 seconds or that rerunning unchanged CI fixes it. No live service was queried and no hosted artifact download was needed.
+
+The already-present local Playwright report was preserved before running tests. Its exact old case durations are in `old-local-case-durations.json`. In surface order they are 13674, 13783, 13977, 12567, 12275, 11690 and 13171ms. The existing local report is a separate measurement from the hosted timeout evidence. It is not an emulation of hosted CPU conditions.
+
+`old-local-trace-timings.json` records eight Axe API trace envelopes for each of these seven cases, measured from the first Axe-owned API call to the last Axe-owned API completion before the fixture's violation assertion. These are trace envelopes, not instrumented standalone Axe execution benchmarks. Complete old HTML report and trace attachments remain in `old-local-html`.
+
+## Scope and limitations
+
+No baseline updater, timeout increase, slow marker, retry, worker change, audit skip, narrower Axe scope or error suppression was introduced. No source-text assertion checker, dependency or persistent tooling was added. Scratch parsers and proof scripts live only in this external directory. The requested four-way boundary preserved the original semantics, with the additional reuse of database checks to prepare the unavailable snapshot state. No production path was edited or probed. Hosted CI verification remains root's responsibility.
+
+Detection and implementation use the same OpenAI/Codex family in separate executor sessions. This leaf does not claim family separation or independent arbitration. Root is the arbiter.
+
+````
+
+## Preserved CI-repair record: fix-3-proof/verification-results.md
+
+````text
+# Verification results
+
+Only `e2e/database-files.spec.ts` changed, unstaged. No deviations or new actual/diff images.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `pnpm exec oxfmt e2e/database-files.spec.ts` | 0 | Formatted owned test file |
+| `pnpm exec tsgo --noEmit` | 0 | Passed |
+| `git diff --check` | 0 | Passed |
+| `agent-gate pnpm test:e2e:container --project=database-files --grep 'mixed Library' --update-snapshots=none` | 0 | 29 passed, 33.270347s report duration |
+| `agent-gate pnpm test:e2e:container --update-snapshots=none` | 0 | 295 passed |
+
+All 39 database-files pre/post baseline hashes match. The three earlier database baselines under font-scaled-breakpoints are also byte-identical to committed HEAD, completing the required 42. All 138 tracked e2e baselines match committed HEAD, as recorded in `all-baseline-head-comparison.json`. Complete runner stdout/stderr and exits are in `targeted.log`, `targeted.exit`, `full.log` and `full.exit`. Reports and trace attachments are in `targeted-html`, `targeted-results`, `full-html` and `full-results`. Exact full-suite timings for all cases are in `full-case-durations.json`.
+
+| Lane | Area | Cases | Min ms | Median ms | Max ms |
+| --- | --- | --- | --- | --- | --- |
+| targeted | files/filter/layout/selection | 7 | 5875 | 6708 | 7741 |
+| targeted | unselected-row hover accessibility | 7 | 3367 | 3703 | 5434 |
+| targeted | databases/contained controls | 7 | 1989 | 2459 | 4385 |
+| targeted | unavailable recovery/keyboard | 7 | 3817 | 4254 | 6152 |
+
+## targeted exact repaired-case durations
+
+| Surface | Files ms | Hover ms | Databases ms | Unavailable ms |
+| --- | --- | --- | --- | --- |
+| 1280px 100% light | 6708 | 3751 | 2751 | 4474 |
+| 1440px 100% light | 6736 | 3703 | 2459 | 4351 |
+| 1920px 100% light | 6076 | 3516 | 2463 | 4254 |
+| 1280px 200% light | 5875 | 3434 | 2229 | 4118 |
+| 1440px 200% light | 7741 | 5434 | 4385 | 6152 |
+| 1920px 200% light | 7299 | 5267 | 1989 | 3817 |
+| 1440px 100% dark | 6046 | 3367 | 2232 | 3974 |
+
+## Full-suite duration distribution
+
+| Lane | Area | Cases | Min ms | Median ms | Max ms |
+| --- | --- | --- | --- | --- | --- |
+| full | files/filter/layout/selection | 7 | 5224 | 5945 | 6650 |
+| full | unselected-row hover accessibility | 7 | 3241 | 3391 | 3625 |
+| full | databases/contained controls | 7 | 1996 | 2260 | 2573 |
+| full | unavailable recovery/keyboard | 7 | 3592 | 4125 | 4326 |
+
+## full exact repaired-case durations
+
+| Surface | Files ms | Hover ms | Databases ms | Unavailable ms |
+| --- | --- | --- | --- | --- |
+| 1280px 100% light | 6650 | 3625 | 2573 | 4326 |
+| 1440px 100% light | 6370 | 3441 | 2285 | 4125 |
+| 1920px 100% light | 6069 | 3446 | 2342 | 4061 |
+| 1280px 200% light | 5844 | 3391 | 2145 | 3994 |
+| 1440px 200% light | 5789 | 3370 | 2196 | 4169 |
+| 1920px 200% light | 5224 | 3241 | 1996 | 3592 |
+| 1440px 100% dark | 5945 | 3351 | 2260 | 4179 |
+
+Full suite report duration: 103975.853ms.
+
+Read `preservation-mapping.md` for the complete obligation, state, snapshot and failing-before evidence mapping. No local CPU-equivalence or hosted CI success claim is made. Root retains review and arbitration.
 
 ````
 
