@@ -19146,7 +19146,7 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 
 ### Ordinary prose after a short game citation hides a valid local occurrence
 
-* **ID:** f-20261029-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261029-11 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Filed from:** build-opening-game-references-20261029-064642-82fa88e8
 * **Impact class:** behaviour
 * **Where:** src/utils/gameReferences.ts metadataVerification, the unknown event/site prefix rejection.
@@ -19161,6 +19161,13 @@ Full clean Rust/frontend publication gates, ordinary verified push, exact pushed
 ```text
 Former unpublished identifier: f-20261029-03
 ```
+
+Source closure, 2026-10-30. Citation lookup retains the complete matching context independently of the displayed label. Ordinary prose after an incomplete citation leaves compatible local occurrences selectable. Query-sensitive unit and component coverage remains green, and the final ordinary native CR1–CR4 journey passed without changing the imported PGN.
+
+The seven feature findings close their reviewed source obligations after the current ordinary native acceptance, not the subsequent release workflow. Original pinned game-references container proof passed both tests and all three hard snapshots. Its fresh release build and six frozen source/test/doc/spec hashes are preserved. After the separate verifier target repair, two uninstrumented full native journeys passed CR1–CR4, DS2, fifty practice ratings and shutdown on the same frozen release binary. Root independently reversed only that target repair, reproduced the first-move failure1, restored exact verifier2a46dd44 and completed native0. Complete native-start pre-review and the related26 files/1302 tests passed0. Exact canonical attempt paths and source hashes are retained in tasks/handoffs/2026-10-29-opening-game-references-review.md and the run archive.
+
+Full clean Rust/frontend publication gates, ordinary verified push, exact pushed-SHA required hosted jobs and reviewed installation remain subsequent obligations at this closure. Broad f-20261011-03 and f-20261022-05 remain open. The separate normal Train-pane layout observation f-20261030-04 remains open for its own product-layout build. No actual Mega Database availability, provider quota or Codex writer rollover is claimed. Plan authorship and arbitration shared root context. Recent repair code and detection used xAI in separate sessions, original feature and root used OpenAI. No whole-range family separation is claimed.
+<!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"d7d950e959c12a891f27be3b0bf71cc32816baa5db86143f395861871aac7f2a","header_sha256":"d9f4161ed622d54a6104f374767c04bb2264504b97f7f8c8a5382a8a63ef21cd","header_status":"handled","input_sha256":"ba55c712cff490bb136b0c90e00753643902a751802a9d40957ec4a6372c4c83","kind":"mutation-receipt","operation":"985d7af03521367e293b1dd606019e5d9d8f357649a4356251447e2fec74a2b9","options":{"section":null},"request_id_sha256":null,"results":["f-20261029-11"],"target":"f-20261029-11","v":1} -->
 
 ---
 
