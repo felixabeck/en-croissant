@@ -443,15 +443,7 @@ for (const surface of [
     });
 }
 
-test("workspace-tabs: Train reaches Start Practice by wheel, focus, and pointer at 800×647", async ({
-    page,
-    mockScenario,
-    assertNoHorizontalOverflow,
-}, testInfo) => {
-    const now = new Date("2026-10-21T12:00:00Z");
-    await page.clock.install({ time: now });
-    await page.setViewportSize({ width: 800, height: 647 });
-    await page.addInitScript(() => localStorage.setItem("auto-save", "false"));
+function practiceFeedbackSetup(now: Date) {
     const repertoireFile = {
         ...filesWorkspaceFixture.pgnFile,
         metadata: { type: "repertoire" as const, tags: [] },
@@ -496,6 +488,19 @@ test("workspace-tabs: Train reaches Start Practice by wheel, focus, and pointer 
         },
         record_practice_review: { result: 2 },
     });
+    return { repertoireFile, pgn, game, cardFen, commands };
+}
+
+test("workspace-tabs: Train reaches Start Practice by wheel, focus, and pointer at 800×647", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}, testInfo) => {
+    const now = new Date("2026-10-21T12:00:00Z");
+    await page.clock.install({ time: now });
+    await page.setViewportSize({ width: 800, height: 647 });
+    await page.addInitScript(() => localStorage.setItem("auto-save", "false"));
+    const { repertoireFile, commands } = practiceFeedbackSetup(now);
     await mockScenario({ commands });
     await page.goto("/library");
     await page.getByRole("button", { name: "Choose collection", exact: true }).click();
@@ -633,50 +638,7 @@ test("workspace-tabs: incorrect practice reveals the existing answer and its rev
     await page.clock.pauseAt(now.getTime() + 1000);
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.addInitScript(() => localStorage.setItem("auto-save", "false"));
-    const repertoireFile = {
-        ...filesWorkspaceFixture.pgnFile,
-        metadata: { type: "repertoire" as const, tags: [] },
-    };
-    const pgn =
-        '[Event "Practice feedback"]\n[White "Weiss"]\n[Black "Schwarz"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 *';
-    const game = {
-        pgn,
-        stamp: "c".repeat(64),
-        revision: "practice-feedback-revision",
-        present: true,
-    };
-    const cardFen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
-    const commands = filesWorkspaceCommands([[repertoireFile]], {
-        ...pgnFileCommands,
-        read_games: { result: [game] },
-        read_game: { result: game },
-        file_revision: { result: game.revision },
-        lex_pgn: {
-            result: [
-                { type: "Header", value: { tag: "Event", value: "Practice feedback" } },
-                { type: "Header", value: { tag: "White", value: "Weiss" } },
-                { type: "Header", value: { tag: "Black", value: "Schwarz" } },
-                { type: "Header", value: { tag: "Result", value: "*" } },
-                { type: "San", value: "e4" },
-                { type: "San", value: "e5" },
-                { type: "San", value: "Nf3" },
-                { type: "Outcome", value: "*" },
-            ],
-        },
-        load_practice_deck: {
-            result: {
-                positionsDocument: JSON.stringify({
-                    positions: [{ fen: cardFen, answer: "Nf3", card: createEmptyCard(now) }],
-                }),
-                revision: 1,
-                generation: 0,
-                migrated: false,
-                unappliedReviews: 0,
-                orphansAcknowledged: true,
-            },
-        },
-        record_practice_review: { result: 2 },
-    });
+    const { repertoireFile, game, cardFen, commands } = practiceFeedbackSetup(now);
     await mockScenario({ commands });
     await page.goto("/library");
     await page.getByRole("button", { name: "Choose collection", exact: true }).click();
