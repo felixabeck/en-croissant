@@ -19646,3 +19646,6 @@ Fresh read-only review-plan judgment approved the shared scoped boundary before 
 Plan authorship and arbitration shared root context. Detection and code use the same OpenAI/Codex family in separate executor sessions, without family separation.
 
 <!-- ledger-meta {"command":"annotate","effect_lines":10,"effect_sha256":"5770211cb9e4dead2d0af13c1a6f5f03cf8877eeb37072c83f578b0d67bdfb29","input_sha256":"91f7732b37d7493c9ad37dca6abff8f2426b7ee3bb2665c6d5c87f77daca98dd","kind":"mutation-receipt","operation":"b9ebf6fea3e2014a2d7074e37a656c78b4c9992c712374354f589acc2563134a","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-16"],"target":"f-20261030-16","v":1} -->
+
+* **Found by:** Codex Library redesign run, through source tracing and canonical browser preservation checks.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"51c99825d3707bb3625140da9edcc80ecf63b581a32ae8582d0961f6b48ef550","input_sha256":"fce6eb5ff05812a44906dc63cd82f258e8f11f189843d0e53fddb792392522e2","kind":"mutation-receipt","operation":"84214c282706160161d25087786aa52cee277dd727bddf2a6768c960330b1191","options":{"section":null},"request_id_sha256":"45cd8a68cb43bf8a52b050e5bbeb976e235aa02e99223fb15e3a0dd81f3662b3","results":["f-20261030-16"],"target":"f-20261030-16","v":1} -->
