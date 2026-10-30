@@ -294,6 +294,8 @@ function mixedDesktopLibraryFixture() {
     };
 }
 
+const MAX_COMPACT_STATS_GAP_REM = 12;
+
 const desktopLibrarySurfaces = [
     { width: 1280, scale: 100, scheme: "light", split: true },
     { width: 1440, scale: 100, scheme: "light", split: true },
@@ -330,6 +332,9 @@ for (const surface of desktopLibrarySurfaces) {
             "font-size",
             surface.scale === 100 ? "16px" : "32px",
         );
+        const fontSizePx = await page
+            .locator("html")
+            .evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
         const tree = page.getByRole("tree", { name: "Library", exact: true });
         await expect(page.getByRole("tree")).toHaveCount(1);
         const rows = tree.getByRole("treeitem");
@@ -518,7 +523,7 @@ for (const surface of desktopLibrarySurfaces) {
             expect(
                 storage.x - games.x,
                 "Stats must stay compact inside the card",
-            ).toBeLessThanOrEqual(((12 * surface.scale) / 100) * 16);
+            ).toBeLessThanOrEqual(MAX_COMPACT_STATS_GAP_REM * fontSizePx);
             const favourite = card.getByLabel("Reference Database", { exact: true });
             await reachable(favourite);
             await favourite.getByRole("radio", { name: "1", exact: true }).focus();
