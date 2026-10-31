@@ -61,7 +61,6 @@ test("board-wood-texture: the real stylesheet layers the tile over the board ima
     await expect(board).toBeVisible();
     await expect(board).toHaveCSS("background-image", /^none, url\(/);
     await expect(board).toHaveCSS("background-image", new RegExp(`, ${BOARD_IMAGE_URL.source}`));
-    await expect(board).toHaveCSS("background-size", /, cover$/);
     await expect(board).toHaveCSS("background-size", "12.5% 12.5%, cover");
     await expect(board).toHaveCSS("background-blend-mode", "soft-light, normal");
     expect(await page.evaluate(() => localStorage.getItem("board-wood-texture"))).toBe("false");
@@ -74,6 +73,8 @@ test("board-wood-texture: Appearance switch track labels pass the accessibility 
     await page.goto("/settings");
     const woodTexture = await openAppearanceTab(page);
     await expect(woodTexture).toBeChecked();
+    // The sidebar link's tooltip fades out once the pointer leaves it; axe must not sample it.
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await waitForTransitionsSettled(page);
     await assertAccessible();
 
@@ -196,11 +197,95 @@ test("board-wood-texture: the default board shows the wood grain", async ({ page
     const board = await openBoard(page);
     await expect(board).toHaveCSS("background-image", TEXTURE_URL);
     await page.mouse.move(0, 0);
-    // The project-wide threshold (0.2) lets a colour distance of up to 1409 pass; the grain peaks at
-    // 213, so no pixel of a texture-off board would fail against this baseline. Measured in the
-    // container on this board: 0.08 and above flags no pixel, 0.06 flags 30094 and 0.05 flags
-    // 77716 of 313040.
+    // Texture-on against texture-off, both the start-position board (`.cg-wrap`), measured in the
+    // container: at 0.2 (Playwright's default, not a project setting) and at 0.08 the two boards
+    // match, so the default threshold could never tell them apart. 0.06 flags 29195 and 0.05 flags
+    // 75026 of 313040 pixels.
     await expect(page.locator(".cg-wrap")).toHaveScreenshot("board-wood-texture-on.png", {
         threshold: 0.05,
     });
+});
+
+test("board-wood-texture: the board with the texture stored off renders without the grain", async ({
+    page,
+}) => {
+    await page.addInitScript(() => localStorage.setItem("board-wood-texture", "false"));
+    const board = await openBoard(page);
+    await expect(board).toHaveCSS("background-image", /^none, url\(/);
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".cg-wrap")).toHaveScreenshot("board-wood-texture-off.png", {
+        threshold: 0.05,
+    });
+});
+
+test("board-wood-texture: the exported board snapshot carries the wood grain, and drops it when off", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({ commands: { save_board_snapshot: { result: null } } });
+    const board = await openBoard(page);
+    await expect(board).toHaveCSS("background-image", TEXTURE_URL);
+    await page.mouse.move(0, 0);
+
+    // The fixture records every IPC call; the exported PNG is the `bytes` of save_board_snapshot.
+    const invocations = () =>
+        page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "save_board_snapshot")
+                .map(({ args }) => (args as { bytes: number[] }).bytes),
+        );
+
+    const exportedBytes = async (count: number) => {
+        await page.getByRole("button", { name: "Take Snapshot", exact: true }).click();
+        await expect.poll(async () => (await invocations()).length).toBe(count);
+        return (await invocations())[count - 1];
+    };
+    const withTexture = await exportedBytes(1);
+
+    const woodTexture = await openAppearanceTab(page);
+    await woodTexture.uncheck();
+    await expect(woodTexture).not.toBeChecked();
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(board).toHaveCSS("background-image", /^none, url\(/);
+    await page.mouse.move(0, 0);
+    const withoutTexture = await exportedBytes(2);
+
+    const result = await page.evaluate(
+        async ([on, off]) => {
+            const decode = async (bytes: number[]) => {
+                const bitmap = await createImageBitmap(
+                    new Blob([new Uint8Array(bytes)], { type: "image/png" }),
+                );
+                const canvas = document.createElement("canvas");
+                canvas.width = bitmap.width;
+                canvas.height = bitmap.height;
+                const context = canvas.getContext("2d")!;
+                context.drawImage(bitmap, 0, 0);
+                return context.getImageData(0, 0, bitmap.width, bitmap.height);
+            };
+            const [first, second] = await Promise.all([decode(on), decode(off)]);
+            let different = 0;
+            for (let index = 0; index < first.data.length; index += 4) {
+                const distance = Math.max(
+                    Math.abs(first.data[index] - second.data[index]),
+                    Math.abs(first.data[index + 1] - second.data[index + 1]),
+                    Math.abs(first.data[index + 2] - second.data[index + 2]),
+                );
+                if (distance > 0) different += 1;
+            }
+            return {
+                sizes: [
+                    [first.width, first.height],
+                    [second.width, second.height],
+                ],
+                pixels: first.width * first.height,
+                different,
+            };
+        },
+        [withTexture, withoutTexture],
+    );
+    expect(result.sizes[0]).toEqual(result.sizes[1]);
+    // The grain covers every square, so most pixels of the board differ once it is exported on.
+    expect(result.different).toBeGreaterThan(result.pixels / 2);
 });
