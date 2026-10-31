@@ -19845,3 +19845,20 @@ Plan authorship and arbitration shared root context. Detection and code use the 
 
 Fixed in 015cd709: playBoardMove and dragBoard poll the trial click and boundingBox() until a box exists. A stub-board regression test in e2e/new-game-to-database.spec.ts returns null twice; with only the helper change reverted it fails with the hosted "Cannot read properties of null (reading 'width')". Hosted Test run 41181169436 on 015cd709 succeeded in every job.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"54970d69bf45cfcecbf7a0267d19614fa4639f5af8695dfe8032acffecd66a62","header_sha256":"fef2103635ed86b0fe0f1981ab2910358601c0a42322de98ccac86f4ec972db2","header_status":"handled","input_sha256":"a1f0dc294004c6206cf6861f003ae69dfe5614cf79a0fac81b2492853be4f258","kind":"mutation-receipt","operation":"97df0427e90ecaac9bbb32460083b61762045e9acc83c933ca1c7ac1b161bb1c","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-21"],"target":"f-20261030-21","v":1} -->
+
+---
+
+## 2026-10-31 — filed through the inbox spool
+
+### Two pgn read-revision retry tests time out waiting for the read-chunk hook in the rust-test lane
+
+* **ID:** f-20261031-01 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 3ea5942c-b066-4f7d-93b9-81aa748b3081
+* **Impact class:** tooling
+* **Where:** `src-tauri/src/pgn.rs:2179-2182`, the shared read-revision retry fixture (`tokio::time::timeout(Duration::from_secs(5), entered)` → `expect("read hook timeout")`), used by `pgn::tests::read_revision_retry_binds_single_game_stamp` and `pgn::tests::read_revision_retry_discards_shortening_eof_error`.
+* **Defect:** in a warm `pnpm gates:push -- --rust` at `d5344d4b` on 2026-10-31 (drain session 3ea5942c, f-20261017-04 timing run), the `rust-test` lane failed only these two tests, both panicking at `src/pgn.rs:2181:14` with `read hook timeout: Elapsed(())` (2831 passed, 2 failed). The concurrent `rust-coverage` lane passed them, and the same gate at `015cd709` an hour earlier passed every lane. The change under test touched no Rust. Load average was about 6 and PSI io full avg60 0.38 % shortly after, so heavy host pressure is not evident. The wait is already a 5 s event ceiling, so the cause is not a short bound: either the spawned read never reaches the chunk hook within 5 s (scheduling of the spawned task on the test runtime, or the read path not calling the hook on some route), or the hook is installed on a repository the read does not use.
+* **Failure scenario:** any Rust push gate can go red on these two tests independent of the tree, costing a release cycle and inviting reruns.
+* **Open question:** why does the read task not enter the read-chunk hook within 5 s in the `rust-test` lane: a missed hook route, a runtime that cannot drive the spawned task while the test body awaits, or host delay? Decide from a trace before touching the bound.
+* **Spotted outside diff:** f-20261017-04 changes only gate scripts.
+* **Related:** f-20261011-03 (handled, host-delay timeout class; its decision d-20261031-02 did not name these tests). Gate log: `artifacts/gates/20261031T100200785Z-3531499/receipt-backend-test.log` in the drain worktree.
+* **Found by:** Claude Code drain session 3ea5942c-b066-4f7d-93b9-81aa748b3081, 2026-10-31.
