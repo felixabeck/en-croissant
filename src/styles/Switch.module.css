@@ -9,6 +9,14 @@
   border-color: var(--cf-primary);
 }
 
+.trackLabel {
+  color: var(--cf-foreground);
+}
+
+.input:checked + .track .trackLabel {
+  color: var(--cf-primary-foreground);
+}
+
 .thumb {
   background: var(--cf-card);
   border-color: transparent;
