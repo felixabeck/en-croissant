@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: fcf4c15f0e1a1bdea7259e31b15a97ee584707668106bea6f198d940aaf1121e
+# agent-kit-sha256: 609bb68d3b1f6ea96c3cb29f133c79a205b4bcce0fb5febe79b62d4cf4af7811
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -12442,13 +12442,14 @@ def _mutate_finding_note(
             block.insert(0, "")
         lines[end:end] = block
         candidate = _with_final_newline(text, lines)
+        end += len(block)
         if header_mutation is not None:
-            candidate = header_mutation(candidate)
+            mutated = header_mutation(candidate)
+            if len(mutated.splitlines()) != len(candidate.splitlines()):
+                raise LedgerError("header mutation changed the entry's line count")
+            candidate = mutated
             lines, index = _locate_finding_header(candidate, args.id)
             header_line = lines[index]
-            end = _find_entry_span(lines, _fence_mask(lines), index)
-        else:
-            end += len(block)
         lines[end:end] = [RECEIPT_PLACEHOLDER]
         candidate = _with_final_newline(candidate, lines)
         if _strict_reporting_enabled():
