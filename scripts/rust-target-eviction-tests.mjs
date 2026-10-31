@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -33,6 +34,7 @@ import {
   allocatedBytes,
   checkLockFile,
   evictRustTargets,
+  scanSameUserExecutables,
 } from "./rust-target-eviction.mjs";
 
 const GIT_IDENTITY = Object.freeze([
@@ -75,7 +77,7 @@ function git(cwd, args) {
   return result;
 }
 
-function waitUntil(predicate, timeoutMs = 3_000) {
+function waitUntil(predicate, timeoutMs = 3_000, message) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -84,7 +86,10 @@ function waitUntil(predicate, timeoutMs = 3_000) {
       // Short spin so flock and /proc/exe probes become visible.
     }
   }
-  assert.fail(`timed out after ${timeoutMs} ms`);
+  const extra = typeof message === "function" ? message() : message;
+  assert.fail(
+    extra ? `timed out after ${timeoutMs} ms; ${extra}` : `timed out after ${timeoutMs} ms`,
+  );
 }
 
 function stamp(path, mtimeMs) {
@@ -181,7 +186,95 @@ function writeFlockStub(dir, status) {
   return path;
 }
 
-function startCopiedSleep(unit, t) {
+const DELETED_EXE_SUFFIX = " (deleted)";
+
+function normalizeExeTarget(exePath) {
+  return exePath.endsWith(DELETED_EXE_SUFFIX)
+    ? exePath.slice(0, -DELETED_EXE_SUFFIX.length)
+    : exePath;
+}
+
+function isStrictlyInside(inner, outer) {
+  const innerParts = inner.split(sep).filter(Boolean);
+  const outerParts = outer.split(sep).filter(Boolean);
+  if (innerParts.length <= outerParts.length) return false;
+  return outerParts.every((part, index) => innerParts[index] === part);
+}
+
+function resolveScannedExe(exePath) {
+  const spelled = normalizeExeTarget(exePath);
+  try {
+    return realpathSync(spelled);
+  } catch (error) {
+    return error && error.code === "ENOENT" ? spelled : undefined;
+  }
+}
+
+function productSeesExeInside(containerPath) {
+  const container = realpathSync(containerPath);
+  const scan = scanSameUserExecutables();
+  if (scan.undetermined) return false;
+  return scan.executables.some((exe) => {
+    const canonical = resolveScannedExe(exe);
+    return canonical !== undefined && isStrictlyInside(canonical, container);
+  });
+}
+
+function childStillAlive(child) {
+  if (child.exitCode !== null) return false;
+  try {
+    process.kill(child.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function describeInUseProbe(child) {
+  const pid = child.pid;
+  let exe = "unread";
+  try {
+    exe = readlinkSync(`/proc/${pid}/exe`);
+  } catch (error) {
+    exe = `error ${error.code ?? error.message}`;
+  }
+  let procUid = "unread";
+  try {
+    procUid = String(lstatSync(`/proc/${pid}`).uid);
+  } catch (error) {
+    procUid = `error ${error.code ?? error.message}`;
+  }
+  let inProc = "unread";
+  try {
+    inProc = String(readdirSync("/proc").includes(String(pid)));
+  } catch (error) {
+    inProc = `error ${error.code ?? error.message}`;
+  }
+  const scan = scanSameUserExecutables();
+  const sleeping = (scan.executables ?? []).filter((path) => path.includes("sleeping-bin"));
+  return [
+    `uid=${process.getuid()}`,
+    `pid=${pid}`,
+    `exitCode=${child.exitCode}`,
+    `exe=${exe}`,
+    `procUid=${procUid}`,
+    `inProc=${inProc}`,
+    `undetermined=${scan.undetermined ?? ""}`,
+    `sleeping=${sleeping.join(",")}`,
+  ].join(" ");
+}
+
+function waitUntilProductSeesCopiedExe(containerPath, child) {
+  waitUntil(
+    () => childStillAlive(child) && productSeesExeInside(containerPath),
+    3_000,
+    () => describeInUseProbe(child),
+  );
+  assert.equal(child.exitCode, null, describeInUseProbe(child));
+  assert.doesNotThrow(() => process.kill(child.pid, 0), describeInUseProbe(child));
+}
+
+function startCopiedSleep(unit, t, staleMs) {
   const exe = join(unit, "deps", "sleeping-bin");
   mkdirSync(join(unit, "deps"), { recursive: true });
   const source = existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep";
@@ -196,14 +289,8 @@ function startCopiedSleep(unit, t) {
     }
   });
   child.unref();
-  waitUntil(() => {
-    try {
-      const target = readlinkSync(`/proc/${child.pid}/exe`);
-      return target.includes("sleeping-bin");
-    } catch {
-      return false;
-    }
-  });
+  stampUnit(unit, staleMs);
+  waitUntilProductSeesCopiedExe(unit, child);
   return { child, exe };
 }
 
@@ -398,15 +485,16 @@ linuxTest(
     const stale = now - idleMaxAgeMs - 5_000;
     const siblingTarget = join(sibling, "src-tauri", "target");
     const unit = makeUnit(siblingTarget, "debug", { mtimeMs: stale });
-    startCopiedSleep(unit, t);
+    const { child: inUseChild } = startCopiedSleep(unit, t, stale);
     const inUse = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.equal(inUse.exitCode, 0, dump(inUse));
-    assert.ok(artifactIntact(unit), dump(inUse));
+    const inUseDiag = `${dump(inUse)}\n${describeInUseProbe(inUseChild)}`;
+    assert.equal(inUse.exitCode, 0, inUseDiag);
+    assert.ok(artifactIntact(unit), inUseDiag);
     assert.ok(
       inUse.lines.some((line) =>
         line.includes(`skipped ${realpathSync(unit)} reason=in use (executable)`),
       ),
-      dump(inUse),
+      inUseDiag,
     );
 
     const outside = join(parent, "outside-bin");
@@ -417,40 +505,37 @@ linuxTest(
     const outsideChild = spawn(outsideExe, ["60"], { stdio: "ignore" });
     t.after(() => outsideChild.kill("SIGKILL"));
     outsideChild.unref();
-    waitUntil(() => {
-      try {
-        return readlinkSync(`/proc/${outsideChild.pid}/exe`).includes("sleeping-bin");
-      } catch {
-        return false;
-      }
-    });
+    waitUntilProductSeesCopiedExe(outside, outsideChild);
     const other = makeUnit(siblingTarget, "release", { mtimeMs: stale });
     const outsideResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.equal(outsideResult.exitCode, 0, dump(outsideResult));
-    assert.equal(artifactIntact(other), false, dump(outsideResult));
+    const outsideDiag = `${dump(outsideResult)}\n${describeInUseProbe(outsideChild)}`;
+    assert.equal(outsideResult.exitCode, 0, outsideDiag);
+    assert.equal(artifactIntact(other), false, outsideDiag);
 
     const prefixUnit = makeUnit(siblingTarget, "debug2", { mtimeMs: stale });
-    startCopiedSleep(prefixUnit, t);
+    const { child: prefixChild } = startCopiedSleep(prefixUnit, t, stale);
     const siblingName = makeUnit(siblingTarget, "debug2-extra", { mtimeMs: stale });
     // The running exe lives in debug2; debug2-extra only shares a name prefix.
     const prefixResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.ok(artifactIntact(prefixUnit), dump(prefixResult));
-    assert.equal(artifactIntact(siblingName), false, dump(prefixResult));
+    const prefixDiag = `${dump(prefixResult)}\n${describeInUseProbe(prefixChild)}`;
+    assert.ok(artifactIntact(prefixUnit), prefixDiag);
+    assert.equal(artifactIntact(siblingName), false, prefixDiag);
 
     const linkedParent = join(parent, "link-to-main");
     symlinkSync(main, linkedParent);
     const ownTarget = join(main, "src-tauri", "target");
     const ownUnit = makeUnit(ownTarget, "debug", { mtimeMs: stale });
-    startCopiedSleep(ownUnit, t);
+    const { child: ownChild } = startCopiedSleep(ownUnit, t, stale);
     const viaLink = await runEvict(linkedParent, {
       nowMs: now,
       idleMaxAgeMs,
       ownCapBytes: 1n,
     });
-    assert.ok(artifactIntact(ownUnit), dump(viaLink));
+    const viaDiag = `${dump(viaLink)}\n${describeInUseProbe(ownChild)}`;
+    assert.ok(artifactIntact(ownUnit), viaDiag);
     assert.ok(
       viaLink.lines.some((line) => line.includes("in use (executable)")),
-      dump(viaLink),
+      viaDiag,
     );
   },
 );
@@ -462,9 +547,9 @@ linuxTest("both lock and executable report the lock reason (CR-4)", async (t) =>
   const stale = now - idleMaxAgeMs - 5_000;
   const unit = makeUnit(join(sibling, "src-tauri", "target"), "debug", { mtimeMs: stale });
   holdLock(join(unit, ".cargo-lock"), t);
-  startCopiedSleep(unit, t);
+  const { child: lockChild } = startCopiedSleep(unit, t, stale);
   const result = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-  assert.ok(artifactIntact(unit), dump(result));
+  assert.ok(artifactIntact(unit), `${dump(result)}\n${describeInUseProbe(lockChild)}`);
   assert.ok(
     result.lines.some((line) =>
       line.includes(`skipped ${realpathSync(unit)} reason=in use (lock held)`),
@@ -1227,7 +1312,6 @@ linuxTest("realpath failures skip a unit or abort the cwd (F4)", async (t) => {
   const cwdUnit = makeUnit(join(main, "src-tauri", "target"), "debug");
   fillAllocated(cwdUnit, 80_000n);
   const cwdResult = await runEvict(main, {
-    ownCapBytes: 4096n,
     realpath(path) {
       if (path === main) throw injectedError("EIO", "injected realpath cwd");
       return realpathSync(path);
