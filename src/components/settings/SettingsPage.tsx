@@ -48,6 +48,7 @@ import {
   practiceAutoDifficultyAtom,
   previewBoardOnHoverAtom,
   flipBoardAfterMoveAtom,
+  fontSizeAtom,
   showArrowsAtom,
   showConsecutiveArrowsAtom,
   showCoordinatesAtom,
@@ -62,17 +63,12 @@ import {
   puzzleWorkspaceGenerationAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import {
-  PIECE_SCALE_MARKS,
-  PIECE_SCALE_MAX,
-  PIECE_SCALE_MIN,
-  PIECE_SCALE_STEP,
-} from "@/state/pieceScale";
+import { FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP } from "@/state/fontScale";
+import { PIECE_SCALE_MAX, PIECE_SCALE_MIN, PIECE_SCALE_STEP } from "@/state/pieceScale";
 import { analytics } from "@/platform/analytics";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
-import FontSizeSlider from "./FontSizeSlider";
 import KeybindInput from "./KeybindInput";
 import PercentagePreferenceSlider from "./PercentagePreferenceSlider";
 import PiecesSelect from "./PiecesSelect";
@@ -84,6 +80,9 @@ import SettingsSwitch from "./SettingsSwitch";
 import SoundSelect from "./SoundSelect";
 import ThemeButton from "./ThemeButton";
 import VolumeSlider from "./VolumeSlider";
+
+const FONT_SIZE_MARKS = [FONT_SCALE_MIN, 100, 150, FONT_SCALE_MAX];
+const PIECE_SIZE_MARKS = [PIECE_SCALE_MIN, 85, PIECE_SCALE_MAX];
 
 const COMPACT_SETTINGS_WIDTH_EM = 50;
 
@@ -443,7 +442,16 @@ export default function Page() {
         title: t("Settings.Appearance.FontSize"),
         description: t("Settings.Appearance.FontSize.Desc"),
         keywords: ["font", "size", "text"],
-        render: () => <FontSizeSlider />,
+        render: () => (
+          <PercentagePreferenceSlider
+            atom={fontSizeAtom}
+            min={FONT_SCALE_MIN}
+            max={FONT_SCALE_MAX}
+            step={FONT_SCALE_STEP}
+            marks={FONT_SIZE_MARKS}
+            thumbLabel={t("Settings.Appearance.FontSize")}
+          />
+        ),
       },
       {
         id: "piece-set",
@@ -465,7 +473,7 @@ export default function Page() {
             min={PIECE_SCALE_MIN}
             max={PIECE_SCALE_MAX}
             step={PIECE_SCALE_STEP}
-            marks={PIECE_SCALE_MARKS}
+            marks={PIECE_SIZE_MARKS}
             thumbLabel={t("Settings.Appearance.PieceSize")}
           />
         ),

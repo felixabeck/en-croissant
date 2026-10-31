@@ -7,6 +7,8 @@ import {
 } from "./fixtures";
 import type { Locator, Page } from "@playwright/test";
 
+const CENTRED_70_INSET = (1 - 0.7) / 2;
+
 async function openBoard(page: Page) {
     await page.goto("/");
     await page.getByRole("button", { name: /^open$/i }).click();
@@ -39,9 +41,6 @@ async function pieceLayout(piece: Locator) {
             paddingRight: Number.parseFloat(style.paddingRight),
             paddingBottom: Number.parseFloat(style.paddingBottom),
             paddingLeft: Number.parseFloat(style.paddingLeft),
-            backgroundSize: style.backgroundSize,
-            backgroundOrigin: style.backgroundOrigin,
-            backgroundClip: style.backgroundClip,
         };
     });
 }
@@ -101,10 +100,28 @@ async function piecePaintBounds(page: Page, piece: Locator) {
                     }
                 }
             }
-            return { minX, minY, maxX, maxY, width: first.width, height: first.height };
+            return {
+                paintDetected: maxX >= 0,
+                minX,
+                minY,
+                maxX,
+                maxY,
+                width: first.width,
+                height: first.height,
+            };
         },
         [occupied, empty] as [number[], number[]],
     );
+}
+
+async function setPieceSizeToSeventy(page: Page) {
+    const slider = page.getByRole("slider", { name: "Piece Size", exact: true });
+    await slider.scrollIntoViewIfNeeded();
+    await expect(slider).toBeVisible();
+    await slider.focus();
+    await page.keyboard.press("Home");
+    await expect(slider).toHaveAttribute("aria-valuenow", "70");
+    return slider;
 }
 
 test("piece-size: default board pieces fill the square with cover and no padding", async ({
@@ -128,11 +145,7 @@ test("piece-size: Appearance slider stores 70, insets the image, keeps click-mov
 }) => {
     const board = await openBoard(page);
     await openAppearanceTab(page);
-    const slider = page.getByRole("slider", { name: "Piece Size", exact: true });
-    await slider.scrollIntoViewIfNeeded();
-    await expect(slider).toBeVisible();
-    await slider.focus();
-    await page.keyboard.press("Home");
+    const slider = await setPieceSizeToSeventy(page);
     await expect(slider).toHaveAttribute("aria-valuenow", "70");
     await expect.poll(() => page.evaluate(() => localStorage.getItem("piece-size"))).toBe("70");
 
@@ -179,15 +192,6 @@ async function selectMeridaPieceSet(page: Page) {
     );
 }
 
-async function setPieceSizeToSeventy(page: Page) {
-    const slider = page.getByRole("slider", { name: "Piece Size", exact: true });
-    await slider.scrollIntoViewIfNeeded();
-    await expect(slider).toBeVisible();
-    await slider.focus();
-    await page.keyboard.press("Home");
-    await expect(slider).toHaveAttribute("aria-valuenow", "70");
-}
-
 test("piece-size: merida paint at 100% extends outside the centred 70% box, and at 70% lies inside", async ({
     page,
 }) => {
@@ -200,9 +204,9 @@ test("piece-size: merida paint at 100% extends outside the centred 70% box, and 
     const queen = boardPiece(page, "piece.white.queen");
     await expect(queen).toBeVisible();
     const atFull = await piecePaintBounds(page, queen);
-    expect(atFull.maxX).toBeGreaterThanOrEqual(0);
-    const insetX = 0.15 * atFull.width;
-    const insetY = 0.15 * atFull.height;
+    expect(atFull.paintDetected).toBe(true);
+    const insetX = CENTRED_70_INSET * atFull.width;
+    const insetY = CENTRED_70_INSET * atFull.height;
     expect(
         atFull.minX < insetX ||
             atFull.minY < insetY ||
@@ -217,9 +221,9 @@ test("piece-size: merida paint at 100% extends outside the centred 70% box, and 
     const shrunkQueen = boardPiece(page, "piece.white.queen");
     await expect(shrunkQueen).toBeVisible();
     const atSeventy = await piecePaintBounds(page, shrunkQueen);
-    expect(atSeventy.maxX).toBeGreaterThanOrEqual(0);
-    const seventyInsetX = 0.15 * atSeventy.width;
-    const seventyInsetY = 0.15 * atSeventy.height;
+    expect(atSeventy.paintDetected).toBe(true);
+    const seventyInsetX = CENTRED_70_INSET * atSeventy.width;
+    const seventyInsetY = CENTRED_70_INSET * atSeventy.height;
     expect(atSeventy.minX).toBeGreaterThanOrEqual(seventyInsetX - 1);
     expect(atSeventy.minY).toBeGreaterThanOrEqual(seventyInsetY - 1);
     expect(atSeventy.maxX).toBeLessThanOrEqual(atSeventy.width - seventyInsetX + 1);
