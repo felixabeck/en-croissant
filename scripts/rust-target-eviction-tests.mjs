@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fencePath, mutationCacheRelativePath } from "./run-backend-mutation.mjs";
 import {
@@ -225,6 +225,32 @@ function fillAllocated(unit, minimum) {
   return allocatedBytes(unit);
 }
 
+const PAYLOAD_MIN_BYTES = 4n * 1024n * 1024n;
+const CAP_MARGIN_BYTES = 64n * 1024n;
+
+function dump(result) {
+  return result.lines.join("\n");
+}
+
+function skipUnitInteriors(units) {
+  return (path) => {
+    for (const unit of units) {
+      if (path === unit) return false;
+      if (!path.startsWith(`${unit}${sep}`)) continue;
+      return !CARGO_LOCK_FILES.includes(relative(unit, path));
+    }
+    return false;
+  };
+}
+
+function capAboveRemainder(root, units) {
+  return allocatedBytes(root, { skip: skipUnitInteriors(units) }) + CAP_MARGIN_BYTES;
+}
+
+function capToEvictUnit(root, unit) {
+  return allocatedBytes(root) - allocatedBytes(unit) + CAP_MARGIN_BYTES;
+}
+
 function makeSparse(path, apparentSize) {
   const fd = openSync(path, "w");
   ftruncateSync(fd, apparentSize);
@@ -275,10 +301,13 @@ linuxTest("discovery walks real git worktrees and ignores missing or prunable pa
     idleMaxAgeMs,
     ownCapBytes: OWN_CHECKOUT_CAP_BYTES,
   });
-  assert.equal(result.exitCode, 0, result.lines.join("\n"));
+  assert.equal(result.exitCode, 0, dump(result));
   assert.ok(artifactIntact(ownUnit), "own checkout is not idle-evicted");
-  assert.equal(artifactIntact(siblingUnit), false);
-  assert.ok(result.lines.some((line) => line.startsWith(`evicted ${siblingUnit} `)));
+  assert.equal(artifactIntact(siblingUnit), false, dump(result));
+  assert.ok(
+    result.lines.some((line) => line.startsWith(`evicted ${realpathSync(siblingUnit)} `)),
+    dump(result),
+  );
 });
 
 linuxTest("idle rule keeps a unit when any one mtime signal is fresh", async (t) => {
@@ -304,24 +333,33 @@ linuxTest("idle rule keeps a unit when any one mtime signal is fresh", async (t)
     if (signal === "unit") stamp(unit, fresh);
     else stamp(join(unit, signal), fresh);
     const result = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.equal(result.exitCode, 0, `${signal}\n${result.lines.join("\n")}`);
+    assert.equal(result.exitCode, 0, `${signal}\n${dump(result)}`);
     assert.ok(artifactIntact(unit), `${signal} fresh must keep the unit`);
-    assert.ok(result.lines.some((line) => line.includes(`skipped ${unit} reason=not idle`)));
+    assert.ok(
+      result.lines.some((line) => line.includes(`skipped ${realpathSync(unit)} reason=not idle`)),
+      `${signal}\n${dump(result)}`,
+    );
   }
 
   const justUnderUnit = makeUnit(join(sibling, "src-tauri", "target"), "release", {
     mtimeMs: justUnder,
   });
   const justUnderResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-  assert.ok(artifactIntact(justUnderUnit));
-  assert.ok(justUnderResult.lines.some((line) => line.includes("reason=not idle")));
+  assert.ok(artifactIntact(justUnderUnit), dump(justUnderResult));
+  assert.ok(
+    justUnderResult.lines.some((line) => line.includes("reason=not idle")),
+    dump(justUnderResult),
+  );
 
   const justOverUnit = makeUnit(join(sibling, "src-tauri", "target"), "llvm-cov-target/debug", {
     mtimeMs: justOver,
   });
   const justOverResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-  assert.equal(artifactIntact(justOverUnit), false);
-  assert.ok(justOverResult.lines.some((line) => line.startsWith(`evicted ${justOverUnit} `)));
+  assert.equal(artifactIntact(justOverUnit), false, dump(justOverResult));
+  assert.ok(
+    justOverResult.lines.some((line) => line.startsWith(`evicted ${realpathSync(justOverUnit)} `)),
+    dump(justOverResult),
+  );
 });
 
 linuxTest("idle rule handles a unit without incremental and without build", async (t) => {
@@ -362,10 +400,13 @@ linuxTest(
     const unit = makeUnit(siblingTarget, "debug", { mtimeMs: stale });
     startCopiedSleep(unit, t);
     const inUse = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.equal(inUse.exitCode, 0, inUse.lines.join("\n"));
-    assert.ok(artifactIntact(unit));
+    assert.equal(inUse.exitCode, 0, dump(inUse));
+    assert.ok(artifactIntact(unit), dump(inUse));
     assert.ok(
-      inUse.lines.some((line) => line.includes(`skipped ${unit} reason=in use (executable)`)),
+      inUse.lines.some((line) =>
+        line.includes(`skipped ${realpathSync(unit)} reason=in use (executable)`),
+      ),
+      dump(inUse),
     );
 
     const outside = join(parent, "outside-bin");
@@ -385,16 +426,16 @@ linuxTest(
     });
     const other = makeUnit(siblingTarget, "release", { mtimeMs: stale });
     const outsideResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.equal(outsideResult.exitCode, 0, outsideResult.lines.join("\n"));
-    assert.equal(artifactIntact(other), false);
+    assert.equal(outsideResult.exitCode, 0, dump(outsideResult));
+    assert.equal(artifactIntact(other), false, dump(outsideResult));
 
     const prefixUnit = makeUnit(siblingTarget, "debug2", { mtimeMs: stale });
     startCopiedSleep(prefixUnit, t);
     const siblingName = makeUnit(siblingTarget, "debug2-extra", { mtimeMs: stale });
     // The running exe lives in debug2; debug2-extra only shares a name prefix.
     const prefixResult = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.ok(artifactIntact(prefixUnit));
-    assert.equal(artifactIntact(siblingName), false, prefixResult.lines.join("\n"));
+    assert.ok(artifactIntact(prefixUnit), dump(prefixResult));
+    assert.equal(artifactIntact(siblingName), false, dump(prefixResult));
 
     const linkedParent = join(parent, "link-to-main");
     symlinkSync(main, linkedParent);
@@ -406,8 +447,11 @@ linuxTest(
       idleMaxAgeMs,
       ownCapBytes: 1n,
     });
-    assert.ok(artifactIntact(ownUnit), viaLink.lines.join("\n"));
-    assert.ok(viaLink.lines.some((line) => line.includes("in use (executable)")));
+    assert.ok(artifactIntact(ownUnit), dump(viaLink));
+    assert.ok(
+      viaLink.lines.some((line) => line.includes("in use (executable)")),
+      dump(viaLink),
+    );
   },
 );
 
@@ -420,11 +464,14 @@ linuxTest("both lock and executable report the lock reason (CR-4)", async (t) =>
   holdLock(join(unit, ".cargo-lock"), t);
   startCopiedSleep(unit, t);
   const result = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-  assert.ok(artifactIntact(unit));
+  assert.ok(artifactIntact(unit), dump(result));
   assert.ok(
-    result.lines.some((line) => line.includes(`skipped ${unit} reason=in use (lock held)`)),
+    result.lines.some((line) =>
+      line.includes(`skipped ${realpathSync(unit)} reason=in use (lock held)`),
+    ),
+    dump(result),
   );
-  assert.ok(!result.lines.some((line) => line.includes("in use (executable)")));
+  assert.ok(!result.lines.some((line) => line.includes("in use (executable)")), dump(result));
 });
 
 linuxTest("deleted exe suffix is compared without the suffix (CR-2)", async (t) => {
@@ -458,36 +505,44 @@ linuxTest("size cap evicts largest-first and leaves non-unit content", async (t)
   const large = makeUnit(root, "debug");
   const medium = makeUnit(root, "release");
   const small = makeUnit(root, "llvm-cov-target/debug");
-  fillAllocated(large, 200_000n);
-  fillAllocated(medium, 80_000n);
-  fillAllocated(small, 20_000n);
+  fillAllocated(large, PAYLOAD_MIN_BYTES);
+  fillAllocated(medium, PAYLOAD_MIN_BYTES / 2n);
+  fillAllocated(small, PAYLOAD_MIN_BYTES / 8n);
   mkdirSync(join(root, "doc"), { recursive: true });
   writeFileSync(join(root, "doc", "index.html"), "docs\n");
   writeFileSync(join(root, "CACHEDIR.TAG"), "tag\n");
   const shared = join(root, "shared-blob");
   writeFileSync(shared, Buffer.alloc(64_000, 2));
   linkSync(shared, join(root, "shared-blob-link"));
-  const total = allocatedBytes(root);
-  const cap = total - allocatedBytes(large) + 16_384n;
+  const cap = capToEvictUnit(root, large);
   const result = await runEvict(main, { ownCapBytes: cap });
-  assert.equal(artifactIntact(large), false, result.lines.join("\n"));
-  assert.ok(artifactIntact(medium));
-  assert.ok(artifactIntact(small));
-  assert.ok(existsSync(join(root, "doc", "index.html")));
-  assert.ok(existsSync(join(root, "CACHEDIR.TAG")));
-  assert.ok(result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)));
+  assert.equal(artifactIntact(large), false, dump(result));
+  assert.ok(artifactIntact(medium), dump(result));
+  assert.ok(artifactIntact(small), dump(result));
+  assert.ok(existsSync(join(root, "doc", "index.html")), dump(result));
+  assert.ok(existsSync(join(root, "CACHEDIR.TAG")), dump(result));
+  assert.ok(
+    result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)),
+    dump(result),
+  );
 
   const foreign = makeUnit(join(sibling, "src-tauri", "target"), "debug");
-  fillAllocated(foreign, 300_000n);
+  fillAllocated(foreign, PAYLOAD_MIN_BYTES);
   stampUnit(foreign, Date.now());
   const foreignResult = await runEvict(main, {
     ownCapBytes: cap,
     nowMs: Date.now(),
     idleMaxAgeMs: 10_000,
   });
-  assert.ok(artifactIntact(foreign), "a recent oversize foreign unit is kept");
   assert.ok(
-    foreignResult.lines.some((line) => line.includes(`skipped ${foreign} reason=not idle`)),
+    artifactIntact(foreign),
+    `a recent oversize foreign unit is kept\n${dump(foreignResult)}`,
+  );
+  assert.ok(
+    foreignResult.lines.some((line) =>
+      line.includes(`skipped ${realpathSync(foreign)} reason=not idle`),
+    ),
+    dump(foreignResult),
   );
 });
 
@@ -559,10 +614,19 @@ linuxTest(
     assert.ok(existsSync(join(root, "doc", "huge")));
     assert.ok(
       result.lines.some((line) => line.startsWith(`unreachable cap ${realpathSync(root)} `)),
+      dump(result),
     );
-    assert.ok(result.lines.some((line) => line.includes(`skipped ${undetermined} undetermined:`)));
     assert.ok(
-      result.lines.some((line) => line.includes(`skipped ${fenced} reason=mutation fence`)),
+      result.lines.some((line) =>
+        line.includes(`skipped ${realpathSync(undetermined)} undetermined:`),
+      ),
+      dump(result),
+    );
+    assert.ok(
+      result.lines.some((line) =>
+        line.includes(`skipped ${realpathSync(fenced)} reason=mutation fence`),
+      ),
+      dump(result),
     );
   },
 );
@@ -571,15 +635,18 @@ linuxTest("an in-use unit alone can keep the root over the cap", async (t) => {
   const { main } = twoCheckouts(t);
   const root = join(main, "src-tauri", "target");
   const pinned = makeUnit(root, "debug");
-  fillAllocated(pinned, 100_000n);
+  fillAllocated(pinned, PAYLOAD_MIN_BYTES);
   holdLock(join(pinned, ".cargo-lock"), t);
   const extra = makeUnit(root, "release");
   const cap = 4096n;
   const result = await runEvict(main, { ownCapBytes: cap });
-  assert.equal(result.exitCode, 1);
-  assert.ok(artifactIntact(pinned));
-  assert.ok(artifactIntact(extra));
-  assert.ok(result.lines.some((line) => line.includes("unreachable cap")));
+  assert.equal(result.exitCode, 1, dump(result));
+  assert.ok(artifactIntact(pinned), dump(result));
+  assert.ok(artifactIntact(extra), dump(result));
+  assert.ok(
+    result.lines.some((line) => line.includes("unreachable cap")),
+    dump(result),
+  );
 });
 
 linuxTest("a re-check in-use skip continues with the next-largest unit", async (t) => {
@@ -587,9 +654,9 @@ linuxTest("a re-check in-use skip continues with the next-largest unit", async (
   const root = join(main, "src-tauri", "target");
   const largest = makeUnit(root, "debug");
   const next = makeUnit(root, "release");
-  fillAllocated(largest, 150_000n);
-  fillAllocated(next, 80_000n);
-  const cap = 4096n;
+  fillAllocated(largest, PAYLOAD_MIN_BYTES);
+  fillAllocated(next, PAYLOAD_MIN_BYTES / 2n);
+  const cap = capAboveRemainder(root, [largest, next]);
   const pidFile = join(parent, "pinned.pid");
   const hook = writeHook(
     parent,
@@ -630,12 +697,19 @@ export function afterLock(unitPath) {
   const result = await runEvict(main, {
     ownCapBytes: cap,
     afterLockModule: hook,
-    env: { ...process.env, EVICT_TEST_PIN: largest, EVICT_TEST_PID: pidFile },
+    env: {
+      ...process.env,
+      EVICT_TEST_PIN: realpathSync(largest),
+      EVICT_TEST_PID: pidFile,
+    },
   });
-  assert.equal(result.exitCode, 1, result.lines.join("\n"));
-  assert.ok(artifactIntact(largest));
-  assert.equal(artifactIntact(next), false);
-  assert.ok(result.lines.some((line) => line.includes("unreachable cap")));
+  assert.equal(result.exitCode, 1, dump(result));
+  assert.ok(artifactIntact(largest), dump(result));
+  assert.equal(artifactIntact(next), false, dump(result));
+  assert.ok(
+    result.lines.some((line) => line.includes("unreachable cap")),
+    dump(result),
+  );
 });
 
 linuxTest("own checkout is never idle-evicted", async (t) => {
@@ -659,10 +733,12 @@ linuxTest("each lock file, fence, in-use, and symlink skip leaves contents intac
     const unit = makeUnit(target, "debug", { mtimeMs: stale });
     holdLock(join(unit, lockName), t);
     const result = await runEvict(main, { nowMs: now, idleMaxAgeMs });
-    assert.ok(artifactIntact(unit), lockName);
+    assert.ok(artifactIntact(unit), `${lockName}\n${dump(result)}`);
     assert.ok(
-      result.lines.some((line) => line.includes(`skipped ${unit} reason=in use (lock held)`)),
-      lockName,
+      result.lines.some((line) =>
+        line.includes(`skipped ${realpathSync(unit)} reason=in use (lock held)`),
+      ),
+      `${lockName}\n${dump(result)}`,
     );
   }
 
@@ -817,7 +893,10 @@ test(
     assert.ok(existsSync(join(unit, ".fingerprint", "x")));
     assert.ok(existsSync(join(unit, "deps", "artifact")));
     assert.ok(existsSync(join(unit, "build", "x")));
-    assert.ok(result.lines.some((line) => line.startsWith(`failed ${unit}:`)));
+    assert.ok(
+      result.lines.some((line) => line.startsWith(`failed ${realpathSync(unit)}:`)),
+      dump(result),
+    );
     assert.ok(!result.lines.some((line) => line.includes("contents intact")));
   },
 );
@@ -848,8 +927,14 @@ test(
     assert.equal(existsSync(join(first, ".fingerprint")), false);
     assert.ok(existsSync(join(first, "deps", "artifact")));
     assert.equal(artifactIntact(second), false);
-    assert.ok(result.lines.some((line) => line.startsWith(`failed ${first}:`)));
-    assert.ok(result.lines.some((line) => line.startsWith(`evicted ${second} `)));
+    assert.ok(
+      result.lines.some((line) => line.startsWith(`failed ${realpathSync(first)}:`)),
+      dump(result),
+    );
+    assert.ok(
+      result.lines.some((line) => line.startsWith(`evicted ${realpathSync(second)} `)),
+      dump(result),
+    );
     assert.ok(result.lines.some((line) => line.includes("partial removal")));
   },
 );
@@ -948,25 +1033,31 @@ linuxTest("fail-direction skips keep contents and exit 1", async (t) => {
   assert.ok(artifactIntact(unit));
 
   unit = resetUnit();
-  const ownListed = makeUnit(join(main, "src-tauri", "target"), "debug");
-  fillAllocated(ownListed, 80_000n);
+  const ownRoot = join(main, "src-tauri", "target");
+  const ownListed = makeUnit(ownRoot, "debug");
+  fillAllocated(ownListed, PAYLOAD_MIN_BYTES);
   const listing = await runEvict(main, {
     nowMs: now,
     idleMaxAgeMs,
-    ownCapBytes: 4096n,
+    ownCapBytes: capToEvictUnit(ownRoot, ownListed),
     listCheckouts: (cwd) => ({
       error: "injected listing",
       checkouts: [{ path: cwd, prunable: false }],
     }),
   });
-  assert.equal(listing.exitCode, 1, listing.lines.join("\n"));
-  assert.ok(listing.lines.some((line) => line.startsWith("worktree listing failed:")));
-  assert.ok(artifactIntact(unit), "a sibling omitted from the fallback listing stays intact");
-  assert.equal(artifactIntact(ownListed), false);
+  assert.equal(listing.exitCode, 1, dump(listing));
   assert.ok(
-    listing.lines.some((line) =>
-      line.startsWith(`total ${realpathSync(join(main, "src-tauri", "target"))} bytes=`),
-    ),
+    listing.lines.some((line) => line.startsWith("worktree listing failed:")),
+    dump(listing),
+  );
+  assert.ok(
+    artifactIntact(unit),
+    `a sibling omitted from the fallback listing stays intact\n${dump(listing)}`,
+  );
+  assert.equal(artifactIntact(ownListed), false, dump(listing));
+  assert.ok(
+    listing.lines.some((line) => line.startsWith(`total ${realpathSync(ownRoot)} bytes=`)),
+    dump(listing),
   );
 });
 
@@ -1040,19 +1131,25 @@ linuxTest("failed git worktree list still processes the own checkout (F1)", asyn
   const { parent, main, sibling } = twoCheckouts(t);
   const root = join(main, "src-tauri", "target");
   const ownUnit = makeUnit(root, "debug");
-  fillAllocated(ownUnit, 80_000n);
+  fillAllocated(ownUnit, PAYLOAD_MIN_BYTES);
   const siblingUnit = makeUnit(join(sibling, "src-tauri", "target"), "debug", {
     mtimeMs: 1_000_000,
   });
   const result = await runEvict(main, {
     git: join(parent, "no-such-git"),
-    ownCapBytes: 4096n,
+    ownCapBytes: capToEvictUnit(root, ownUnit),
   });
-  assert.equal(result.exitCode, 1, result.lines.join("\n"));
-  assert.ok(result.lines.some((line) => line.startsWith("worktree listing failed:")));
-  assert.ok(result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)));
-  assert.equal(artifactIntact(ownUnit), false);
-  assert.ok(artifactIntact(siblingUnit));
+  assert.equal(result.exitCode, 1, dump(result));
+  assert.ok(
+    result.lines.some((line) => line.startsWith("worktree listing failed:")),
+    dump(result),
+  );
+  assert.ok(
+    result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)),
+    dump(result),
+  );
+  assert.equal(artifactIntact(ownUnit), false, dump(result));
+  assert.ok(artifactIntact(siblingUnit), dump(result));
 });
 
 linuxTest("units three levels below a root are found and four levels are not (F2)", async (t) => {
@@ -1267,14 +1364,15 @@ linuxTest("remainder and in-loop total failures skip remaining evictable units (
   const root = join(main, "src-tauri", "target");
   const debug = makeUnit(root, "debug");
   const release = makeUnit(root, "release");
-  fillAllocated(debug, 200_000n);
-  fillAllocated(release, 80_000n);
+  fillAllocated(debug, PAYLOAD_MIN_BYTES);
+  fillAllocated(release, PAYLOAD_MIN_BYTES / 2n);
   const canonicalRoot = realpathSync(root);
   const debugCanonical = realpathSync(debug);
   const releaseCanonical = realpathSync(release);
+  const cap = capAboveRemainder(root, [debug, release]);
 
   const remainder = await runEvict(main, {
-    ownCapBytes: 4096n,
+    ownCapBytes: cap,
     allocatedBytes(path, extra) {
       if ((path === root || path === canonicalRoot) && extra?.skip) {
         throw injectedError("EIO", "injected remainder");
@@ -1282,20 +1380,25 @@ linuxTest("remainder and in-loop total failures skip remaining evictable units (
       return allocatedBytes(path, extra);
     },
   });
-  assert.equal(remainder.exitCode, 1, remainder.lines.join("\n"));
-  assert.ok(artifactIntact(debug));
-  assert.ok(artifactIntact(release));
-  assert.ok(remainder.lines.some((line) => line.startsWith(`undetermined ${canonicalRoot}:`)));
+  assert.equal(remainder.exitCode, 1, dump(remainder));
+  assert.ok(artifactIntact(debug), dump(remainder));
+  assert.ok(artifactIntact(release), dump(remainder));
+  assert.ok(
+    remainder.lines.some((line) => line.startsWith(`undetermined ${canonicalRoot}:`)),
+    dump(remainder),
+  );
   assert.ok(
     remainder.lines.some((line) => line.startsWith(`skipped ${debugCanonical} undetermined:`)),
+    dump(remainder),
   );
   assert.ok(
     remainder.lines.some((line) => line.startsWith(`skipped ${releaseCanonical} undetermined:`)),
+    dump(remainder),
   );
 
   let rootTotals = 0;
   const inLoop = await runEvict(main, {
-    ownCapBytes: 4096n,
+    ownCapBytes: cap,
     allocatedBytes(path, extra) {
       if (path === root || path === canonicalRoot) {
         if (extra?.skip) return allocatedBytes(path, extra);
@@ -1305,12 +1408,16 @@ linuxTest("remainder and in-loop total failures skip remaining evictable units (
       return allocatedBytes(path, extra);
     },
   });
-  assert.equal(inLoop.exitCode, 1, inLoop.lines.join("\n"));
-  assert.equal(artifactIntact(debug), false);
-  assert.ok(artifactIntact(release));
-  assert.ok(inLoop.lines.some((line) => line.startsWith(`evicted ${debugCanonical} `)));
+  assert.equal(inLoop.exitCode, 1, dump(inLoop));
+  assert.equal(artifactIntact(debug), false, dump(inLoop));
+  assert.ok(artifactIntact(release), dump(inLoop));
+  assert.ok(
+    inLoop.lines.some((line) => line.startsWith(`evicted ${debugCanonical} `)),
+    dump(inLoop),
+  );
   assert.ok(
     inLoop.lines.some((line) => line.startsWith(`skipped ${releaseCanonical} undetermined:`)),
+    dump(inLoop),
   );
 });
 
