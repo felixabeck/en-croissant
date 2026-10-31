@@ -19823,10 +19823,13 @@ Plan authorship and arbitration shared root context. Detection and code use the 
 
 ### Hosted Test intermittently fails the linked New game journey before the board has a box
 
-* **ID:** f-20261030-21 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261030-21 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Impact class:** tooling
 * **Where:** e2e/new-game-to-database.spec.ts:152 calls playBoardMove right after `toHaveURL("/")`; e2e/fixtures.ts:394 dereferences `cg-board` boundingBox() without waiting for it.
 * **Defect:** Hosted CI run 41126822671 on 40c51aaf failed "linked collection New game appends to its PGN without inserting into the index" with `TypeError: Cannot read properties of null (reading 'width')` at fixtures.ts:394: the board element existed but had no layout box yet. The rerun of the same job on the same SHA passed, and four local container runs passed, so it is a race in the helper, not a product failure.
 * **Failure scenario:** A push to master shows the Test job red at random and holds the post-push install until someone reruns the job.
 * **Fix:** playBoardMove (or squarePosition) waits for the board to be visible with a non-null box (`expect(board).toBeVisible()` plus a polled boundingBox) before computing square coordinates.
 * **Found by:** Claude Code while waiting on hosted CI for the Library surface-tier push (2026-10-30).
+
+Fixed in 015cd709: playBoardMove and dragBoard poll the trial click and boundingBox() until a box exists. A stub-board regression test in e2e/new-game-to-database.spec.ts returns null twice; with only the helper change reverted it fails with the hosted "Cannot read properties of null (reading 'width')". Hosted Test run 41181169436 on 015cd709 succeeded in every job.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"54970d69bf45cfcecbf7a0267d19614fa4639f5af8695dfe8032acffecd66a62","header_sha256":"fef2103635ed86b0fe0f1981ab2910358601c0a42322de98ccac86f4ec972db2","header_status":"handled","input_sha256":"a1f0dc294004c6206cf6861f003ae69dfe5614cf79a0fac81b2492853be4f258","kind":"mutation-receipt","operation":"97df0427e90ecaac9bbb32460083b61762045e9acc83c933ca1c7ac1b161bb1c","options":{"section":null},"request_id_sha256":null,"results":["f-20261030-21"],"target":"f-20261030-21","v":1} -->
