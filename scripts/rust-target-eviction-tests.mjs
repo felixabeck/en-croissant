@@ -291,12 +291,13 @@ function waitUntilProductSeesCopiedExe(containerPath, child) {
 }
 
 function startCopiedSleep(unit, t, staleMs) {
-  const exe = join(unit, "deps", "sleeping-bin");
-  mkdirSync(join(unit, "deps"), { recursive: true });
+  // uutils coreutils (Ubuntu 26.04) dispatches on the executable's file name, so the copy must be named sleep.
+  const exe = join(unit, "deps", "sleeping-bin", "sleep");
+  mkdirSync(join(unit, "deps", "sleeping-bin"), { recursive: true });
   const source = existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep";
   copyFileSync(source, exe);
   chmodSync(exe, 0o755);
-  const child = spawn(exe, ["60"], { stdio: "ignore", argv0: "sleep" });
+  const child = spawn(exe, ["60"], { stdio: "ignore" });
   t.after(() => {
     try {
       child.kill("SIGKILL");
@@ -514,11 +515,11 @@ linuxTest(
     );
 
     const outside = join(parent, "outside-bin");
-    mkdirSync(outside);
-    const outsideExe = join(outside, "sleeping-bin");
+    mkdirSync(join(outside, "sleeping-bin"), { recursive: true });
+    const outsideExe = join(outside, "sleeping-bin", "sleep");
     copyFileSync(existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep", outsideExe);
     chmodSync(outsideExe, 0o755);
-    const outsideChild = spawn(outsideExe, ["60"], { stdio: "ignore", argv0: "sleep" });
+    const outsideChild = spawn(outsideExe, ["60"], { stdio: "ignore" });
     t.after(() => outsideChild.kill("SIGKILL"));
     outsideChild.unref();
     waitUntilProductSeesCopiedExe(outside, outsideChild);
@@ -767,12 +768,12 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readlinkSync, writeFile
 import { join } from "node:path";
 export function afterLock(unitPath) {
   if (unitPath !== process.env.EVICT_TEST_PIN) return;
-  const exe = join(unitPath, "deps", "sleeping-bin");
-  mkdirSync(join(unitPath, "deps"), { recursive: true });
+  const exe = join(unitPath, "deps", "sleeping-bin", "sleep");
+  mkdirSync(join(unitPath, "deps", "sleeping-bin"), { recursive: true });
   const source = existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep";
   copyFileSync(source, exe);
   chmodSync(exe, 0o755);
-  const child = spawn(exe, ["60"], { stdio: "ignore", argv0: "sleep" });
+  const child = spawn(exe, ["60"], { stdio: "ignore" });
   child.unref();
   writeFileSync(process.env.EVICT_TEST_PID, String(child.pid));
   const deadline = Date.now() + 3000;
