@@ -1,3 +1,5 @@
+/* The texture tile is one square (12.5% = 1/8 of the board); soft-light blends it into the
+   board image below, which keeps `cover`. */
 cg-board {
   background-image: var(--board-texture, none), var(--board-image, url("/board/gray.svg"));
   background-size:

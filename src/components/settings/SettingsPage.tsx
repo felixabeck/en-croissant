@@ -117,9 +117,6 @@ function TelemetrySwitch() {
       styles={{
         track: { cursor: "pointer" },
         thumb: { pointerEvents: "none" },
-        trackLabel: {
-          color: enabled ? "var(--cf-primary-foreground)" : "var(--cf-foreground)",
-        },
       }}
     />
   );
