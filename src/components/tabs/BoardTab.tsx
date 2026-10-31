@@ -1,4 +1,5 @@
-import { Tabs } from "@mantine/core";
+import { Tabs, Tooltip } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
 import type { DraggableProvidedDragHandleProps } from "@hello-pangea/dnd";
 import { ChessKnight, Database, Puzzle, ScanSearch } from "lucide-react";
 import cx from "clsx";
@@ -22,18 +23,38 @@ export function BoardTab({
 }) {
   const { t } = useTranslation();
   const { role: _dragRole, tabIndex: _dragTabIndex, ...tabDragHandleProps } = dragHandleProps ?? {};
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  const name = t(tab.name, { defaultValue: tab.name });
+
+  // The full-name tooltip is enabled only while the ellipsis actually cuts the
+  // label, which changes with the name and with every resize of the tab.
+  useEffect(() => {
+    const label = labelRef.current;
+    if (!label) return;
+    const measure = () => setTruncated(label.scrollWidth > label.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(label);
+    return () => observer.disconnect();
+  }, [name]);
 
   return (
     <div className={classes.tabItem} role="presentation">
-      <Tabs.Tab
-        {...tabDragHandleProps}
-        value={tab.value}
-        className={cx(classes.tab, { [classes.selected]: selected })}
-        leftSection={<TabIcon tab={tab} tabType={tabType} />}
-        onClick={() => setActiveTab(tab.value)}
-      >
-        <span className={classes.tabLabel}>{t(tab.name, { defaultValue: tab.name })}</span>
-      </Tabs.Tab>
+      <Tooltip label={name} disabled={!truncated} openDelay={400} position="bottom" withinPortal>
+        <Tabs.Tab
+          {...tabDragHandleProps}
+          value={tab.value}
+          className={cx(classes.tab, { [classes.selected]: selected })}
+          classNames={{ tabLabel: classes.tabLabelSlot }}
+          leftSection={<TabIcon tab={tab} tabType={tabType} />}
+          onClick={() => setActiveTab(tab.value)}
+        >
+          <span ref={labelRef} className={classes.tabLabel}>
+            {name}
+          </span>
+        </Tabs.Tab>
+      </Tooltip>
     </div>
   );
 }

@@ -5,9 +5,9 @@
 }
 
 .tab {
-  min-width: 5rem;
-  max-width: 14rem;
-  padding-right: 0.25rem;
+  width: 100%;
+  min-width: 0;
+  padding-right: 0.75rem;
   height: 2.2rem;
   color: var(--mantine-color-dimmed);
   background: transparent;
@@ -22,8 +22,6 @@
 }
 
 .selected {
-  border-top: 2px solid var(--cf-primary);
-  border-bottom: 2px solid transparent;
   background: color-mix(in srgb, var(--cf-primary) 10%, var(--cf-card));
   color: var(--cf-foreground);
 }
@@ -32,9 +30,15 @@
   background: color-mix(in srgb, var(--cf-primary) 15%, var(--cf-card));
 }
 
+/* Mantine's label slot is a flex item with an automatic minimum width; without
+   this override a long name overflows the tab instead of ending in an ellipsis. */
+.tabLabelSlot {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .tabLabel {
   display: block;
-  min-width: 5rem;
   font-size: 0.8rem;
   text-align: start;
   overflow: hidden;

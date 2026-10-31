@@ -99,6 +99,20 @@ export default function BoardsPage() {
       ?.focus();
   }, [activeTab, tabs.length]);
 
+  // Keep the active tab visible when it changes and when a resize makes the bar overflow.
+  // ResizeObserver delivers an initial notification on observe, which covers the change.
+  useEffect(() => {
+    const list = tabListRef.current;
+    if (!list) return;
+    const observer = new ResizeObserver(() =>
+      list
+        .querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
+    );
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [activeTab, tabs.length]);
+
   const closeTab = useCallback(
     async (value: string | null, discard = false) => {
       if (value !== null) {
@@ -289,7 +303,7 @@ export default function BoardsPage() {
       className={classes.tabsContainer}
     >
       <div className={classes.tabsHeaderRow}>
-        <ScrollArea scrollbarSize={6} className={classes.tabsHeader}>
+        <ScrollArea scrollbarSize={4} className={classes.tabsHeader}>
           <DragDropContext
             onDragEnd={({ destination, source }) =>
               destination?.index !== undefined &&
@@ -317,6 +331,7 @@ export default function BoardsPage() {
                         <div
                           ref={provided.innerRef}
                           {...provided.draggableProps}
+                          className={classes.tabSlot}
                           role="presentation"
                         >
                           <BoardTab

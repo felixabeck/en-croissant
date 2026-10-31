@@ -24,15 +24,30 @@
 .tabsHeaderRow .tabsHeader {
   flex: 1 1 auto;
   min-width: 0;
+  background: var(--cf-surface-inset);
+  border-radius: var(--cf-radius-lg);
+}
+
+/* The list is only as wide as the viewport once its tabs overflow, so the inset
+   surface belongs to the scroll container that spans the whole bar. */
+.tabsHeader .tabList {
+  background: transparent;
 }
 
 .tabList {
   display: flex;
   flex-wrap: nowrap;
-  min-width: max-content;
+}
+
+/* Tabs shrink toward a readable minimum before the bar scrolls. */
+.tabSlot {
+  flex: 0 1 auto;
+  min-width: 7rem;
+  max-width: 15rem;
 }
 
 .newTab {
+  flex-shrink: 0;
   height: 2.2rem;
   width: 2.2rem;
   padding: 0.5em;
