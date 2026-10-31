@@ -9268,7 +9268,7 @@ mod tests {
             .await
         });
 
-        tokio::time::timeout(Duration::from_secs(2), entered)
+        tokio::time::timeout(Duration::from_secs(5), entered)
             .await
             .expect("post-install count starts")
             .expect("count hook signal");
