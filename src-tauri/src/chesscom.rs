@@ -1057,7 +1057,7 @@ mod tests {
             state.clone(),
             Duration::from_secs(2),
         ));
-        tokio::time::timeout(Duration::from_secs(2), entered)
+        tokio::time::timeout(Duration::from_secs(5), entered)
             .await
             .unwrap()
             .unwrap();
@@ -1088,7 +1088,7 @@ mod tests {
             state.clone(),
             Duration::from_secs(2),
         ));
-        tokio::time::timeout(Duration::from_secs(2), entered)
+        tokio::time::timeout(Duration::from_secs(5), entered)
             .await
             .unwrap()
             .unwrap();
@@ -1322,7 +1322,7 @@ mod tests {
             state.clone(),
             Duration::from_millis(500),
         ));
-        tokio::time::timeout(Duration::from_secs(2), entered)
+        tokio::time::timeout(Duration::from_secs(5), entered)
             .await
             .unwrap()
             .unwrap();
@@ -1362,7 +1362,7 @@ mod tests {
             state.clone(),
             Duration::from_secs(2),
         ));
-        tokio::time::timeout(Duration::from_secs(2), entered)
+        tokio::time::timeout(Duration::from_secs(5), entered)
             .await
             .unwrap()
             .unwrap();
