@@ -451,48 +451,45 @@ linuxTest("deleted exe suffix is compared without the suffix (CR-2)", async (t) 
   assert.ok(result.lines.some((line) => line.includes("in use (executable)")));
 });
 
-linuxTest(
-  "size cap evicts largest-first, counts hard links once, and leaves non-unit content",
-  async (t) => {
-    // Goes red against a stub that idle-evicts the own checkout or double-counts hard links.
-    const { main, sibling } = twoCheckouts(t);
-    const root = join(main, "src-tauri", "target");
-    const large = makeUnit(root, "debug");
-    const medium = makeUnit(root, "release");
-    const small = makeUnit(root, "llvm-cov-target/debug");
-    fillAllocated(large, 200_000n);
-    fillAllocated(medium, 80_000n);
-    fillAllocated(small, 20_000n);
-    mkdirSync(join(root, "doc"), { recursive: true });
-    writeFileSync(join(root, "doc", "index.html"), "docs\n");
-    writeFileSync(join(root, "CACHEDIR.TAG"), "tag\n");
-    const shared = join(root, "shared-blob");
-    writeFileSync(shared, Buffer.alloc(64_000, 2));
-    linkSync(shared, join(root, "shared-blob-link"));
-    const total = allocatedBytes(root);
-    const cap = total - allocatedBytes(large) + 16_384n;
-    const result = await runEvict(main, { ownCapBytes: cap });
-    assert.equal(artifactIntact(large), false, result.lines.join("\n"));
-    assert.ok(artifactIntact(medium));
-    assert.ok(artifactIntact(small));
-    assert.ok(existsSync(join(root, "doc", "index.html")));
-    assert.ok(existsSync(join(root, "CACHEDIR.TAG")));
-    assert.ok(result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)));
+linuxTest("size cap evicts largest-first and leaves non-unit content", async (t) => {
+  // Goes red against a stub that idle-evicts the own checkout or removes non-unit files.
+  const { main, sibling } = twoCheckouts(t);
+  const root = join(main, "src-tauri", "target");
+  const large = makeUnit(root, "debug");
+  const medium = makeUnit(root, "release");
+  const small = makeUnit(root, "llvm-cov-target/debug");
+  fillAllocated(large, 200_000n);
+  fillAllocated(medium, 80_000n);
+  fillAllocated(small, 20_000n);
+  mkdirSync(join(root, "doc"), { recursive: true });
+  writeFileSync(join(root, "doc", "index.html"), "docs\n");
+  writeFileSync(join(root, "CACHEDIR.TAG"), "tag\n");
+  const shared = join(root, "shared-blob");
+  writeFileSync(shared, Buffer.alloc(64_000, 2));
+  linkSync(shared, join(root, "shared-blob-link"));
+  const total = allocatedBytes(root);
+  const cap = total - allocatedBytes(large) + 16_384n;
+  const result = await runEvict(main, { ownCapBytes: cap });
+  assert.equal(artifactIntact(large), false, result.lines.join("\n"));
+  assert.ok(artifactIntact(medium));
+  assert.ok(artifactIntact(small));
+  assert.ok(existsSync(join(root, "doc", "index.html")));
+  assert.ok(existsSync(join(root, "CACHEDIR.TAG")));
+  assert.ok(result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)));
 
-    const foreign = makeUnit(join(sibling, "src-tauri", "target"), "debug");
-    fillAllocated(foreign, 300_000n);
-    stampUnit(foreign, Date.now());
-    const foreignResult = await runEvict(main, {
-      ownCapBytes: cap,
-      nowMs: Date.now(),
-      idleMaxAgeMs: 10_000,
-    });
-    assert.ok(artifactIntact(foreign), "a recent oversize foreign unit is kept");
-    assert.ok(
-      foreignResult.lines.some((line) => line.includes(`skipped ${foreign} reason=not idle`)),
-    );
-  },
-);
+  const foreign = makeUnit(join(sibling, "src-tauri", "target"), "debug");
+  fillAllocated(foreign, 300_000n);
+  stampUnit(foreign, Date.now());
+  const foreignResult = await runEvict(main, {
+    ownCapBytes: cap,
+    nowMs: Date.now(),
+    idleMaxAgeMs: 10_000,
+  });
+  assert.ok(artifactIntact(foreign), "a recent oversize foreign unit is kept");
+  assert.ok(
+    foreignResult.lines.some((line) => line.includes(`skipped ${foreign} reason=not idle`)),
+  );
+});
 
 linuxTest("sparse allocated size does not trip the cap (CR-6, F7a)", async (t) => {
   // Goes red if size used st.size: a 1 GiB sparse file would exceed the 64 MiB cap.
@@ -1098,7 +1095,9 @@ linuxTest("a throw during eviction of one unit still evicts the next (F3)", asyn
   assert.ok(artifactIntact(first));
   assert.equal(artifactIntact(second), false);
   assert.ok(
-    result.lines.some((line) => line.startsWith(`skipped ${firstCanonical} undetermined:`)),
+    result.lines.some((line) =>
+      line.startsWith(`skipped ${firstCanonical} undetermined: evict ${firstCanonical}:`),
+    ),
   );
   assert.ok(result.lines.some((line) => line.startsWith(`evicted ${realpathSync(second)} `)));
 });
@@ -1138,7 +1137,11 @@ linuxTest("realpath failures skip a unit or abort the cwd (F4)", async (t) => {
     },
   });
   assert.equal(cwdResult.exitCode, 1, cwdResult.lines.join("\n"));
-  assert.ok(cwdResult.lines.some((line) => line === `error ${main}: injected realpath cwd`));
+  assert.ok(
+    cwdResult.lines.some(
+      (line) => line === `error ${main}: realpath ${main}: injected realpath cwd`,
+    ),
+  );
   assert.ok(artifactIntact(cwdUnit));
   assert.ok(!cwdResult.lines.some((line) => line.startsWith("evicted ")));
   assert.ok(!cwdResult.lines.some((line) => line.startsWith("total ")));
@@ -1199,3 +1202,138 @@ linuxTest(
     );
   },
 );
+
+linuxTest("exe realpath EIO is undetermined; deleted ENOENT stays in use (G1)", async (t) => {
+  const { parent, main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const unit = makeUnit(join(sibling, "src-tauri", "target"), "debug", { mtimeMs: stale });
+  const alias = join(parent, "exe-alias");
+  symlinkSync(join(unit, "deps", "artifact"), alias);
+  const eioResult = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    readdirProc: () => ["424242"],
+    lstatProc: (path) => {
+      if (path.endsWith(`${sep}424242`)) return { uid: BigInt(process.getuid()) };
+      return lstatSync(path, { bigint: true });
+    },
+    readlinkExe: (path) => {
+      if (path.endsWith(`${sep}exe`)) return alias;
+      return readlinkSync(path);
+    },
+    realpath(path) {
+      if (path === alias) throw injectedError("EIO", "injected realpath exe");
+      return realpathSync(path);
+    },
+  });
+  assert.equal(eioResult.exitCode, 1, eioResult.lines.join("\n"));
+  assert.ok(artifactIntact(unit));
+  assert.ok(
+    eioResult.lines.some(
+      (line) =>
+        line.startsWith(`skipped ${realpathSync(unit)} undetermined:`) &&
+        line.includes(`realpath ${alias}: injected realpath exe`),
+    ),
+  );
+
+  const goneUnit = makeUnit(join(sibling, "src-tauri", "target"), "release", { mtimeMs: stale });
+  const gone = `${realpathSync(goneUnit)}/deps/gone`;
+  const enoentResult = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    readdirProc: () => ["424242"],
+    lstatProc: (path) => {
+      if (path.endsWith(`${sep}424242`)) return { uid: BigInt(process.getuid()) };
+      return lstatSync(path, { bigint: true });
+    },
+    readlinkExe: (path) => {
+      if (path.endsWith(`${sep}exe`)) return `${gone} (deleted)`;
+      return readlinkSync(path);
+    },
+  });
+  assert.equal(enoentResult.exitCode, 0, enoentResult.lines.join("\n"));
+  assert.ok(artifactIntact(goneUnit));
+  assert.ok(
+    enoentResult.lines.some((line) =>
+      line.includes(`skipped ${realpathSync(goneUnit)} reason=in use (executable)`),
+    ),
+  );
+});
+
+linuxTest("remainder and in-loop total failures skip remaining evictable units (G2)", async (t) => {
+  const { main } = twoCheckouts(t);
+  const root = join(main, "src-tauri", "target");
+  const debug = makeUnit(root, "debug");
+  const release = makeUnit(root, "release");
+  fillAllocated(debug, 200_000n);
+  fillAllocated(release, 80_000n);
+  const canonicalRoot = realpathSync(root);
+  const debugCanonical = realpathSync(debug);
+  const releaseCanonical = realpathSync(release);
+
+  const remainder = await runEvict(main, {
+    ownCapBytes: 4096n,
+    allocatedBytes(path, extra) {
+      if ((path === root || path === canonicalRoot) && extra?.skip) {
+        throw injectedError("EIO", "injected remainder");
+      }
+      return allocatedBytes(path, extra);
+    },
+  });
+  assert.equal(remainder.exitCode, 1, remainder.lines.join("\n"));
+  assert.ok(artifactIntact(debug));
+  assert.ok(artifactIntact(release));
+  assert.ok(remainder.lines.some((line) => line.startsWith(`undetermined ${canonicalRoot}:`)));
+  assert.ok(
+    remainder.lines.some((line) => line.startsWith(`skipped ${debugCanonical} undetermined:`)),
+  );
+  assert.ok(
+    remainder.lines.some((line) => line.startsWith(`skipped ${releaseCanonical} undetermined:`)),
+  );
+
+  let rootTotals = 0;
+  const inLoop = await runEvict(main, {
+    ownCapBytes: 4096n,
+    allocatedBytes(path, extra) {
+      if (path === root || path === canonicalRoot) {
+        if (extra?.skip) return allocatedBytes(path, extra);
+        rootTotals += 1;
+        if (rootTotals >= 3) throw injectedError("EIO", "injected in-loop total");
+      }
+      return allocatedBytes(path, extra);
+    },
+  });
+  assert.equal(inLoop.exitCode, 1, inLoop.lines.join("\n"));
+  assert.equal(artifactIntact(debug), false);
+  assert.ok(artifactIntact(release));
+  assert.ok(inLoop.lines.some((line) => line.startsWith(`evicted ${debugCanonical} `)));
+  assert.ok(
+    inLoop.lines.some((line) => line.startsWith(`skipped ${releaseCanonical} undetermined:`)),
+  );
+});
+
+linuxTest("post-eviction size walk failure reports freed=unknown (G3)", async (t) => {
+  const { main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const unit = makeUnit(join(sibling, "src-tauri", "target"), "debug", { mtimeMs: stale });
+  const unitCanonical = realpathSync(unit);
+  let unitCalls = 0;
+  const result = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    allocatedBytes(path, extra) {
+      if (path === unit || path === unitCanonical) {
+        unitCalls += 1;
+        if (unitCalls >= 3) throw injectedError("EIO", "injected post-eviction size");
+      }
+      return allocatedBytes(path, extra);
+    },
+  });
+  assert.equal(result.exitCode, 0, result.lines.join("\n"));
+  assert.equal(artifactIntact(unit), false);
+  assert.ok(result.lines.some((line) => line === `evicted ${unitCanonical} freed=unknown`));
+});

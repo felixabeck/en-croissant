@@ -60,17 +60,14 @@ function lstatOrAbsent(path, lstat) {
   }
 }
 
-function canonicalPath(path, realpath) {
-  return realpath(path);
-}
-
-function canonicalExeTarget(exePath, realpath) {
+function resolveExeTarget(exePath, realpath) {
   const spelled = normalizeExeTarget(exePath);
   try {
-    return realpath(spelled);
-  } catch {
-    // A deleted executable's /proc/<pid>/exe target cannot be realpath'd.
-    return spelled;
+    return { canonical: realpath(spelled) };
+  } catch (error) {
+    // Only a deleted executable's /proc/<pid>/exe target is expected to miss.
+    if (errorCode(error) === "ENOENT") return { canonical: spelled };
+    return realpathFailure(spelled, error);
   }
 }
 
@@ -258,8 +255,9 @@ function executableInUse(unitCanonical, options) {
   if (scan.undetermined) return scan;
   const realpath = options.realpath ?? realpathSync;
   for (const exe of scan.executables) {
-    const canonical = canonicalExeTarget(exe, realpath);
-    if (isStrictlyInside(canonical, unitCanonical)) return { inUse: true };
+    const resolved = resolveExeTarget(exe, realpath);
+    if (resolved.undetermined) return { undetermined: resolved.undetermined };
+    if (isStrictlyInside(resolved.canonical, unitCanonical)) return { inUse: true };
   }
   return { inUse: false };
 }
@@ -400,7 +398,7 @@ export function recheckUnitAfterLock(unitPath, job, io = {}) {
   const realpath = io.realpath ?? realpathSync;
   let unitCanonical;
   try {
-    unitCanonical = canonicalPath(unitPath, realpath);
+    unitCanonical = realpath(unitPath);
   } catch (error) {
     const failure = realpathFailure(unitPath, error);
     if (failure.missing) return { proceed: false, kind: "expected", reason: "missing" };
@@ -453,7 +451,7 @@ function observeUnit(unitPath, context) {
   }
   let unitCanonical;
   try {
-    unitCanonical = canonicalPath(unitPath, realpath);
+    unitCanonical = realpath(unitPath);
   } catch (error) {
     const failure = realpathFailure(unitPath, error);
     if (failure.missing) {
@@ -652,7 +650,7 @@ async function evictObservedUnit(observation, context) {
     return {
       kind: "undetermined",
       path: unitPath,
-      detail: errorMessage(error),
+      detail: `evict ${unitPath}: ${errorMessage(error)}`,
     };
   }
 }
@@ -834,9 +832,10 @@ export async function evictRustTargets({
     }
     let ownCanonical;
     try {
-      ownCanonical = canonicalPath(cwd, realpath);
+      ownCanonical = realpath(cwd);
     } catch (error) {
-      emit(`error ${cwd}: ${errorMessage(error)}`);
+      const failure = realpathFailure(cwd, error);
+      emit(`error ${cwd}: ${failure.undetermined ?? errorMessage(error)}`);
       return { exitCode: 1, lines };
     }
     const seenCheckouts = new Set();
@@ -846,9 +845,10 @@ export async function evictRustTargets({
       if (missing || checkout.prunable) continue;
       let checkoutCanonical;
       try {
-        checkoutCanonical = canonicalPath(spelled, realpath);
+        checkoutCanonical = realpath(spelled);
       } catch (error) {
-        emit(`error ${spelled}: ${errorMessage(error)}`);
+        const failure = realpathFailure(spelled, error);
+        emit(`error ${spelled}: ${failure.undetermined ?? errorMessage(error)}`);
         exitCode = 1;
         continue;
       }
@@ -860,7 +860,7 @@ export async function evictRustTargets({
       const cacheStat = lstatOrAbsent(cacheSpelled, lstat);
       if (cacheStat && !cacheStat.isSymbolicLink()) {
         try {
-          cacheCanonical = canonicalPath(cacheSpelled, realpath);
+          cacheCanonical = realpath(cacheSpelled);
         } catch {
           // Cache identity is optional; walking the cache as a target root
           // records missing or undetermined for that root.
@@ -876,13 +876,14 @@ export async function evictRustTargets({
         }
         let rootPath;
         try {
-          rootPath = canonicalPath(spelledRoot, realpath);
+          rootPath = realpath(spelledRoot);
         } catch (error) {
-          if (errorCode(error) === "ENOENT") {
+          const failure = realpathFailure(spelledRoot, error);
+          if (failure.missing) {
             emit(`skipped ${spelledRoot} reason=missing`);
             continue;
           }
-          emit(`skipped ${spelledRoot} undetermined: ${errorMessage(error)}`);
+          emit(`skipped ${spelledRoot} undetermined: ${failure.undetermined}`);
           exitCode = 1;
           continue;
         }
