@@ -181,7 +181,9 @@ The native window-control SVGs in `TopBar.tsx` and local chessboard artwork rema
 Users without a saved board get `chessriddle.svg`, the flat ChessRiddle maple
 board. Its asset and coordinate map reproduce the reference maple preset.
 Existing `board-image` selections remain unchanged, all previous choices stay
-available, and the piece-set default remains `staunty`. No wood texture is added.
+available, and the piece-set default remains `staunty`. ChessRiddle's wood grain
+(`wood4-square.png`, soft-light, one tile per square) is on by default and can be
+switched off under Appearance → Wood texture (`d-20261031-03`).
 Light, Dark and Auto keep their existing behaviour.
 
 No hard-coded colours, no new icon library, no accent picker. Use the existing
