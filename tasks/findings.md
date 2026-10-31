@@ -17713,6 +17713,9 @@ Proof before the close: pre-review was green on `cc29b063`. `pnpm test:e2e:conta
 * **Decision id correction (2026-10-31, session 3ea5942c):** the eviction decision is `d-20261031-04`. The annotation above and the commit messages of `0554299d`, `de0ed3ec` and `dcf03e37` name `d-20261031-03`, which was allocated on the unpushed branch while the same id was published for the wood-texture decision; the rebase dropped that copy and re-recorded the entry as `d-20261031-04`.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d8457cb43cf70c546a9ab65d0c3a4c8d9785c6426b9ef339140ee1aa263d7954","input_sha256":"caee1052786c951e3c917bcfad7b500cf634a640cbb80d8469e99bc8d251d141","kind":"mutation-receipt","operation":"a4fe146f417ae0ba84b4f03cad815d2da32e65dde496d4320ae73c2f8a04556a","options":{"section":null},"request_id_sha256":null,"results":["f-20261017-04"],"target":"f-20261017-04","v":1} -->
 
+* **Precision on the id correction (2026-10-31, session 3ea5942c, records lens):** only the commit message of `0554299d` names `d-20261031-03`; in `0554299d`, `de0ed3ec` and `dcf03e37` the old id appears in the tree's `.claude/rules/gate-tooling.md`, corrected by `8ac765c7`. Wherever the annotations above name `d-20261031-03` for eviction, including the Re-check's reversal path, read `d-20261031-04`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9ff8124fc707ac63dd38ec986f7e0b43ca1dde3998d5f8731fde05eeaa2a6dc1","input_sha256":"8604efe388599c3d45cbb5e827172dfddb4cfd9036016093d32a81dc15c27643","kind":"mutation-receipt","operation":"8fa7570612c05c175e9e2835c4690e1fd55164c174b0147b7d09dc7b8630a171","options":{"section":null},"request_id_sha256":null,"results":["f-20261017-04"],"target":"f-20261017-04","v":1} -->
+
 ---
 
 ## 2026-10-19 — filed through the inbox spool
