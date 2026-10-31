@@ -182,7 +182,10 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
     const api = apiRef.current;
     const element = boardRef.current;
     if (!api || !element) return;
-    api.set(configForBounds(configRef.current, element.getBoundingClientRect()));
+    const bounds = element.getBoundingClientRect();
+    // The bounds cache still holds the 0×0 box measured at creation until it is cleared.
+    if (bounds.width > 0 && bounds.height > 0) api.state.dom.bounds.clear();
+    api.set(configForBounds(configRef.current, bounds));
   }, [props, moveMethod]);
 
   const boardImage = useAtomValue(boardImageAtom);

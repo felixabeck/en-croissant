@@ -280,3 +280,47 @@ test.each([
     localStorage.clear();
   }
 });
+
+test("a re-render after mount clears the bounds cache before set when the board is visible", async () => {
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  mountedRoots.add(root);
+  const getBounds = vi
+    .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(0, 0, 400, 400));
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground fen="start" />
+      </MantineProvider>,
+    );
+  });
+  api.set.mockClear();
+  api.state.dom.bounds.clear.mockClear();
+
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground fen="8/8/8/8/8/8/8/8" />
+      </MantineProvider>,
+    );
+  });
+  expect(api.state.dom.bounds.clear).toHaveBeenCalledOnce();
+  expect(api.set).toHaveBeenCalledOnce();
+  expect(api.state.dom.bounds.clear.mock.invocationCallOrder[0]).toBeLessThan(
+    api.set.mock.invocationCallOrder[0],
+  );
+
+  getBounds.mockReturnValue(new DOMRect(0, 0, 0, 0));
+  api.set.mockClear();
+  api.state.dom.bounds.clear.mockClear();
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Chessground fen="start" />
+      </MantineProvider>,
+    );
+  });
+  expect(api.set).toHaveBeenCalledOnce();
+  expect(api.state.dom.bounds.clear).not.toHaveBeenCalled();
+});
