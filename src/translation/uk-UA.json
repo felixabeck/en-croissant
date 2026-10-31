@@ -885,6 +885,8 @@
     "Settings.Appearance.Language.Desc": "Мова програми",
     "Settings.Appearance.PieceSet": "Набір фігур",
     "Settings.Appearance.PieceSet.Desc": "Фігури, що використовуються на дошці",
+    "Settings.Appearance.PieceSize": "Розмір фігур",
+    "Settings.Appearance.PieceSize.Desc": "Розмір фігур всередині полів",
     "Settings.Appearance.Theme": "Тема",
     "Settings.Appearance.Theme.Auto": "Автоматично",
     "Settings.Appearance.Theme.Dark": "Темна",

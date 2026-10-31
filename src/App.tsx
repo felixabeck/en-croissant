@@ -20,6 +20,7 @@ import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   fontSizeAtom,
   pieceSetAtom,
+  pieceSizeAtom,
   referenceDbAtom,
   spellCheckAtom,
   telemetryEnabledAtom,
@@ -201,6 +202,7 @@ export function useAppStartup() {
 export default function App() {
   const pieceSet = useAtomValue(pieceSetAtom);
   const fontSize = useAtomValue(fontSizeAtom);
+  const pieceSize = useAtomValue(pieceSizeAtom);
   const spellCheck = useAtomValue(spellCheckAtom);
 
   useAppStartup();
@@ -211,6 +213,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.fontSize = `${fontSize}%`;
   }, [fontSize]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--piece-size", `${pieceSize}%`);
+  }, [pieceSize]);
 
   const theme = useMemo(() => createAppTheme({ spellCheck, fontSize }), [spellCheck, fontSize]);
 

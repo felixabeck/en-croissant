@@ -44,6 +44,7 @@ import {
   moveMethodAtom,
   moveNotationTypeAtom,
   nativeBarAtom,
+  pieceSizeAtom,
   practiceAutoDifficultyAtom,
   previewBoardOnHoverAtom,
   flipBoardAfterMoveAtom,
@@ -61,12 +62,19 @@ import {
   puzzleWorkspaceGenerationAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
+import {
+  PIECE_SCALE_MARKS,
+  PIECE_SCALE_MAX,
+  PIECE_SCALE_MIN,
+  PIECE_SCALE_STEP,
+} from "@/state/pieceScale";
 import { analytics } from "@/platform/analytics";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
 import FontSizeSlider from "./FontSizeSlider";
 import KeybindInput from "./KeybindInput";
+import PercentagePreferenceSlider from "./PercentagePreferenceSlider";
 import PiecesSelect from "./PiecesSelect";
 import RepertoireMinGamesSetting from "./RepertoireMinGamesSetting";
 import { DirectorySetting } from "./DirectorySetting";
@@ -444,6 +452,23 @@ export default function Page() {
         description: t("Settings.Appearance.PieceSet.Desc"),
         keywords: ["piece", "set", "style"],
         render: () => <PiecesSelect />,
+      },
+      {
+        id: "piece-size",
+        category: "appearance",
+        title: t("Settings.Appearance.PieceSize"),
+        description: t("Settings.Appearance.PieceSize.Desc"),
+        keywords: ["piece", "size", "scale"],
+        render: () => (
+          <PercentagePreferenceSlider
+            atom={pieceSizeAtom}
+            min={PIECE_SCALE_MIN}
+            max={PIECE_SCALE_MAX}
+            step={PIECE_SCALE_STEP}
+            marks={PIECE_SCALE_MARKS}
+            thumbLabel={t("Settings.Appearance.PieceSize")}
+          />
+        ),
       },
       {
         id: "board-image",

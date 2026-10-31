@@ -858,6 +858,8 @@
     "Settings.Appearance.Language.Desc": "앱에서 사용할 언어",
     "Settings.Appearance.PieceSet": "기물 세트",
     "Settings.Appearance.PieceSet.Desc": "보드에서 사용할 기물 모양",
+    "Settings.Appearance.PieceSize": "기물 크기",
+    "Settings.Appearance.PieceSize.Desc": "칸 안 기물의 크기",
     "Settings.Appearance.Theme": "테마",
     "Settings.Appearance.Theme.Auto": "자동",
     "Settings.Appearance.Theme.Dark": "어둡게",

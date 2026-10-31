@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
   const telemetryEnabledAtom = {};
   const fontSizeAtom = {};
   const pieceSetAtom = {};
+  const pieceSizeAtom = {};
   const spellCheckAtom = {};
 
   return {
@@ -40,6 +41,7 @@ const mocks = vi.hoisted(() => {
     telemetryEnabledAtom,
     fontSizeAtom,
     pieceSetAtom,
+    pieceSizeAtom,
     spellCheckAtom,
   };
 });
@@ -72,6 +74,7 @@ vi.mock("@/platform/analytics", () => ({ analytics: mocks.analytics }));
 vi.mock("@/state/atoms", () => ({
   fontSizeAtom: mocks.fontSizeAtom,
   pieceSetAtom: mocks.pieceSetAtom,
+  pieceSizeAtom: mocks.pieceSizeAtom,
   referenceDbAtom: mocks.referenceDbAtom,
   spellCheckAtom: mocks.spellCheckAtom,
   telemetryEnabledAtom: mocks.telemetryEnabledAtom,
@@ -190,6 +193,7 @@ beforeEach(() => {
   atomValues = new Map<object, unknown>([
     [mocks.fontSizeAtom, 120],
     [mocks.pieceSetAtom, "staunty"],
+    [mocks.pieceSizeAtom, 100],
     [mocks.spellCheckAtom, true],
   ]);
   mocks.useAtomValue.mockImplementation((atom: object) => atomValues.get(atom));
@@ -203,6 +207,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  document.documentElement.style.removeProperty("--piece-size");
   vi.useRealTimers();
 });
 
@@ -565,11 +570,23 @@ describe("App", () => {
     await act(async () => root.render(<App />));
 
     expect(document.documentElement.style.fontSize).toBe("120%");
+    expect(document.documentElement.style.getPropertyValue("--piece-size")).toBe("100%");
     expect(mocks.createAppTheme).toHaveBeenCalledExactlyOnceWith({
       spellCheck: true,
       fontSize: 120,
     });
     expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+
+  test("applies the persisted piece size on the document root", async () => {
+    mockLaunchWithoutCliFile();
+
+    await act(async () => root.render(<App />));
+    expect(document.documentElement.style.getPropertyValue("--piece-size")).toBe("100%");
+
+    atomValues.set(mocks.pieceSizeAtom, 70);
+    await act(async () => root.render(<App />));
+    expect(document.documentElement.style.getPropertyValue("--piece-size")).toBe("70%");
   });
 
   test("rebuilds the theme when the mounted app's font scale changes", async () => {

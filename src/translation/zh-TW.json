@@ -858,6 +858,8 @@
     "Settings.Appearance.Language.Desc": "應用程式使用的語言",
     "Settings.Appearance.PieceSet": "棋子樣式",
     "Settings.Appearance.PieceSet.Desc": "棋盤上使用的棋子樣式",
+    "Settings.Appearance.PieceSize": "棋子大小",
+    "Settings.Appearance.PieceSize.Desc": "格子內棋子的大小",
     "Settings.Appearance.Theme": "主題",
     "Settings.Appearance.Theme.Auto": "自动",
     "Settings.Appearance.Theme.Dark": "深色",

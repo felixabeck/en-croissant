@@ -876,6 +876,8 @@
     "Settings.Appearance.Language.Desc": "Idioma usado na aplicação",
     "Settings.Appearance.PieceSet": "Conjunto de peças",
     "Settings.Appearance.PieceSet.Desc": "Peças usadas no tabuleiro",
+    "Settings.Appearance.PieceSize": "Tamanho das peças",
+    "Settings.Appearance.PieceSize.Desc": "Tamanho das peças dentro das casas",
     "Settings.Appearance.Theme": "Tema",
     "Settings.Appearance.Theme.Auto": "Automático",
     "Settings.Appearance.Theme.Dark": "Escuro",

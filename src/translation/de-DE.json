@@ -867,6 +867,8 @@
     "Settings.Appearance.Language.Desc": "In der App verwendete Sprache",
     "Settings.Appearance.PieceSet": "Figurenset",
     "Settings.Appearance.PieceSet.Desc": "Figuren, die auf den Brettern verwendet werden",
+    "Settings.Appearance.PieceSize": "Figurengröße",
+    "Settings.Appearance.PieceSize.Desc": "Größe der Figuren innerhalb ihrer Felder",
     "Settings.Appearance.Theme": "Thema",
     "Settings.Appearance.Theme.Auto": "Auto",
     "Settings.Appearance.Theme.Dark": "Dunkel",

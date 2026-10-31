@@ -867,6 +867,8 @@
     "Settings.Appearance.Language.Desc": "Uygulamada kullanılan dil",
     "Settings.Appearance.PieceSet": "Taş Seti",
     "Settings.Appearance.PieceSet.Desc": "Tahtada kullanılan taşlar",
+    "Settings.Appearance.PieceSize": "Taş boyutu",
+    "Settings.Appearance.PieceSize.Desc": "Kareler içindeki taşların boyutu",
     "Settings.Appearance.Theme": "Tema",
     "Settings.Appearance.Theme.Auto": "Sistem varsayılanı",
     "Settings.Appearance.Theme.Dark": "Koyu",

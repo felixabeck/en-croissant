@@ -47,6 +47,7 @@ import {
     initializeBeforeUse,
 } from "./utils";
 import { FONT_SCALE_DEFAULT, fontScaleSchema } from "./fontScale";
+import { PIECE_SCALE_DEFAULT, pieceScaleSchema } from "./pieceScale";
 import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import {
     WORKSPACE_STORAGE_KEY,
@@ -435,6 +436,12 @@ export const fontSizeAtom = atomWithStorage(
     "font-size",
     FONT_SCALE_DEFAULT,
     createZodStorage(fontScaleSchema, localStorage),
+);
+
+export const pieceSizeAtom = atomWithStorage(
+    "piece-size",
+    PIECE_SCALE_DEFAULT,
+    createZodStorage(pieceScaleSchema, localStorage),
 );
 
 export const moveNotationTypeAtom = atomWithStorage<"letters" | "symbols">(

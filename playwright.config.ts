@@ -116,6 +116,11 @@ export default defineConfig({
             testMatch: /board-wood-texture\.spec\.ts/,
             use: { ...chromium, viewport: { width: 1280, height: 900 }, colorScheme: "light" },
         },
+        {
+            name: "piece-size",
+            testMatch: /piece-size\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1280, height: 900 }, colorScheme: "light" },
+        },
     ],
     webServer: {
         // Invoked through node_modules/.bin rather than `pnpm exec`, so the suite runs

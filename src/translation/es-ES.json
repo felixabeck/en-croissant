@@ -876,6 +876,8 @@
     "Settings.Appearance.Language.Desc": "Idioma utilizado en la aplicación",
     "Settings.Appearance.PieceSet": "Conjunto de piezas",
     "Settings.Appearance.PieceSet.Desc": "Piezas utilizadas en los tableros",
+    "Settings.Appearance.PieceSize": "Tamaño de las piezas",
+    "Settings.Appearance.PieceSize.Desc": "Tamaño de las piezas dentro de sus casillas",
     "Settings.Appearance.Theme": "Tema",
     "Settings.Appearance.Theme.Auto": "Automático",
     "Settings.Appearance.Theme.Dark": "Oscuro",
