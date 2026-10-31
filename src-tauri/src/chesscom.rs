@@ -1055,7 +1055,7 @@ mod tests {
             job_id.clone(),
             app.handle().clone(),
             state.clone(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         ));
         tokio::time::timeout(Duration::from_secs(5), entered)
             .await
@@ -1086,7 +1086,7 @@ mod tests {
             job_id.clone(),
             app.handle().clone(),
             state.clone(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         ));
         tokio::time::timeout(Duration::from_secs(5), entered)
             .await
@@ -1360,7 +1360,7 @@ mod tests {
             job_id.clone(),
             app.handle().clone(),
             state.clone(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         ));
         tokio::time::timeout(Duration::from_secs(5), entered)
             .await
