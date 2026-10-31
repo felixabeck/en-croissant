@@ -111,6 +111,11 @@ export default defineConfig({
             testMatch: /tree-recovery\.spec\.ts/,
             use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
         },
+        {
+            name: "board-wood-texture",
+            testMatch: /board-wood-texture\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1280, height: 900 }, colorScheme: "light" },
+        },
     ],
     webServer: {
         // Invoked through node_modules/.bin rather than `pnpm exec`, so the suite runs
