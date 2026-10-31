@@ -363,7 +363,9 @@ test("an unreadable ancestor uses the conservative worker counts and prints its 
     CONSERVATIVE_VITEST_WORKERS,
   );
   const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
-  assert.equal(slots.slots, 1);
+  // 7 GiB, 24 CPUs, packageCount 3: s=1 yields 2 runners, s=2 yields 1 each (3584 MiB
+  // per slot); tie on total 2 picks the larger s.
+  assert.equal(slots.slots, 2);
   assert.equal(
     workerCount({
       perWorkerBytes: STRYKER_RUNNER_BYTES,
@@ -397,7 +399,9 @@ test("an all-max chain uses the conservative worker counts instead of physical m
     CONSERVATIVE_VITEST_WORKERS,
   );
   const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
-  assert.equal(slots.slots, 1);
+  // Same 7 GiB fallback arithmetic as the unreadable-ancestor case: tie on total 2
+  // picks two slots.
+  assert.equal(slots.slots, 2);
   assert.equal(
     workerCount({
       perWorkerBytes: STRYKER_RUNNER_BYTES,
@@ -487,8 +491,15 @@ test("workerCount stays between 1 and availableParallelism, including a single a
 });
 
 test("the exported per-tool byte constants retain their measured budget values", () => {
-  assert.equal(STRYKER_RUNNER_BYTES, Math.round(1.2 * GIB));
+  assert.equal(STRYKER_RUNNER_BYTES, 2432 * MIB);
   assert.equal(STRYKER_PARENT_BYTES, 640 * MIB);
+  assert.equal(
+    CONSERVATIVE_STRYKER_RUNNERS,
+    Math.floor(
+      (CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES - STRYKER_PARENT_BYTES) /
+        STRYKER_RUNNER_BYTES,
+    ),
+  );
   assert.equal(VITEST_WORKER_BYTES, 256 * MIB);
   assert.equal(VITEST_BASE_BYTES, 1.5 * GIB);
 });
@@ -522,10 +533,12 @@ test("strykerSlots charges each package parent in the three-CPU discriminating b
   assert.equal(Math.floor(budgetBytes / plan.slots), budgetBytes);
 });
 
-test("strykerSlots chooses five runners in one slot for the 7 GiB regression anchor", () => {
+test("strykerSlots chooses two slots of one runner each for the 7 GiB regression anchor", () => {
   const budgetBytes = 7 * GIB;
   const plan = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
-  assert.equal(plan.slots, 1);
+  // s=1: floor((7 GiB − 640 MiB) / 2432 MiB) = floor(6528 / 2432) = 2, total 2.
+  // s=2: per-slot 3584 MiB → floor((3584 − 640) / 2432) = 1, total 2; tie to larger s.
+  assert.equal(plan.slots, 2);
   assert.equal(
     workerCount({
       perWorkerBytes: STRYKER_RUNNER_BYTES,
@@ -534,7 +547,7 @@ test("strykerSlots chooses five runners in one slot for the 7 GiB regression anc
       availableParallelism: () => 24,
       env: { GATE_CPU_SHARE: String(plan.cpuShare) },
     }),
-    5,
+    Math.floor((Math.floor(budgetBytes / 2) - STRYKER_PARENT_BYTES) / STRYKER_RUNNER_BYTES),
   );
 });
 
