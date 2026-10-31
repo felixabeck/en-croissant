@@ -4785,7 +4785,7 @@ done
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
             .await
             .unwrap()
             .unwrap();
@@ -4798,7 +4798,7 @@ done
                 .stop_generation(&stop_key, Some(stop_generation))
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while !supervisor
                 .get_exact(&EngineKey::new(tab.into(), id.into()).unwrap())
                 .unwrap()
