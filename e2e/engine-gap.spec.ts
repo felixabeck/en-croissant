@@ -438,6 +438,8 @@ for (const colorScheme of ["light", "dark"] as const) {
         if (colorScheme === "dark") {
             await page.getByRole("link", { name: "Settings", exact: true }).click();
             await page.getByRole("tab", { name: "Appearance", exact: true }).click();
+            // The sidebar link's tooltip fades out once the pointer leaves it; axe must not sample it.
+            await expect(page.getByRole("tooltip")).toHaveCount(0);
             await assertAccessible();
             await capture("settings-appearance-dark");
             await expect
