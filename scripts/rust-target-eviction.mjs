@@ -60,12 +60,24 @@ function lstatOrAbsent(path, lstat) {
   }
 }
 
-function canonicalOrSpelled(path, realpath) {
+function canonicalPath(path, realpath) {
+  return realpath(path);
+}
+
+function canonicalExeTarget(exePath, realpath) {
+  const spelled = normalizeExeTarget(exePath);
   try {
-    return realpath(path);
+    return realpath(spelled);
   } catch {
-    return path;
+    // A deleted executable's /proc/<pid>/exe target cannot be realpath'd.
+    return spelled;
   }
+}
+
+function realpathFailure(path, error) {
+  return errorCode(error) === "ENOENT"
+    ? { missing: true }
+    : { undetermined: `realpath ${path}: ${errorMessage(error)}` };
 }
 
 function pathSegments(path) {
@@ -246,11 +258,45 @@ function executableInUse(unitCanonical, options) {
   if (scan.undetermined) return scan;
   const realpath = options.realpath ?? realpathSync;
   for (const exe of scan.executables) {
-    const spelled = normalizeExeTarget(exe);
-    const canonical = canonicalOrSpelled(spelled, realpath);
+    const canonical = canonicalExeTarget(exe, realpath);
     if (isStrictlyInside(canonical, unitCanonical)) return { inUse: true };
   }
   return { inUse: false };
+}
+
+function evaluateEvictionEligibility(unitPath, unitCanonical, options) {
+  const lstat = options.lstat ?? lstatSync;
+  if (options.cacheCanonical && isMutationCacheUnit(unitCanonical, options.cacheCanonical)) {
+    const fence = fenceState(options.checkoutPath, {
+      lstat,
+      fenceRelative: options.fenceRelative ?? fencePath,
+    });
+    if (fence.undetermined) {
+      return { proceed: false, kind: "undetermined", detail: fence.undetermined };
+    }
+    if (fence.present) return { proceed: false, kind: "expected", reason: "mutation fence" };
+  }
+
+  const exe = executableInUse(unitCanonical, options);
+  if (exe.undetermined) return { proceed: false, kind: "undetermined", detail: exe.undetermined };
+  if (exe.inUse) return { proceed: false, kind: "expected", reason: "in use (executable)" };
+
+  if (!options.ownCheckout) {
+    let newest;
+    try {
+      newest = newestCargoWriteMs(unitPath, { lstat });
+    } catch (error) {
+      return {
+        proceed: false,
+        kind: "undetermined",
+        detail: `idle mtime ${unitPath}: ${errorMessage(error)}`,
+      };
+    }
+    if (options.nowMs - newest < options.idleMaxAgeMs) {
+      return { proceed: false, kind: "expected", reason: "not idle" };
+    }
+  }
+  return { proceed: true };
 }
 
 function findUnits(rootPath, { lstat = lstatSync, readdir = readdirSync } = {}) {
@@ -274,7 +320,7 @@ function findUnits(rootPath, { lstat = lstatSync, readdir = readdirSync } = {}) 
       walk(path, depth + 1);
     }
   };
-  walk(rootPath, 1);
+  walk(rootPath, 0);
   return { units, symlinkUnits };
 }
 
@@ -284,7 +330,10 @@ function listCheckouts(cwd, { spawn = spawnSync, git = "git" } = {}) {
     const detail = result.error
       ? errorMessage(result.error)
       : result.stderr?.trim() || `exit ${result.status ?? "unknown"}`;
-    return { error: `git worktree list --porcelain failed (${detail})`, checkouts: [cwd] };
+    return {
+      error: `git worktree list --porcelain failed (${detail})`,
+      checkouts: [{ path: cwd, prunable: false }],
+    };
   }
   const blocks = String(result.stdout ?? "").split("\n\n");
   const checkouts = [];
@@ -316,11 +365,6 @@ function removeEntry(path, { lstat = lstatSync, unlink = unlinkSync, rm = rmSync
 export function removeUnitContents(unitPath, io = {}) {
   const lstat = io.lstat ?? lstatSync;
   const readdir = io.readdir ?? readdirSync;
-  const duringRemoval = io.duringRemoval;
-  const lockPaths =
-    presentLockPaths(unitPath, lstat).present ??
-    CARGO_LOCK_FILES.map((name) => join(unitPath, name));
-  duringRemoval?.(unitPath, lockPaths);
 
   const fingerprint = join(unitPath, ".fingerprint");
   if (lstatOrAbsent(fingerprint, lstat)) {
@@ -354,36 +398,15 @@ export function removeUnitContents(unitPath, io = {}) {
 export function recheckUnitAfterLock(unitPath, job, io = {}) {
   const lstat = io.lstat ?? lstatSync;
   const realpath = io.realpath ?? realpathSync;
-  const unitCanonical = canonicalOrSpelled(unitPath, realpath);
-
-  const exe = executableInUse(unitCanonical, { ...job, ...io, realpath });
-  if (exe.undetermined) return { proceed: false, kind: "undetermined", detail: exe.undetermined };
-  if (exe.inUse) return { proceed: false, kind: "expected", reason: "in use (executable)" };
-
-  if (job.cacheCanonical && isMutationCacheUnit(unitCanonical, job.cacheCanonical)) {
-    const fence = fenceState(job.checkoutPath, { lstat, fenceRelative: job.fenceRelative });
-    if (fence.undetermined) {
-      return { proceed: false, kind: "undetermined", detail: fence.undetermined };
-    }
-    if (fence.present) return { proceed: false, kind: "expected", reason: "mutation fence" };
+  let unitCanonical;
+  try {
+    unitCanonical = canonicalPath(unitPath, realpath);
+  } catch (error) {
+    const failure = realpathFailure(unitPath, error);
+    if (failure.missing) return { proceed: false, kind: "expected", reason: "missing" };
+    return { proceed: false, kind: "undetermined", detail: failure.undetermined };
   }
-
-  if (!job.ownCheckout) {
-    let newest;
-    try {
-      newest = newestCargoWriteMs(unitPath, { lstat });
-    } catch (error) {
-      return {
-        proceed: false,
-        kind: "undetermined",
-        detail: `idle mtime ${unitPath}: ${errorMessage(error)}`,
-      };
-    }
-    if (job.nowMs - newest < job.idleMaxAgeMs) {
-      return { proceed: false, kind: "expected", reason: "not idle" };
-    }
-  }
-  return { proceed: true };
+  return evaluateEvictionEligibility(unitPath, unitCanonical, { ...job, ...io, lstat, realpath });
 }
 
 function parseWorkerJson(stdout) {
@@ -428,7 +451,21 @@ function observeUnit(unitPath, context) {
   if (spelledStat.isSymbolicLink()) {
     return { path: unitPath, skip: true, kind: "expected", reason: "symlink" };
   }
-  const unitCanonical = canonicalOrSpelled(unitPath, realpath);
+  let unitCanonical;
+  try {
+    unitCanonical = canonicalPath(unitPath, realpath);
+  } catch (error) {
+    const failure = realpathFailure(unitPath, error);
+    if (failure.missing) {
+      return { path: unitPath, skip: true, kind: "expected", reason: "missing" };
+    }
+    return {
+      path: unitPath,
+      skip: true,
+      kind: "undetermined",
+      detail: failure.undetermined,
+    };
+  }
   let size;
   try {
     size = context.allocatedBytes(unitPath);
@@ -464,30 +501,6 @@ function observeUnit(unitPath, context) {
     };
   }
 
-  if (context.cacheCanonical && isMutationCacheUnit(unitCanonical, context.cacheCanonical)) {
-    const fence = fenceState(context.checkoutPath, context);
-    if (fence.undetermined) {
-      return {
-        path: unitPath,
-        canonical: unitCanonical,
-        size,
-        skip: true,
-        kind: "undetermined",
-        detail: fence.undetermined,
-      };
-    }
-    if (fence.present) {
-      return {
-        path: unitPath,
-        canonical: unitCanonical,
-        size,
-        skip: true,
-        kind: "expected",
-        reason: "mutation fence",
-      };
-    }
-  }
-
   const lockStatus = context.checkLocks(locks.present, context);
   if (lockStatus.undetermined) {
     return {
@@ -510,52 +523,17 @@ function observeUnit(unitPath, context) {
     };
   }
 
-  const exe = executableInUse(unitCanonical, context);
-  if (exe.undetermined) {
+  const eligibility = evaluateEvictionEligibility(unitPath, unitCanonical, context);
+  if (!eligibility.proceed) {
     return {
       path: unitPath,
       canonical: unitCanonical,
       size,
       skip: true,
-      kind: "undetermined",
-      detail: exe.undetermined,
+      kind: eligibility.kind,
+      reason: eligibility.reason,
+      detail: eligibility.detail,
     };
-  }
-  if (exe.inUse) {
-    return {
-      path: unitPath,
-      canonical: unitCanonical,
-      size,
-      skip: true,
-      kind: "expected",
-      reason: "in use (executable)",
-    };
-  }
-
-  if (!context.ownCheckout) {
-    let newest;
-    try {
-      newest = newestCargoWriteMs(unitPath, { lstat });
-    } catch (error) {
-      return {
-        path: unitPath,
-        canonical: unitCanonical,
-        size,
-        skip: true,
-        kind: "undetermined",
-        detail: `idle mtime ${unitPath}: ${errorMessage(error)}`,
-      };
-    }
-    if (context.nowMs - newest < context.idleMaxAgeMs) {
-      return {
-        path: unitPath,
-        canonical: unitCanonical,
-        size,
-        skip: true,
-        kind: "expected",
-        reason: "not idle",
-      };
-    }
   }
 
   return {
@@ -622,54 +600,61 @@ function interpretWorkerResult(result, unitPath) {
 
 async function evictObservedUnit(observation, context) {
   const unitPath = observation.path;
-  await context.beforeLock?.(unitPath);
-  const locks = presentLockPaths(unitPath, context.lstat);
-  if (locks.symlink) {
-    return { kind: "expected", reason: "symlink", path: unitPath };
-  }
-  if (!locks.present?.length) {
+  try {
+    await context.beforeLock?.(unitPath);
+    const locks = presentLockPaths(unitPath, context.lstat);
+    if (locks.symlink) {
+      return { kind: "expected", reason: "symlink", path: unitPath };
+    }
+    if (!locks.present?.length) {
+      return {
+        kind: "undetermined",
+        detail: `unit ${unitPath} lost its lock files before removal`,
+        path: unitPath,
+      };
+    }
+    const sizeBefore = context.allocatedBytes(unitPath);
+    const job = {
+      unitPath,
+      checkoutPath: context.checkoutPath,
+      cacheCanonical: context.cacheCanonical,
+      fenceRelative: context.fenceRelative,
+      ownCheckout: context.ownCheckout,
+      idleMaxAgeMs: context.idleMaxAgeMs,
+      nowMs: context.nowMs,
+      procRoot: context.procRoot,
+      uid: context.uid,
+      afterLockModule: context.afterLockModule,
+      duringRemovalModule: context.duringRemovalModule,
+      lockPaths: locks.present,
+    };
+    const env = {
+      ...context.env,
+      RUST_TARGET_EVICTION_JOB: JSON.stringify(job),
+    };
+    const innerArgv = [context.execPath, thisScript, "--remove-unit"];
+    const result = context.runUnderLocks(locks.present, innerArgv, {
+      flockBinary: context.flockBinary,
+      spawn: context.spawn,
+      env,
+    });
+    const interpreted = interpretWorkerResult(result, unitPath);
+    if (interpreted.kind === "evicted") {
+      try {
+        const sizeAfter = context.allocatedBytes(unitPath);
+        interpreted.freed = sizeBefore - sizeAfter;
+      } catch {
+        interpreted.freed = "unknown";
+      }
+    }
+    return interpreted;
+  } catch (error) {
     return {
       kind: "undetermined",
-      detail: `unit ${unitPath} lost its lock files before removal`,
       path: unitPath,
+      detail: errorMessage(error),
     };
   }
-  const sizeBefore = context.allocatedBytes(unitPath);
-  const job = {
-    unitPath,
-    checkoutPath: context.checkoutPath,
-    cacheCanonical: context.cacheCanonical,
-    fenceRelative: context.fenceRelative,
-    ownCheckout: context.ownCheckout,
-    idleMaxAgeMs: context.idleMaxAgeMs,
-    nowMs: context.nowMs,
-    procRoot: context.procRoot,
-    uid: context.uid,
-    afterLockModule: context.afterLockModule,
-    duringRemovalModule: context.duringRemovalModule,
-    lockPaths: locks.present,
-  };
-  const env = {
-    ...context.env,
-    RUST_TARGET_EVICTION_JOB: JSON.stringify(job),
-  };
-  const innerArgv = [context.execPath, thisScript, "--remove-unit"];
-  const result = context.runUnderLocks(locks.present, innerArgv, {
-    flockBinary: context.flockBinary,
-    spawn: context.spawn,
-    env,
-  });
-  const interpreted = interpretWorkerResult(result, unitPath);
-  if (interpreted.kind === "evicted") {
-    let sizeAfter = 0n;
-    try {
-      sizeAfter = context.allocatedBytes(unitPath);
-    } catch {
-      sizeAfter = 0n;
-    }
-    interpreted.freed = sizeBefore - sizeAfter;
-  }
-  return interpreted;
 }
 
 function sortLargestFirst(units) {
@@ -724,12 +709,20 @@ async function processRoot(root, context, emit) {
   const evictable = observations.filter((item) => !item.skip);
   for (const item of skipped) mark(item);
 
+  const skipRemaining = (items, detail) => {
+    for (const item of items) {
+      mark({ ...item, skip: true, kind: "undetermined", detail });
+    }
+  };
+
   if (context.ownCheckout) {
     let total;
     try {
       total = context.allocatedBytes(root.path);
     } catch (error) {
-      emit(`undetermined ${root.path}: cannot measure total: ${errorMessage(error)}`);
+      const detail = `cannot measure total: ${errorMessage(error)}`;
+      emit(`undetermined ${root.path}: ${detail}`);
+      skipRemaining(evictable, detail);
       return true;
     }
     if (total <= context.ownCapBytes) {
@@ -743,7 +736,9 @@ async function processRoot(root, context, emit) {
           skip: skipEvictableContent(evictable),
         });
       } catch (error) {
-        emit(`undetermined ${root.path}: cannot measure remainder: ${errorMessage(error)}`);
+        const detail = `cannot measure remainder: ${errorMessage(error)}`;
+        emit(`undetermined ${root.path}: ${detail}`);
+        skipRemaining(evictable, detail);
         return true;
       }
       if (remainder > context.ownCapBytes) {
@@ -751,12 +746,15 @@ async function processRoot(root, context, emit) {
           mark({ ...item, skip: true, kind: "expected", reason: "unreachable cap" });
         }
       } else {
-        for (const item of sortLargestFirst(evictable)) {
+        const pending = sortLargestFirst(evictable);
+        for (const [index, item] of pending.entries()) {
           let current;
           try {
             current = context.allocatedBytes(root.path);
           } catch (error) {
-            emit(`undetermined ${root.path}: cannot measure total: ${errorMessage(error)}`);
+            const detail = `cannot measure total: ${errorMessage(error)}`;
+            emit(`undetermined ${root.path}: ${detail}`);
+            skipRemaining(pending.slice(index), detail);
             failedMeasurement = true;
             exitDirty = true;
             break;
@@ -834,7 +832,13 @@ export async function evictRustTargets({
       emit(`worktree listing failed: ${listing.error}`);
       exitCode = 1;
     }
-    const ownCanonical = canonicalOrSpelled(cwd, realpath);
+    let ownCanonical;
+    try {
+      ownCanonical = canonicalPath(cwd, realpath);
+    } catch (error) {
+      emit(`error ${cwd}: ${errorMessage(error)}`);
+      return { exitCode: 1, lines };
+    }
     const seenCheckouts = new Set();
     for (const checkout of listing.checkouts) {
       const spelled = checkout.path;
@@ -842,7 +846,7 @@ export async function evictRustTargets({
       if (missing || checkout.prunable) continue;
       let checkoutCanonical;
       try {
-        checkoutCanonical = canonicalOrSpelled(spelled, realpath);
+        checkoutCanonical = canonicalPath(spelled, realpath);
       } catch (error) {
         emit(`error ${spelled}: ${errorMessage(error)}`);
         exitCode = 1;
@@ -855,7 +859,12 @@ export async function evictRustTargets({
       const cacheSpelled = join(checkoutCanonical, mutationCacheRelativePath);
       const cacheStat = lstatOrAbsent(cacheSpelled, lstat);
       if (cacheStat && !cacheStat.isSymbolicLink()) {
-        cacheCanonical = canonicalOrSpelled(cacheSpelled, realpath);
+        try {
+          cacheCanonical = canonicalPath(cacheSpelled, realpath);
+        } catch {
+          // Cache identity is optional; walking the cache as a target root
+          // records missing or undetermined for that root.
+        }
       }
       for (const relativeRoot of TARGET_ROOT_RELATIVE_PATHS) {
         const spelledRoot = join(checkoutCanonical, relativeRoot);
@@ -865,7 +874,18 @@ export async function evictRustTargets({
           emit(`skipped ${spelledRoot} reason=symlink`);
           continue;
         }
-        const rootPath = canonicalOrSpelled(spelledRoot, realpath);
+        let rootPath;
+        try {
+          rootPath = canonicalPath(spelledRoot, realpath);
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") {
+            emit(`skipped ${spelledRoot} reason=missing`);
+            continue;
+          }
+          emit(`skipped ${spelledRoot} undetermined: ${errorMessage(error)}`);
+          exitCode = 1;
+          continue;
+        }
         const context = {
           checkoutPath: checkoutCanonical,
           cacheCanonical,

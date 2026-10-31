@@ -159,7 +159,8 @@ async function runEvict(cwd, options = {}) {
 }
 
 function holdLock(lockPath, t) {
-  const child = spawn("flock", ["-n", "-E", "75", lockPath, "sleep", "60"], { stdio: "ignore" });
+  const held = String(FLOCK_HELD_EXIT_CODE);
+  const child = spawn("flock", ["-n", "-E", held, lockPath, "sleep", "60"], { stdio: "ignore" });
   t.after(() => {
     try {
       child.kill("SIGKILL");
@@ -168,8 +169,16 @@ function holdLock(lockPath, t) {
     }
   });
   child.unref();
-  waitUntil(() => spawnSync("flock", ["-n", "-E", "75", lockPath, "true"]).status === 75);
+  waitUntil(
+    () => spawnSync("flock", ["-n", "-E", held, lockPath, "true"]).status === FLOCK_HELD_EXIT_CODE,
+  );
   return child;
+}
+
+function writeFlockStub(dir, status) {
+  const path = join(dir, `flock-exit-${status}`);
+  writeFileSync(path, `#!/bin/sh\nexit ${status}\n`, { mode: 0o755 });
+  return path;
 }
 
 function startCopiedSleep(unit, t) {
@@ -485,16 +494,38 @@ linuxTest(
   },
 );
 
-linuxTest("sparse allocated size does not trip the cap (CR-6)", async (t) => {
+linuxTest("sparse allocated size does not trip the cap (CR-6, F7a)", async (t) => {
+  // Goes red if size used st.size: a 1 GiB sparse file would exceed the 64 MiB cap.
   const { main } = twoCheckouts(t);
   const root = join(main, "src-tauri", "target");
   const unit = makeUnit(root, "debug");
-  makeSparse(join(unit, "deps", "artifact"), 50 * 1024 * 1024);
-  const cap = allocatedBytes(root) + 4096n;
+  makeSparse(join(unit, "deps", "artifact"), 1024 ** 3);
+  const cap = 64n * 1024n ** 2n;
   const result = await runEvict(main, { ownCapBytes: cap });
   assert.equal(result.exitCode, 0, result.lines.join("\n"));
   assert.ok(existsSync(join(unit, "deps", "artifact")));
   assert.ok(result.lines.some((line) => line.includes("reason=under the cap")));
+});
+
+test("hard links count once across independently measured directories (F7b)", () => {
+  const parent = mkdtempSync(join(tmpdir(), "evict-hardlink-"));
+  try {
+    const fileOnly = join(parent, "file-only");
+    const withLink = join(parent, "with-link");
+    mkdirSync(fileOnly);
+    mkdirSync(withLink);
+    const payload = Buffer.alloc(64_000, 7);
+    writeFileSync(join(fileOnly, "blob"), payload);
+    writeFileSync(join(withLink, "blob"), payload);
+    linkSync(join(withLink, "blob"), join(withLink, "blob-link"));
+    assert.equal(
+      allocatedBytes(withLink),
+      allocatedBytes(fileOnly),
+      "a second hard link must not add another copy of the file's allocated bytes",
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 linuxTest(
@@ -683,7 +714,7 @@ import { writeFileSync } from "node:fs";
 export function duringRemoval(_unitPath, lockPaths) {
   const results = lockPaths.map((lock) => ({
     lock,
-    status: spawnSync("flock", ["-n", "-E", "75", lock, "true"]).status,
+    status: spawnSync("flock", ["-n", "-E", "${FLOCK_HELD_EXIT_CODE}", lock, "true"]).status,
   }));
   writeFileSync(process.env.EVICT_LOCK_PROBE, JSON.stringify(results));
 }
@@ -699,7 +730,7 @@ export function duringRemoval(_unitPath, lockPaths) {
   assert.equal(artifactIntact(unit), false);
   const probed = JSON.parse(readFileSync(probe, "utf8"));
   assert.equal(probed.length, CARGO_LOCK_FILES.length);
-  for (const entry of probed) assert.equal(entry.status, 75);
+  for (const entry of probed) assert.equal(entry.status, FLOCK_HELD_EXIT_CODE);
   assert.deepEqual(lockInodes(unit), before);
 });
 
@@ -920,14 +951,26 @@ linuxTest("fail-direction skips keep contents and exit 1", async (t) => {
   assert.ok(artifactIntact(unit));
 
   unit = resetUnit();
+  const ownListed = makeUnit(join(main, "src-tauri", "target"), "debug");
+  fillAllocated(ownListed, 80_000n);
   const listing = await runEvict(main, {
     nowMs: now,
     idleMaxAgeMs,
-    listCheckouts: (cwd) => ({ error: "injected listing", checkouts: [cwd] }),
+    ownCapBytes: 4096n,
+    listCheckouts: (cwd) => ({
+      error: "injected listing",
+      checkouts: [{ path: cwd, prunable: false }],
+    }),
   });
-  assert.equal(listing.exitCode, 1);
+  assert.equal(listing.exitCode, 1, listing.lines.join("\n"));
   assert.ok(listing.lines.some((line) => line.startsWith("worktree listing failed:")));
-  assert.ok(artifactIntact(unit));
+  assert.ok(artifactIntact(unit), "a sibling omitted from the fallback listing stays intact");
+  assert.equal(artifactIntact(ownListed), false);
+  assert.ok(
+    listing.lines.some((line) =>
+      line.startsWith(`total ${realpathSync(join(main, "src-tauri", "target"))} bytes=`),
+    ),
+  );
 });
 
 linuxTest("ENOENT, ESRCH and exe EACCES still evict an otherwise idle unit", async (t) => {
@@ -995,3 +1038,164 @@ linuxTest("top-level errors exit 1 and name the checkout (CR-5)", async (t) => {
   assert.equal(result.exitCode, 1);
   assert.ok(result.lines.some((line) => line === `error ${main}: injected top-level`));
 });
+
+linuxTest("failed git worktree list still processes the own checkout (F1)", async (t) => {
+  const { parent, main, sibling } = twoCheckouts(t);
+  const root = join(main, "src-tauri", "target");
+  const ownUnit = makeUnit(root, "debug");
+  fillAllocated(ownUnit, 80_000n);
+  const siblingUnit = makeUnit(join(sibling, "src-tauri", "target"), "debug", {
+    mtimeMs: 1_000_000,
+  });
+  const result = await runEvict(main, {
+    git: join(parent, "no-such-git"),
+    ownCapBytes: 4096n,
+  });
+  assert.equal(result.exitCode, 1, result.lines.join("\n"));
+  assert.ok(result.lines.some((line) => line.startsWith("worktree listing failed:")));
+  assert.ok(result.lines.some((line) => line.startsWith(`total ${realpathSync(root)} bytes=`)));
+  assert.equal(artifactIntact(ownUnit), false);
+  assert.ok(artifactIntact(siblingUnit));
+});
+
+linuxTest("units three levels below a root are found and four levels are not (F2)", async (t) => {
+  const { main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const target = join(sibling, "src-tauri", "target");
+  const three = makeUnit(target, "a/b/c", { mtimeMs: stale });
+  const four = makeUnit(target, "w/x/y/z", { mtimeMs: stale });
+  const result = await runEvict(main, { nowMs: now, idleMaxAgeMs });
+  assert.equal(artifactIntact(three), false, result.lines.join("\n"));
+  assert.ok(artifactIntact(four), result.lines.join("\n"));
+  assert.ok(result.lines.some((line) => line.startsWith(`evicted ${realpathSync(three)} `)));
+  assert.ok(!result.lines.some((line) => line.includes(realpathSync(four))));
+});
+
+linuxTest("a throw during eviction of one unit still evicts the next (F3)", async (t) => {
+  const { main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const target = join(sibling, "src-tauri", "target");
+  const first = makeUnit(target, "debug", { mtimeMs: stale });
+  const second = makeUnit(target, "release", { mtimeMs: stale });
+  const firstCanonical = realpathSync(first);
+  const seen = new Set();
+  const result = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    allocatedBytes(path, extra) {
+      if (path === first || path === firstCanonical) {
+        if (seen.has("first")) throw injectedError("EIO", "injected during eviction");
+        seen.add("first");
+      }
+      return allocatedBytes(path, extra);
+    },
+  });
+  assert.equal(result.exitCode, 1, result.lines.join("\n"));
+  assert.ok(artifactIntact(first));
+  assert.equal(artifactIntact(second), false);
+  assert.ok(
+    result.lines.some((line) => line.startsWith(`skipped ${firstCanonical} undetermined:`)),
+  );
+  assert.ok(result.lines.some((line) => line.startsWith(`evicted ${realpathSync(second)} `)));
+});
+
+linuxTest("realpath failures skip a unit or abort the cwd (F4)", async (t) => {
+  const { main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const unit = makeUnit(join(sibling, "src-tauri", "target"), "debug", { mtimeMs: stale });
+  const other = makeUnit(join(sibling, "src-tauri", "target"), "release", { mtimeMs: stale });
+  const unitCanonical = realpathSync(unit);
+  const unitResult = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    realpath(path) {
+      if (path === unit || path === unitCanonical) {
+        throw injectedError("EIO", "injected realpath unit");
+      }
+      return realpathSync(path);
+    },
+  });
+  assert.equal(unitResult.exitCode, 1, unitResult.lines.join("\n"));
+  assert.ok(artifactIntact(unit));
+  assert.equal(artifactIntact(other), false);
+  assert.ok(
+    unitResult.lines.some((line) => line.startsWith(`skipped ${unitCanonical} undetermined:`)),
+  );
+
+  const cwdUnit = makeUnit(join(main, "src-tauri", "target"), "debug");
+  fillAllocated(cwdUnit, 80_000n);
+  const cwdResult = await runEvict(main, {
+    ownCapBytes: 4096n,
+    realpath(path) {
+      if (path === main) throw injectedError("EIO", "injected realpath cwd");
+      return realpathSync(path);
+    },
+  });
+  assert.equal(cwdResult.exitCode, 1, cwdResult.lines.join("\n"));
+  assert.ok(cwdResult.lines.some((line) => line === `error ${main}: injected realpath cwd`));
+  assert.ok(artifactIntact(cwdUnit));
+  assert.ok(!cwdResult.lines.some((line) => line.startsWith("evicted ")));
+  assert.ok(!cwdResult.lines.some((line) => line.startsWith("total ")));
+});
+
+linuxTest("checkLockFile maps flock 42 to undetermined and 75 to held (F7c)", async (t) => {
+  const { parent, main, sibling } = twoCheckouts(t);
+  const now = 1_700_000_000_000;
+  const idleMaxAgeMs = 10_000;
+  const stale = now - idleMaxAgeMs - 5_000;
+  const lockPath = join(parent, "probe.lock");
+  writeFileSync(lockPath, "");
+  const exit42 = writeFlockStub(parent, 42);
+  const exitHeld = writeFlockStub(parent, FLOCK_HELD_EXIT_CODE);
+  assert.deepEqual(checkLockFile(lockPath, { flockBinary: exit42 }), {
+    undetermined: `flock ${lockPath} exit 42`,
+  });
+  assert.deepEqual(checkLockFile(lockPath, { flockBinary: exitHeld }), { held: true });
+
+  const unit = makeUnit(join(sibling, "src-tauri", "target"), "debug", { mtimeMs: stale });
+  const result = await runEvict(main, {
+    nowMs: now,
+    idleMaxAgeMs,
+    flockBinary: exit42,
+  });
+  assert.equal(result.exitCode, 1, result.lines.join("\n"));
+  assert.ok(artifactIntact(unit));
+  assert.ok(result.lines.some((line) => line.includes("undetermined:")));
+});
+
+linuxTest(
+  "own-root total measurement failure still reports each evictable unit (F8)",
+  async (t) => {
+    const { main } = twoCheckouts(t);
+    const root = join(main, "src-tauri", "target");
+    const debug = makeUnit(root, "debug");
+    const release = makeUnit(root, "release");
+    const canonicalRoot = realpathSync(root);
+    const result = await runEvict(main, {
+      allocatedBytes(path, extra) {
+        if (path === root || path === canonicalRoot) {
+          throw injectedError("EIO", "injected own-root total");
+        }
+        return allocatedBytes(path, extra);
+      },
+    });
+    assert.equal(result.exitCode, 1, result.lines.join("\n"));
+    assert.ok(artifactIntact(debug));
+    assert.ok(artifactIntact(release));
+    assert.ok(result.lines.some((line) => line.startsWith(`undetermined ${canonicalRoot}:`)));
+    assert.ok(
+      result.lines.some((line) => line.startsWith(`skipped ${realpathSync(debug)} undetermined:`)),
+    );
+    assert.ok(
+      result.lines.some((line) =>
+        line.startsWith(`skipped ${realpathSync(release)} undetermined:`),
+      ),
+    );
+  },
+);
