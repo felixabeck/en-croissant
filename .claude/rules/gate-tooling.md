@@ -96,7 +96,7 @@ snapshot only when its path is valid, then remove the fence.
 
 ## Rust build output eviction
 
-`d-20261031-03`. An advisory P0 step `rust-target-eviction` (`pnpm rust:target:evict`) runs after
+`d-20261031-04`. An advisory P0 step `rust-target-eviction` (`pnpm rust:target:evict`) runs after
 the mutation guard and before `setup-rust` when the push gate selects `rust` or `bindings`. It
 is not a pre-review step.
 
