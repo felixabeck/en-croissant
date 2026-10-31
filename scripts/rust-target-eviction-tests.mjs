@@ -266,7 +266,10 @@ function describeInUseProbe(child) {
 
 function waitUntilProductSeesCopiedExe(containerPath, child) {
   waitUntil(
-    () => childStillAlive(child) && productSeesExeInside(containerPath),
+    () => {
+      if (!childStillAlive(child)) assert.fail(describeInUseProbe(child));
+      return productSeesExeInside(containerPath);
+    },
     3_000,
     () => describeInUseProbe(child),
   );
@@ -280,7 +283,7 @@ function startCopiedSleep(unit, t, staleMs) {
   const source = existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep";
   copyFileSync(source, exe);
   chmodSync(exe, 0o755);
-  const child = spawn(exe, ["60"], { stdio: "ignore" });
+  const child = spawn(exe, ["60"], { stdio: "ignore", argv0: "sleep" });
   t.after(() => {
     try {
       child.kill("SIGKILL");
@@ -502,7 +505,7 @@ linuxTest(
     const outsideExe = join(outside, "sleeping-bin");
     copyFileSync(existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep", outsideExe);
     chmodSync(outsideExe, 0o755);
-    const outsideChild = spawn(outsideExe, ["60"], { stdio: "ignore" });
+    const outsideChild = spawn(outsideExe, ["60"], { stdio: "ignore", argv0: "sleep" });
     t.after(() => outsideChild.kill("SIGKILL"));
     outsideChild.unref();
     waitUntilProductSeesCopiedExe(outside, outsideChild);
@@ -756,7 +759,7 @@ export function afterLock(unitPath) {
   const source = existsSync("/usr/bin/sleep") ? "/usr/bin/sleep" : "/bin/sleep";
   copyFileSync(source, exe);
   chmodSync(exe, 0o755);
-  const child = spawn(exe, ["60"], { stdio: "ignore" });
+  const child = spawn(exe, ["60"], { stdio: "ignore", argv0: "sleep" });
   child.unref();
   writeFileSync(process.env.EVICT_TEST_PID, String(child.pid));
   const deadline = Date.now() + 3000;
