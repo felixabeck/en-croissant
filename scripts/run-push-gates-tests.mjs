@@ -129,7 +129,9 @@ function shellQuote(value) {
 function scheduledFakeCommands(blocks) {
   const selected = new Set(blocks);
   const commands = ["pnpm mutation:guard:check"];
-  if (selected.has("rust") || selected.has("bindings")) commands.push("bash scripts/setup-rust.sh");
+  if (selected.has("rust") || selected.has("bindings")) {
+    commands.push("pnpm rust:target:evict", "bash scripts/setup-rust.sh");
+  }
   if (selected.size > 0) commands.push("pnpm gate:run frontend-build");
   if (selected.has("bindings")) commands.push("pnpm bindings:check");
   if (selected.has("rust")) {
@@ -967,10 +969,13 @@ test("CLI selection matrix, leading delimiter, and phase ordering (PG-60, PG-64,
             ]
           : [];
       if (entry.flags.includes("--rust") || entry.flags.includes("--bindings")) {
+        const evictionStart = cliCommandStart(events, "pnpm rust:target:evict");
+        const evictionFinish = cliCommandFinish(events, "pnpm rust:target:evict");
         const setupStart = cliCommandStart(events, "bash scripts/setup-rust.sh");
         const setupFinish = cliCommandFinish(events, "bash scripts/setup-rust.sh");
         const buildStart = cliCommandStart(events, "pnpm gate:run frontend-build");
-        assert.ok(at(guardFinish) < at(setupStart));
+        assert.ok(at(guardFinish) < at(evictionStart));
+        assert.ok(at(evictionFinish) < at(setupStart));
         assert.ok(at(setupFinish) < at(buildStart));
       } else if (entry.flags.includes("--frontend")) {
         assert.ok(at(guardFinish) < at(cliCommandStart(events, "pnpm gate:run frontend-build")));
@@ -1247,7 +1252,7 @@ test("spawn failures, signals and SIGKILL codes propagate from P0, P1 and lanes 
         assert.deepEqual(
           commands,
           (args[0] === "--rust"
-            ? ["pnpm mutation:guard:check", command]
+            ? ["pnpm mutation:guard:check", "pnpm rust:target:evict", command]
             : ["pnpm mutation:guard:check", command]
           ).sort(),
         );
@@ -1516,6 +1521,7 @@ test("lane command order, exit precedence, logs, e2e ordering and all-lane compl
       }
       const logForCommand = new Map([
         ["pnpm mutation:guard:check", "mutation-guard"],
+        ["pnpm rust:target:evict", "rust-target-eviction"],
         ["bash scripts/setup-rust.sh", "setup-rust"],
         ["pnpm gate:run frontend-build", "frontend-build"],
         ["pnpm bindings:check", "bindings-check"],
@@ -2063,10 +2069,10 @@ test("scheduler-level beforeStep cancellation and injected spawn failures (PG-51
           },
         });
         assert.equal(result.exitCode, expectedCode, JSON.stringify(result));
-        assert.deepEqual(beforeStepNames, ["mutation-guard", "setup-rust"]);
+        assert.deepEqual(beforeStepNames, ["mutation-guard", "rust-target-eviction", "setup-rust"]);
         assert.deepEqual(
           events.filter((event) => event.type === "start").map((event) => event.command),
-          ["pnpm mutation:guard:check"],
+          ["pnpm mutation:guard:check", "pnpm rust:target:evict"],
         );
       },
     );
@@ -2353,6 +2359,7 @@ test("known insufficient Rust memory refuses bindings-only and all-block exporte
       commands,
       [
         "pnpm mutation:guard:check",
+        "pnpm rust:target:evict",
         "bash scripts/setup-rust.sh",
         "pnpm gate:run frontend-build",
       ].sort(),
@@ -2494,4 +2501,225 @@ test("known insufficient pre-review Rust memory refuses before Windows compiler 
     /Rust compilation refused:.*below the minimum.*9 GiB usable/u,
   );
   assert.deepEqual(commandSet(await readEvents(harness)), ["pnpm gate:run frontend-build"]);
+});
+
+test("advisory rust-target-eviction is selected by name and never gates later work (O6, CR-6)", async (t) => {
+  const byName = Object.fromEntries(PUSH_GATE_SCHEDULE.p0.map((step) => [step.name, step]));
+  assert.equal(byName["mutation-guard"].command, "pnpm mutation:guard:check");
+  assert.equal(byName["setup-rust"].command, "bash scripts/setup-rust.sh");
+  assert.equal(byName["rust-target-eviction"].command, "pnpm rust:target:evict");
+  assert.equal(byName["rust-target-eviction"].advisory, true);
+  assert.equal(PRE_REVIEW_GATE_SCHEDULE.p0, undefined);
+  const preReviewCommands = [
+    PRE_REVIEW_GATE_SCHEDULE.p1[0].command,
+    ...PRE_REVIEW_GATE_SCHEDULE.lanes.flatMap((lane) => lane.commands),
+  ].map((command) => (typeof command === "string" ? command : command.display));
+  assert.ok(!preReviewCommands.some((command) => command.includes("rust:target:evict")));
+
+  for (const flags of [["--rust"], ["--bindings"]]) {
+    await t.test(`ordering with ${flags.join(" ")}`, async (subtest) => {
+      const harness = await makeHarness(subtest);
+      const result = await runCli(subtest, harness, flags);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+      const events = await readEvents(harness);
+      const guard = cliCommandFinish(events, "pnpm mutation:guard:check");
+      const eviction = cliCommandStart(events, "pnpm rust:target:evict");
+      const evictionDone = cliCommandFinish(events, "pnpm rust:target:evict");
+      const setup = cliCommandStart(events, "bash scripts/setup-rust.sh");
+      assert.ok(at(guard) < at(eviction));
+      assert.ok(at(evictionDone) < at(setup));
+    });
+  }
+
+  await t.test("absent from contract-only and frontend-only runs", async (subtest) => {
+    for (const flags of [[], ["--frontend"]]) {
+      const harness = await makeHarness(subtest);
+      const result = await runCli(subtest, harness, flags);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+      const commands = commandSet(await readEvents(harness));
+      assert.ok(!commands.includes("pnpm rust:target:evict"));
+      assert.ok(commands.includes("pnpm mutation:guard:check"));
+    }
+  });
+
+  const laterCommands = [
+    "bash scripts/setup-rust.sh",
+    "pnpm gate:run frontend-build",
+    "pnpm gates:contract:check",
+    "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+  ];
+
+  await t.test("non-zero exit is a warning and later steps still run", async (subtest) => {
+    const cwd = await temporarySchedulerRoot(subtest);
+    const events = [];
+    const originalStdoutWrite = process.stdout.write;
+    let stdout = "";
+    process.stdout.write = function (chunk) {
+      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      return true;
+    };
+    let result;
+    try {
+      result = await runPushGates(["--rust"], {
+        cwd,
+        env: { ...process.env, GATE_MEMORY_BYTES: String(10 * GIB) },
+        getGateBudgetBytes: () => 10 * GIB,
+        availableParallelism: () => 24,
+        spawnProcess: makeMockSpawner({
+          events,
+          exits: { "pnpm rust:target:evict": 1 },
+          stdout: "eviction-probe-line\n",
+        }),
+      });
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+    }
+    assert.equal(result.exitCode, 0);
+    const eviction = result.results.find((task) => task.name === "rust-target-eviction");
+    assert.equal(eviction.status, "warning");
+    assert.equal(eviction.code, 1);
+    assert.ok(!stdout.includes("push gate failed: rust-target-eviction"));
+    assert.match(stdout, /rust-target-eviction log tail/u);
+    assert.match(stdout, /eviction-probe-line/u);
+    const started = events.filter((event) => event.type === "start").map((event) => event.command);
+    for (const command of laterCommands) {
+      assert.ok(started.includes(command), `${command} must still run`);
+    }
+  });
+
+  await t.test("spawn failure is a warning and later steps still run", async (subtest) => {
+    const cwd = await temporarySchedulerRoot(subtest);
+    const events = [];
+    const spawnProcess = (executable, args, options) => {
+      const command = [executable, ...args].join(" ");
+      if (command === "pnpm rust:target:evict") {
+        const error = new Error("injected ENOENT");
+        error.code = "ENOENT";
+        throw error;
+      }
+      return makeMockSpawner({ events })(executable, args, options);
+    };
+    const result = await runPushGates(["--rust"], {
+      cwd,
+      env: { ...process.env, GATE_MEMORY_BYTES: String(10 * GIB) },
+      getGateBudgetBytes: () => 10 * GIB,
+      availableParallelism: () => 24,
+      spawnProcess,
+    });
+    assert.equal(result.exitCode, 0);
+    const eviction = result.results.find((task) => task.name === "rust-target-eviction");
+    assert.equal(eviction.status, "warning");
+    assert.equal(eviction.code, 127);
+    const started = events.filter((event) => event.type === "start").map((event) => event.command);
+    for (const command of laterCommands) {
+      assert.ok(started.includes(command), `${command} must still run`);
+    }
+  });
+
+  await t.test("a crash is a warning and later steps still run", async (subtest) => {
+    const cwd = await temporarySchedulerRoot(subtest);
+    const events = [];
+    const spawnProcess = (executable, args, options) => {
+      const command = [executable, ...args].join(" ");
+      if (command === "pnpm rust:target:evict") {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.pid = undefined;
+        child.exitCode = null;
+        child.signalCode = null;
+        child.kill = () => false;
+        setImmediate(() => {
+          const error = new Error("injected crash");
+          child.emit("error", error);
+          child.stdout.end();
+          child.stderr.end();
+          child.exitCode = 1;
+          child.emit("close", 1, null);
+        });
+        return child;
+      }
+      return makeMockSpawner({ events })(executable, args, options);
+    };
+    const result = await runPushGates(["--rust"], {
+      cwd,
+      env: { ...process.env, GATE_MEMORY_BYTES: String(10 * GIB) },
+      getGateBudgetBytes: () => 10 * GIB,
+      availableParallelism: () => 24,
+      spawnProcess,
+    });
+    assert.equal(result.exitCode, 0);
+    const eviction = result.results.find((task) => task.name === "rust-target-eviction");
+    assert.equal(eviction.status, "warning");
+    const started = events.filter((event) => event.type === "start").map((event) => event.command);
+    for (const command of laterCommands) {
+      assert.ok(started.includes(command), `${command} must still run`);
+    }
+  });
+
+  await t.test("interrupt during the step keeps the existing outcome", async (subtest) => {
+    const harness = await makeHarness(subtest, {
+      commands: { "pnpm rust:target:evict": { hold: true } },
+    });
+    const running = startCli(subtest, harness, ["--rust"]);
+    await waitForEvent(
+      harness,
+      (event) => event.type === "start" && event.command === "pnpm rust:target:evict",
+    );
+    running.child.kill("SIGTERM");
+    const result = await running.done;
+    assert.equal(result.code, 143, `${result.stdout}\n${result.stderr}`);
+    const commands = commandSet(await readEvents(harness));
+    assert.deepEqual(commands, ["pnpm mutation:guard:check", "pnpm rust:target:evict"].sort());
+    assert.ok(!commands.includes("bash scripts/setup-rust.sh"));
+  });
+
+  await t.test(
+    "unconfirmed termination stays failed, latches cleanup, and refuses later starts",
+    async (subtest) => {
+      const harness = await makeHarness(subtest, {
+        commands: { "pnpm rust:target:evict": { hold: true } },
+      });
+      const commandsByChild = new WeakMap();
+      let heldSupervisor;
+      let heldEvent;
+      const result = await runPushGates(["--rust"], {
+        cwd: harness.root,
+        env: harness.env,
+        spawnProcess(executable, args, options) {
+          const child = spawn(executable, args, options);
+          commandsByChild.set(child, [executable, ...args].join(" "));
+          return child;
+        },
+        superviseProcess(child, options) {
+          const supervisor = superviseChild(child, options);
+          if (commandsByChild.get(child) !== "pnpm rust:target:evict") return supervisor;
+          heldSupervisor = supervisor;
+          return {
+            ...supervisor,
+            done: waitForEvent(
+              harness,
+              (event) => event.type === "start" && event.command === "pnpm rust:target:evict",
+            ).then((event) => {
+              heldEvent = event;
+              throw new Error("injected unconfirmed process-group cleanup");
+            }),
+          };
+        },
+      });
+      try {
+        assert.equal(result.exitCode, 1);
+        const eviction = result.results.find((task) => task.name === "rust-target-eviction");
+        assert.equal(eviction.status, "failed");
+        assert.match(eviction.terminationError.message, /unconfirmed process-group cleanup/u);
+        const commands = commandSet(await readEvents(harness));
+        assert.ok(!commands.includes("bash scripts/setup-rust.sh"));
+        assert.ok(!commands.includes("pnpm gates:contract:check"));
+        assert.ok(groupExists(heldEvent.pid));
+      } finally {
+        await heldSupervisor?.terminate();
+      }
+      assert.equal(groupExists(heldEvent.pid), false);
+    },
+  );
 });

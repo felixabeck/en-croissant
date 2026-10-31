@@ -16,7 +16,7 @@ const temporaryRoot = testTempRoots(after);
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
-  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:logs:test && pnpm gates:parallelism:test && pnpm gates:push:test && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
+  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm rust:target:evict:test && pnpm gates:receipt:test && pnpm gates:logs:test && pnpm gates:parallelism:test && pnpm gates:push:test && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -42,6 +42,7 @@ async function fixture() {
         "gates:child-supervisor:test": "node --test scripts/child-supervisor-tests.mjs",
         "gates:imports:test": "node --test scripts/import-path-tests.mjs",
         "mutation:guard:check": "true",
+        "rust:target:evict": "node scripts/rust-target-eviction.mjs",
         "findings:kit:check": "env -u KIT_ROOT kit sync --check .",
         "gate:ensure": "agent-gate node scripts/gate-receipt.mjs ensure",
         "gate:run": "agent-gate node scripts/gate-receipt.mjs run",

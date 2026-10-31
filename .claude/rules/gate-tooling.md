@@ -22,15 +22,16 @@ launcher, `d-20261002-01`).
 
 The push skill's §2 runs every final gate through one command,
 `pnpm gates:push -- [--rust] [--frontend] [--bindings]` (`scripts/run-push-gates.mjs`; no flags is
-the contract-only run). For the selected blocks, it runs the mutation guard first (always) and
-`setup-rust` for Rust or bindings, then rebuilds `dist/` for every `dist/` consumer and runs
-`bindings:check` with `--bindings`. Contract and bundle run concurrently with one complete Rust
-lane at a time, in declaration order: lint, test, coverage. Frontend coverage and mutation wait
-until all Rust work terminates. An ordinary lane failure still admits later Rust lanes. Signals
-and unconfirmed child cleanup prevent queued starts. E2e waits for bundle and every Rust lane,
-including failures, because its container build rewrites `dist/`, a Rust compile input. After
-Rust, frontend coverage shares memory only with concurrent mutation. Mutation runs last unless
-the existing budget and CPU thresholds allow one frontend wave.
+the contract-only run). For the selected blocks, it runs the mutation guard first (always), then
+the advisory `rust-target-eviction` step and `setup-rust` for Rust or bindings, then rebuilds
+`dist/` for every `dist/` consumer and runs `bindings:check` with `--bindings`. Contract and
+bundle run concurrently with one complete Rust lane at a time, in declaration order: lint, test,
+coverage. Frontend coverage and mutation wait until all Rust work terminates. An ordinary lane
+failure still admits later Rust lanes. Signals and unconfirmed child cleanup prevent queued
+starts. E2e waits for bundle and every Rust lane, including failures, because its container
+build rewrites `dist/`, a Rust compile input. After Rust, frontend coverage shares memory only
+with concurrent mutation. Mutation runs last unless the existing budget and CPU thresholds allow
+one frontend wave.
 
 The shared [gate-performance reference](~/.claude/references/gate-performance.md) owns machine-wide
 slot admission and scope caps. `agent-gate` takes one shared slot and runs the whole run in its
@@ -92,3 +93,25 @@ The next run or `pnpm mutation:guard:check`, which `$push` runs before any other
 an existing fence and prints ordered recovery: stop every relevant mutation descendant,
 restore **only** live files marked by a legacy interrupted in-place run, remove the recorded
 snapshot only when its path is valid, then remove the fence.
+
+## Rust build output eviction
+
+`d-20261031-03`. An advisory P0 step `rust-target-eviction` (`pnpm rust:target:evict`) runs after
+the mutation guard and before `setup-rust` when the push gate selects `rust` or `bindings`. It
+is not a pre-review step.
+
+The unit is a cargo build directory that contains `.cargo-lock`, found at most three levels
+below `src-tauri/target` or `mutants.out/backend/cargo-target` of every checkout from
+`git worktree list`. Size is allocated 512-byte blocks from `lstat`, each inode counted once.
+
+The gating checkout keeps at most 40 GiB per target root (largest evictable units first; nothing
+is evicted when the cap is unreachable). Every other checkout loses units with no cargo write
+for 7 days (mtime of the unit and its `deps`, `.fingerprint`, `build`, `incremental` children).
+A unit in use (a Cargo lock held, or a same-user process running an executable from it), a
+fenced mutation cache, or any undetermined observation is skipped, never evicted. Removal
+empties the unit in place under `flock -n` on every Cargo lock file present, `.fingerprint`
+first, lock files kept.
+
+The step records status `warning` on a non-zero exit, spawn failure or crash, and never changes
+the run's exit code or later admission. Unconfirmed child termination stays `failed` and latches
+cleanup as for any other step. Each unit and each target root gets one outcome line.

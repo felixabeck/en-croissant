@@ -32,7 +32,8 @@ const snapshotPrefix = "chessfable-backend-mutation-";
 const containmentScript = fileURLToPath(
   new URL("./mutation-process-containment.py", import.meta.url),
 );
-const fencePath = "mutants.out/backend/.mutation-in-progress";
+export const fencePath = "mutants.out/backend/.mutation-in-progress";
+export const mutationCacheRelativePath = "mutants.out/backend/cargo-target";
 const mutationMarker = "~ changed by cargo-mutants ~";
 const terminationTimeoutMs = 8_000;
 // Give each cargo-mutants test at least this many seconds before timing it out.
@@ -349,7 +350,7 @@ async function captureSnapshot(liveRoot, snapshot, afterCopy) {
 }
 
 function prepareCache(liveRoot) {
-  const cache = join(liveRoot, "mutants.out", "backend", "cargo-target");
+  const cache = join(liveRoot, mutationCacheRelativePath);
   const liveTarget = join(liveRoot, "src-tauri", "target");
   const resolvedTarget = existsSync(liveTarget) ? realpathSync(liveTarget) : liveTarget;
   const targetIdentity = existsSync(resolvedTarget)

@@ -27,7 +27,12 @@ import {
   waitUntil,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
-import { encodingCargoArguments, selectBackendMutationPackages } from "./run-backend-mutation.mjs";
+import {
+  encodingCargoArguments,
+  fencePath,
+  mutationCacheRelativePath,
+  selectBackendMutationPackages,
+} from "./run-backend-mutation.mjs";
 import { parseRustHostMetadata } from "./rust-host.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -266,6 +271,15 @@ function environment({ bin, state, mode = "normal", path = `${bin}:${process.env
 
 const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
 const containmentScript = join(projectRoot, "scripts", "mutation-process-containment.py");
+
+test("exported fence and cache constants are pinned and prepareCache uses the cache constant (CR-4)", async () => {
+  assert.equal(fencePath, "mutants.out/backend/.mutation-in-progress");
+  assert.equal(mutationCacheRelativePath, "mutants.out/backend/cargo-target");
+  const source = await readFile(join(projectRoot, "scripts/run-backend-mutation.mjs"), "utf8");
+  assert.match(source, /export const fencePath = /u);
+  assert.match(source, /export const mutationCacheRelativePath = /u);
+  assert.match(source, /const cache = join\(liveRoot, mutationCacheRelativePath\);/u);
+});
 
 test("containment treats processes vanishing during proc reads and pidfd signals as gone", () => {
   const result = spawnSync(

@@ -57,6 +57,12 @@ export const PUSH_GATE_SCHEDULE = Object.freeze({
   p0: Object.freeze([
     Object.freeze({ name: "mutation-guard", command: "pnpm mutation:guard:check", always: true }),
     Object.freeze({
+      name: "rust-target-eviction",
+      command: "pnpm rust:target:evict",
+      blocks: Object.freeze(["rust", "bindings"]),
+      advisory: true,
+    }),
+    Object.freeze({
       name: "setup-rust",
       command: "bash scripts/setup-rust.sh",
       blocks: Object.freeze(["rust", "bindings"]),
@@ -606,6 +612,12 @@ function selectedByBlocks(entry, blocks) {
   return entry.blocks?.some((block) => blocks.has(block)) ?? false;
 }
 
+function p0Step(name) {
+  const entry = PUSH_GATE_SCHEDULE.p0.find((step) => step.name === name);
+  if (!entry) throw new Error(`Push gate P0 has no step named ${JSON.stringify(name)}`);
+  return entry;
+}
+
 function formatDuration(durationMs) {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
@@ -795,7 +807,7 @@ async function runStep(task, command, context) {
       index: task.commandIndex ?? 0,
     });
   } catch (error) {
-    task.status = "failed";
+    task.status = task.advisory && !task.terminationError ? "warning" : "failed";
     task.code = 1;
     task.error = error;
     const fd = writeTaskHeader(task, commandLabel(command));
@@ -827,9 +839,15 @@ async function runStep(task, command, context) {
   if (context.signalForwarding.requestedSignal) {
     task.code = signalExitCode(context.signalForwarding.requestedSignal);
     task.status = "interrupted";
+  } else if (result.code === 0) {
+    task.code = result.code;
+    task.status = "passed";
+  } else if (task.advisory && !result.terminationError) {
+    task.code = result.code;
+    task.status = "warning";
   } else {
     task.code = result.code;
-    task.status = result.code === 0 ? "passed" : "failed";
+    task.status = "failed";
   }
   logProgress(task, "finish", result.error ? `error=${errorMessage(result.error)}` : "");
   return task;
@@ -965,7 +983,9 @@ function printSummary(results, logDirectory, preReviewMode = false) {
     if (task.reason) process.stdout.write(`  reason: ${task.reason}\n`);
   }
   for (const task of results) {
-    if (task.status !== "failed" && task.status !== "interrupted") continue;
+    if (task.status !== "failed" && task.status !== "interrupted" && task.status !== "warning") {
+      continue;
+    }
     process.stdout.write(`\n${task.name} log tail (${task.logPath}):\n`);
     const tail = readLogTail(task.logPath);
     process.stdout.write(tail || "(empty log)\n");
@@ -1048,7 +1068,10 @@ export async function runPushGates(
     writeCapturedOutput,
   };
   const runSerialStep = async (entry, phase, stepEnv = env) => {
-    const task = createTaskResult(logDirectory, entry.name, "step", { phase });
+    const task = createTaskResult(logDirectory, entry.name, "step", {
+      phase,
+      advisory: entry.advisory === true,
+    });
     stepResults.push(task);
     const finished = await runStep(task, entry.command, { ...context, env: stepEnv });
     if (!resultsByName.has(entry.name)) resultsByName.set(entry.name, finished);
@@ -1141,7 +1164,7 @@ export async function runPushGates(
         }
       }
     } else {
-      const guard = await runSerialStep(PUSH_GATE_SCHEDULE.p0[0], "P0");
+      const guard = await runSerialStep(p0Step("mutation-guard"), "P0");
       if (guard.status !== "passed") {
         exitCode = signalForwarding.requestedSignal
           ? signalExitCode(signalForwarding.requestedSignal)
@@ -1153,9 +1176,14 @@ export async function runPushGates(
           resultsByName.set(lane.name, skipped);
         }
       } else {
+        const eviction = p0Step("rust-target-eviction");
+        if (selectedByBlocks(eviction, blocks)) {
+          await runSerialStep(eviction, "P0");
+        }
         let setupRust;
-        if (selectedByBlocks(PUSH_GATE_SCHEDULE.p0[1], blocks)) {
-          setupRust = await runSerialStep(PUSH_GATE_SCHEDULE.p0[1], "P0");
+        const setupRustEntry = p0Step("setup-rust");
+        if (selectedByBlocks(setupRustEntry, blocks)) {
+          setupRust = await runSerialStep(setupRustEntry, "P0");
         }
 
         const frontendBuildEntry = PUSH_GATE_SCHEDULE.p1[0];
