@@ -20,15 +20,17 @@ export const UNSIZED_PROCESS_RESERVE_BYTES = 1024 * 1024 * 1024;
 // memory.max 11596410880 and 13 at 19327352832 and were OOM-killed. Re-measured 2026-10-31 at
 // e9ebec04 inside agent-gate (scope cap 11596410880, concurrency 4): max runner VmHWM
 // tree-path 2002472960 (4313 tests), workspace-storage 2000359424 (3886),
-// annotate-comment 1893363712 (1197), game-practice 1111965696 (343). 2002472960 × 1.25 =
-// 2503091200, rounded up to 2432 MiB (38 × 64 MiB).
+// annotate-comment 1893363712 (1197), game-practice 1111965696 (343). d-20261031-06 applies
+// 25% headroom: 2002472960 × 1.25 = 2503091200 (2387.05 MiB), rounded up to the next whole
+// 64 MiB: 2432 MiB (38 × 64 MiB).
 export const STRYKER_RUNNER_BYTES = 2432 * 1024 * 1024;
 
 // The Stryker parent measured 0.34–0.39 GiB RSS plus a 0.11 GiB helper process during the
 // 2026-09-30 dry run; 640 MiB covers both with headroom. Re-measured 2026-10-31: max parent
 // VmHWM workspace-storage 506413056, annotate-comment 499204096 (+4.7 MB transient ps),
-// tree-path 394031104, game-practice 393859072. 506413056 × 1.25 = 633016320, which rounds
-// up to the existing 640 MiB.
+// tree-path 394031104, game-practice 393859072. d-20261031-06 applies 25% headroom:
+// 506413056 × 1.25 = 633016320 (603.7 MiB), rounded up to the next whole 64 MiB: 640 MiB,
+// the existing value.
 export const STRYKER_PARENT_BYTES = 640 * 1024 * 1024;
 
 // On 2026-09-30 in the 8 GiB agent scope, `vitest run --coverage.enabled` used 1.88 GiB above
@@ -42,7 +44,9 @@ export const VITEST_BASE_BYTES = 1536 * 1024 * 1024;
 export const VITEST_MINIMUM_BUDGET_BYTES = VITEST_BASE_BYTES + VITEST_WORKER_BYTES;
 
 // A detected chain failure uses the measured-safe 8 GiB agent-scope configuration from
-// d-20260930-03: after the 1 GiB agent reserve, Vitest gets 22 workers and Stryker gets two.
+// d-20260930-03: after the 1 GiB agent reserve, Vitest gets 22 workers. d-20261031-06
+// recomputed CONSERVATIVE_STRYKER_RUNNERS (2) as workerCount over the undivided 7 GiB
+// usable budget; strykerSlots at that budget with three packages picks two slots of one.
 export const CONSERVATIVE_CGROUP_LIMIT_BYTES = 8 * 1024 ** 3;
 export const CONSERVATIVE_VITEST_WORKERS = 22;
 export const CONSERVATIVE_STRYKER_RUNNERS = 2;

@@ -363,8 +363,10 @@ test("an unreadable ancestor uses the conservative worker counts and prints its 
     CONSERVATIVE_VITEST_WORKERS,
   );
   const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
-  // 7 GiB, 24 CPUs, packageCount 3: s=1 yields 2 runners, s=2 yields 1 each (3584 MiB
-  // per slot); tie on total 2 picks the larger s.
+  // slots.slots === 2 is the strykerSlots slot count at the 7 GiB fallback (s=1 gives 2
+  // runners, s=2 gives 1 each, tie picks the larger s). The CONSERVATIVE_STRYKER_RUNNERS
+  // assertion below is a different quantity: workerCount on the undivided 7 GiB budget
+  // (floor(6528 MiB / 2432 MiB) = 2).
   assert.equal(slots.slots, 2);
   assert.equal(
     workerCount({
@@ -399,8 +401,10 @@ test("an all-max chain uses the conservative worker counts instead of physical m
     CONSERVATIVE_VITEST_WORKERS,
   );
   const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
-  // Same 7 GiB fallback arithmetic as the unreadable-ancestor case: tie on total 2
-  // picks two slots.
+  // slots.slots === 2 is the strykerSlots slot count at the 7 GiB fallback (s=1 gives 2
+  // runners, s=2 gives 1 each, tie picks the larger s). The CONSERVATIVE_STRYKER_RUNNERS
+  // assertion below is a different quantity: workerCount on the undivided 7 GiB budget
+  // (floor(6528 MiB / 2432 MiB) = 2).
   assert.equal(slots.slots, 2);
   assert.equal(
     workerCount({
@@ -531,6 +535,55 @@ test("strykerSlots charges each package parent in the three-CPU discriminating b
   const plan = strykerSlots({ budgetBytes, availableParallelism: () => 3, env: {} });
   assert.equal(plan.slots, 1);
   assert.equal(Math.floor(budgetBytes / plan.slots), budgetBytes);
+});
+
+test("the observed-failure kernel caps admit at most 6 and 12 Stryker runners", () => {
+  // 11596410880 and 19327352832 are the kernel caps that OOM-killed 7 and 13 runners
+  // (f-20261022-05). Budget is each cap minus UNSIZED_PROCESS_RESERVE_BYTES.
+  const env = {};
+  const availableParallelism = () => 20;
+  const budgetAt11596410880 = 11596410880 - UNSIZED_PROCESS_RESERVE_BYTES;
+  assert.equal(
+    strykerSlots({
+      budgetBytes: budgetAt11596410880,
+      packageCount: 1,
+      availableParallelism,
+      env,
+    }).slots,
+    1,
+  );
+  const countAt11596410880 = workerCount({
+    perWorkerBytes: STRYKER_RUNNER_BYTES,
+    baseBytes: STRYKER_PARENT_BYTES,
+    budgetBytes: budgetAt11596410880,
+    availableParallelism,
+    env,
+  });
+  assert.ok(
+    countAt11596410880 <= 6,
+    `11596410880 must admit at most 6 runners (got ${countAt11596410880})`,
+  );
+  const budgetAt19327352832 = 19327352832 - UNSIZED_PROCESS_RESERVE_BYTES;
+  assert.equal(
+    strykerSlots({
+      budgetBytes: budgetAt19327352832,
+      packageCount: 1,
+      availableParallelism,
+      env,
+    }).slots,
+    1,
+  );
+  const countAt19327352832 = workerCount({
+    perWorkerBytes: STRYKER_RUNNER_BYTES,
+    baseBytes: STRYKER_PARENT_BYTES,
+    budgetBytes: budgetAt19327352832,
+    availableParallelism,
+    env,
+  });
+  assert.ok(
+    countAt19327352832 <= 12,
+    `19327352832 must admit at most 12 runners (got ${countAt19327352832})`,
+  );
 });
 
 test("strykerSlots chooses two slots of one runner each for the 7 GiB regression anchor", () => {
