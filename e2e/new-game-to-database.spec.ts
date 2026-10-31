@@ -10,6 +10,28 @@ import {
     selectFilesTreeRow,
     waitForScrollAreaScrollbarsHidden,
 } from "./fixtures";
+import type { Locator } from "@playwright/test";
+
+// The board can report no box right after navigating to it (f-20261030-21). A stub board whose
+// first measurements are null proves playBoardMove waits for geometry instead of dereferencing it.
+test("playBoardMove waits for a measured board box", async ({ page }) => {
+    const measured = { x: 0, y: 0, width: 800, height: 800 };
+    const boxes = [null, null, measured];
+    const clicks: unknown[] = [];
+    const board = {
+        click: async (options?: { trial?: boolean; position?: { x: number; y: number } }) => {
+            if (!options?.trial) clicks.push(options?.position);
+        },
+        boundingBox: async () => (boxes.length > 0 ? boxes.shift() : measured),
+    } as unknown as Locator;
+
+    await playBoardMove(page, board, "e2", "e4");
+
+    expect(clicks).toEqual([
+        { x: 450, y: 650 },
+        { x: 450, y: 450 },
+    ]);
+});
 
 test("New game inserts on explicit save, updates that row, and Save to database rebinds", async ({
     page,

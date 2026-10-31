@@ -387,6 +387,21 @@ export async function assertChooserInsideBoard(board: Locator, chooser: Locator)
     ).toBeLessThanOrEqual(4);
 }
 
+// A trial click waits for visible, stable geometry, but a board that remounts right after a
+// navigation can still report no box on the next call; poll until one is measured
+// (f-20261030-21).
+async function boardBox(board: Locator) {
+    let box: Awaited<ReturnType<Locator["boundingBox"]>> = null;
+    await expect
+        .poll(async () => {
+            await board.click({ trial: true });
+            box = await board.boundingBox();
+            return box;
+        })
+        .not.toBeNull();
+    return box!;
+}
+
 function squarePosition(square: string, box: { width: number; height: number }) {
     const file = square.charCodeAt(0) - "a".charCodeAt(0);
     const rank = Number(square[1]) - 1;
@@ -403,8 +418,7 @@ export async function dragBoard(
     to: string,
     button: "left" | "right",
 ) {
-    await board.click({ trial: true, button });
-    const box = (await board.boundingBox())!;
+    const box = await boardBox(board);
     const start = squarePosition(from, box);
     const end = squarePosition(to, box);
     await page.mouse.move(box.x + start.x, box.y + start.y);
@@ -424,9 +438,7 @@ export async function drawMark(page: Page, board: Locator, from: string, to = fr
 
 export async function playBoardMove(_page: Page, board: Locator, from: string, to: string) {
     for (const square of [from, to]) {
-        // Wait for visible, stable geometry before measuring each square.
-        await board.click({ trial: true });
-        const box = (await board.boundingBox())!;
+        const box = await boardBox(board);
         await board.click({
             position: squarePosition(square, box),
         });
