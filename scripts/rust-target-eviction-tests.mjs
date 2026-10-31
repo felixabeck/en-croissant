@@ -220,14 +220,26 @@ function productSeesExeInside(containerPath) {
   });
 }
 
+function procState(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close === -1) return undefined;
+    return stat.slice(close + 1).trimStart()[0];
+  } catch {
+    return undefined;
+  }
+}
+
 function childStillAlive(child) {
   if (child.exitCode !== null) return false;
   try {
     process.kill(child.pid, 0);
-    return true;
   } catch {
     return false;
   }
+  const state = procState(child.pid);
+  return state !== undefined && state !== "Z";
 }
 
 function describeInUseProbe(child) {
@@ -256,6 +268,7 @@ function describeInUseProbe(child) {
     `uid=${process.getuid()}`,
     `pid=${pid}`,
     `exitCode=${child.exitCode}`,
+    `state=${procState(pid) ?? "gone"}`,
     `exe=${exe}`,
     `procUid=${procUid}`,
     `inProc=${inProc}`,
