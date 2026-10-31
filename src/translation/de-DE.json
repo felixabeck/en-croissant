@@ -876,6 +876,8 @@
     "Settings.Appearance.TitleBar.Custom": "Benutzerdefiniert",
     "Settings.Appearance.TitleBar.Desc": "Wähle zwischen nativer oder benutzerdefinierter Titelleiste",
     "Settings.Appearance.TitleBar.Native": "Native",
+    "Settings.Appearance.WoodTexture": "Holzstruktur",
+    "Settings.Appearance.WoodTexture.Desc": "Legt eine Holzmaserung über das Brett",
     "Settings.Arrows": "Pfeile",
     "Settings.Arrows.Desc": "Zeige beste Zug-Pfeile",
     "Settings.AutoPromition": "Automatische Umwandlung",

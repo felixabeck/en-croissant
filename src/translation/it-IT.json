@@ -885,6 +885,8 @@
     "Settings.Appearance.TitleBar.Custom": "Personalizzata",
     "Settings.Appearance.TitleBar.Desc": "Scegli tra la barra del titolo nativa o personalizzata",
     "Settings.Appearance.TitleBar.Native": "Nativa",
+    "Settings.Appearance.WoodTexture": "Texture legno",
+    "Settings.Appearance.WoodTexture.Desc": "Fonde una venatura del legno con la scacchiera",
     "Settings.Arrows": "Frecce",
     "Settings.Arrows.Desc": "Mostra le frecce delle mosse migliori",
     "Settings.AutoPromition": "Promozione automatica",

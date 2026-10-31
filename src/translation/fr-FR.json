@@ -885,6 +885,8 @@
     "Settings.Appearance.TitleBar.Custom": "Personnalisée",
     "Settings.Appearance.TitleBar.Desc": "Choisissez entre une barre native ou personnalisée",
     "Settings.Appearance.TitleBar.Native": "Native",
+    "Settings.Appearance.WoodTexture": "Texture bois",
+    "Settings.Appearance.WoodTexture.Desc": "Mélange un veinage de bois au plateau",
     "Settings.Arrows": "Flèches",
     "Settings.Arrows.Desc": "Affiche une flèche pour les meilleurs coups",
     "Settings.AutoPromition": "Promotion automatique",

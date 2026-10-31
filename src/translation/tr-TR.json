@@ -876,6 +876,8 @@
     "Settings.Appearance.TitleBar.Custom": "Özel",
     "Settings.Appearance.TitleBar.Desc": "Yerel veya özel başlık çubuğu arasında seçim yapın",
     "Settings.Appearance.TitleBar.Native": "Yerel",
+    "Settings.Appearance.WoodTexture": "Ahşap dokusu",
+    "Settings.Appearance.WoodTexture.Desc": "Tahtaya ahşap damarı deseni karıştırır",
     "Settings.Arrows": "Oklar",
     "Settings.Arrows.Desc": "En iyi hamle oklarını göster",
     "Settings.AutoPromition": "Otomatik Terfi",

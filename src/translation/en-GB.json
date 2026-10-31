@@ -876,6 +876,8 @@
     "Settings.Appearance.TitleBar.Custom": "Custom",
     "Settings.Appearance.TitleBar.Desc": "Choose between native or custom title bar",
     "Settings.Appearance.TitleBar.Native": "Native",
+    "Settings.Appearance.WoodTexture": "Wood texture",
+    "Settings.Appearance.WoodTexture.Desc": "Blend a wood grain into the board",
     "Settings.Arrows": "Arrows",
     "Settings.Arrows.Desc": "Show best move arrows",
     "Settings.AutoPromition": "Auto Promotion",

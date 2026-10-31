@@ -876,6 +876,8 @@
     "Settings.Appearance.TitleBar.Custom": "Tilpasset",
     "Settings.Appearance.TitleBar.Desc": "Velg mellom standard eller tilpasset tittelbar",
     "Settings.Appearance.TitleBar.Native": "Standard",
+    "Settings.Appearance.WoodTexture": "Trestruktur",
+    "Settings.Appearance.WoodTexture.Desc": "Blander en trefiber inn i sjakkbrettet",
     "Settings.Arrows": "Piler",
     "Settings.Arrows.Desc": "Vis beste trekk",
     "Settings.AutoPromition": "Automatisk forvandeling",

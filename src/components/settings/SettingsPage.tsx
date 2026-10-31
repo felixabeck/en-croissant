@@ -57,6 +57,7 @@ import {
   fileWorkspaceAtom,
   fileWorkspaceDisplayNameAtom,
   telemetryEnabledAtom,
+  boardWoodTextureAtom,
   puzzleWorkspaceGenerationAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
@@ -454,6 +455,14 @@ export default function Page() {
         description: t("Settings.Appearance.BoardImage.Desc"),
         keywords: ["board", "image", "texture"],
         render: () => <BoardSelect />,
+      },
+      {
+        id: "board-wood-texture",
+        category: "appearance",
+        title: t("Settings.Appearance.WoodTexture"),
+        description: t("Settings.Appearance.WoodTexture.Desc"),
+        keywords: ["wood", "texture", "grain", "board"],
+        render: () => <SettingsSwitch atom={boardWoodTextureAtom} />,
       },
       // Repertoire settings
       {

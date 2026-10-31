@@ -894,6 +894,8 @@
     "Settings.Appearance.TitleBar.Custom": "Niestandardowy",
     "Settings.Appearance.TitleBar.Desc": "Wybierz między natywnym a niestandardowym paskiem tytułu",
     "Settings.Appearance.TitleBar.Native": "Natywny",
+    "Settings.Appearance.WoodTexture": "Faktura drewna",
+    "Settings.Appearance.WoodTexture.Desc": "Nakłada na szachownicę słoje drewna",
     "Settings.Arrows": "Strzałki",
     "Settings.Arrows.Desc": "Pokaż strzałki najlepszych ruchów",
     "Settings.AutoPromition": "Automatyczna promocja",

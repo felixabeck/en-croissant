@@ -251,3 +251,32 @@ test("defers saved shapes until the observed board has positive bounds", async (
   await act(async () => root.unmount());
   expect(observed.size).toBe(0);
 });
+
+test.each([
+  ["default", null, "url('/board/wood4-square.png')"],
+  ["stored false", "false", "none"],
+  ["stored true", "true", "url('/board/wood4-square.png')"],
+])("board texture custom property with %s preference", async (_name, stored, expected) => {
+  localStorage.clear();
+  if (stored !== null) localStorage.setItem("board-wood-texture", stored);
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  mountedRoots.add(root);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 400, 400),
+  );
+  try {
+    await act(async () => {
+      root.render(
+        <MantineProvider>
+          <Chessground />
+        </MantineProvider>,
+      );
+    });
+    const board = createChessground.mock.calls[0][0];
+    expect(board.style.getPropertyValue("--board-texture")).toBe(expected);
+    expect(board.style.getPropertyValue("--board-image")).toContain("/board/chessriddle.svg");
+  } finally {
+    localStorage.clear();
+  }
+});

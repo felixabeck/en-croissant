@@ -867,6 +867,8 @@
     "Settings.Appearance.TitleBar.Custom": "自定义",
     "Settings.Appearance.TitleBar.Desc": "选择原生或自定义标题栏",
     "Settings.Appearance.TitleBar.Native": "原生",
+    "Settings.Appearance.WoodTexture": "木纹质感",
+    "Settings.Appearance.WoodTexture.Desc": "在棋盘上叠加木纹效果",
     "Settings.Arrows": "箭头",
     "Settings.Arrows.Desc": "显示最佳着法箭头",
     "Settings.AutoPromition": "自动升变",

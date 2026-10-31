@@ -555,6 +555,11 @@ export const boardImageAtom = atomWithStorage<string>(
     "chessriddle.svg",
     createPreferenceStorage("chessriddle.svg"),
 );
+export const boardWoodTextureAtom = atomWithStorage<boolean>(
+    "board-wood-texture",
+    true,
+    createPreferenceStorage(true),
+);
 // Mount and remount synchronize with the document owner, never with an absent or stale key.
 const sessionStateAtom = atom<SessionPersistenceSnapshot | null>(null);
 sessionStateAtom.onMount = (setSnapshot) => {

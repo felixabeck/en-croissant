@@ -885,6 +885,8 @@
     "Settings.Appearance.TitleBar.Custom": "Personalizada",
     "Settings.Appearance.TitleBar.Desc": "Escolha entre uma barra de título nativa ou personalizada",
     "Settings.Appearance.TitleBar.Native": "Nativo",
+    "Settings.Appearance.WoodTexture": "Textura de madeira",
+    "Settings.Appearance.WoodTexture.Desc": "Mistura um veio de madeira no tabuleiro",
     "Settings.Arrows": "Setas",
     "Settings.Arrows.Desc": "Mostra setas de melhor movimento",
     "Settings.AutoPromition": "Promoção automática",

@@ -894,6 +894,8 @@
     "Settings.Appearance.TitleBar.Custom": "Власна",
     "Settings.Appearance.TitleBar.Desc": "Виберіть системну або власну панель заголовка",
     "Settings.Appearance.TitleBar.Native": "Стандартна",
+    "Settings.Appearance.WoodTexture": "Текстура дерева",
+    "Settings.Appearance.WoodTexture.Desc": "Накладає на дошку малюнок деревних волокон",
     "Settings.Arrows": "Стрілки",
     "Settings.Arrows.Desc": "Показати стрілки для найкращих ходів",
     "Settings.AutoPromition": "Автоматичне підвищення",

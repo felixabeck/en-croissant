@@ -885,6 +885,8 @@
     "Settings.Appearance.TitleBar.Custom": "Personalizada",
     "Settings.Appearance.TitleBar.Desc": "Elegir entre la barra de título nativa o personalizada",
     "Settings.Appearance.TitleBar.Native": "Nativa",
+    "Settings.Appearance.WoodTexture": "Textura de madera",
+    "Settings.Appearance.WoodTexture.Desc": "Mezcla una veta de madera con el tablero",
     "Settings.Arrows": "Flechas",
     "Settings.Arrows.Desc": "Mostrar la flecha del mejor movimiento",
     "Settings.AutoPromition": "Promoción automática",

@@ -894,6 +894,8 @@
     "Settings.Appearance.TitleBar.Custom": "Настраиваемая",
     "Settings.Appearance.TitleBar.Desc": "Выберите между стандартной или настраиваемой панелью заголовка",
     "Settings.Appearance.TitleBar.Native": "Стандартная",
+    "Settings.Appearance.WoodTexture": "Текстура дерева",
+    "Settings.Appearance.WoodTexture.Desc": "Накладывает на доску рисунок древесных волокон",
     "Settings.Arrows": "Стрелки",
     "Settings.Arrows.Desc": "Показать стрелки для лучших ходов",
     "Settings.AutoPromition": "Автоповышение",

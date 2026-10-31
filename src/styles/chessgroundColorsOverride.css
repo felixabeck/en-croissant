@@ -1,5 +1,9 @@
 cg-board {
-  background-image: var(--board-image, url("/board/gray.svg"));
+  background-image: var(--board-texture, none), var(--board-image, url("/board/gray.svg"));
+  background-size:
+    12.5% 12.5%,
+    cover;
+  background-blend-mode: soft-light, normal;
   border-radius: var(--mantine-radius-default);
   overflow: hidden;
 }

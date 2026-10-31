@@ -532,6 +532,15 @@ test("real bootstrap retains the latest safe sessions through atom mount, remoun
     unmountReload();
 });
 
+/** Fresh module, subscribe first, then read: the storage adapter hydrates on subscription. */
+async function mountBoardPreference<Value>(pick: (atoms: typeof import("./atoms")) => Atom<Value>) {
+    const { atoms } = await importAtoms();
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const store = createStore();
+    const unsubscribe = store.sub(pick(atoms), () => {});
+    return { atoms, store, atom: pick(atoms), write, unsubscribe };
+}
+
 test.each([null, "gray.svg"])(
     "board preference keeps stored %s or uses ChessRiddle maple",
     async (stored) => {
@@ -539,10 +548,9 @@ test.each([null, "gray.svg"])(
         if (stored !== null)
             createPreferenceStorage("chessriddle.svg").setItem("board-image", stored);
         const encoded = localStorage.getItem("board-image");
-        const { atoms } = await importAtoms();
-        const write = vi.spyOn(Storage.prototype, "setItem");
-        const store = createStore();
-        const unsubscribe = store.sub(atoms.boardImageAtom, () => {});
+        const { atoms, store, write, unsubscribe } = await mountBoardPreference(
+            (atoms) => atoms.boardImageAtom,
+        );
         try {
             expect(store.get(atoms.boardImageAtom)).toBe(stored ?? "chessriddle.svg");
             expect(localStorage.getItem("board-image")).toBe(encoded);
@@ -553,3 +561,42 @@ test.each([null, "gray.svg"])(
         }
     },
 );
+
+test.each([
+    ["absent", null, true],
+    ["stored JSON false", "false", false],
+    ["stored JSON true", "true", true],
+] as const)(
+    "wood texture preference with %s row reads without writing",
+    async (_name, raw, expected) => {
+        if (raw !== null) localStorage.setItem("board-wood-texture", raw);
+        const { atom, store, write, unsubscribe } = await mountBoardPreference(
+            (atoms) => atoms.boardWoodTextureAtom,
+        );
+        try {
+            expect(store.get(atom)).toBe(expected);
+            expect(localStorage.getItem("board-wood-texture")).toBe(raw);
+            expect(write.mock.calls.filter(([key]) => key === "board-wood-texture")).toEqual([]);
+        } finally {
+            unsubscribe();
+        }
+    },
+);
+
+test.each([
+    ["non-JSON bytes", "not json{"],
+    ["JSON string false", JSON.stringify("false")],
+    ["JSON number 1", "1"],
+])("wood texture preference repairs a corrupt row (%s) to true", async (_name, raw) => {
+    localStorage.setItem("board-wood-texture", raw);
+    const { atom, store, write, unsubscribe } = await mountBoardPreference(
+        (atoms) => atoms.boardWoodTextureAtom,
+    );
+    try {
+        expect(store.get(atom)).toBe(true);
+        expect(localStorage.getItem("board-wood-texture")).toBe("true");
+        expect(write).toHaveBeenCalledWith("board-wood-texture", "true");
+    } finally {
+        unsubscribe();
+    }
+});

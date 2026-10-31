@@ -867,6 +867,8 @@
     "Settings.Appearance.TitleBar.Custom": "맞춤형",
     "Settings.Appearance.TitleBar.Desc": "제목 표시줄을 기본형과 맞춤형 중에서 선택합니다",
     "Settings.Appearance.TitleBar.Native": "기본형",
+    "Settings.Appearance.WoodTexture": "나무 질감",
+    "Settings.Appearance.WoodTexture.Desc": "보드에 나뭇결 무늬를 입힙니다",
     "Settings.Arrows": "화살표",
     "Settings.Arrows.Desc": "최선수들을 화살표로 표시합니다",
     "Settings.AutoPromition": "자동 승진",

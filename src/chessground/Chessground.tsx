@@ -5,7 +5,7 @@ import type { Key } from "@lichess-org/chessground/types";
 import { Box } from "@mantine/core";
 import { useAtomValue } from "jotai";
 import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
-import { boardImageAtom, moveMethodAtom } from "@/state/atoms";
+import { boardImageAtom, boardWoodTextureAtom, moveMethodAtom } from "@/state/atoms";
 
 const BOARD_COORDINATE_COLORS: Record<string, { white: string; black: string }> = {
   chessriddle: { white: "#e8ceab", black: "#bc7944" },
@@ -186,6 +186,7 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
   }, [props, moveMethod]);
 
   const boardImage = useAtomValue(boardImageAtom);
+  const woodTexture = useAtomValue(boardWoodTextureAtom);
   const boardCoordColors = getBoardCoordinateColors(boardImage);
 
   return (
@@ -194,6 +195,7 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
         aspectRatio: 1,
         width: "100%",
         "--board-image": `url('/board/${boardImage}')`,
+        "--board-texture": woodTexture ? "url('/board/wood4-square.png')" : "none",
         "--board-coord-color-white": boardCoordColors.white,
         "--board-coord-color-black": boardCoordColors.black,
       }}
